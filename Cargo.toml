@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "md-crdt-ci",
+    "md-crdt-core",
+    "md-crdt-doc",
+    "md-crdt-sync",
+    "md-crdt-storage",
+    "md-crdt-filesync",
+    "md-crdt-ffi",
+    "md-crdt-cli",
+    "md-crdt-naive-oracle",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3              # Maximum optimizations
+lto = "fat"                # Full cross-crate LTO
+codegen-units = 1          # Single codegen unit for maximum optimization
+panic = "abort"            # Abort on panic (no unwinding overhead)
+strip = true               # Strip symbols from binary
