@@ -105,7 +105,11 @@ pub enum SemanticConflict {
     /// Two peers deleted the same element concurrently
     ConcurrentDelete { op_ids: Vec<OpId> },
     /// Attribute had concurrent updates, winner determined by OpId
-    AttributeConflict { key: String, winner: OpId, loser: OpId },
+    AttributeConflict {
+        key: String,
+        winner: OpId,
+        loser: OpId,
+    },
 }
 
 /// Result of applying changes
@@ -197,7 +201,9 @@ impl Document {
             if op.id.counter > current_applied + 1 {
                 // Missing prior operations - buffer this one
                 self.pending.insert(op.id, op);
-                result.buffered.push(self.pending.keys().last().copied().unwrap());
+                result
+                    .buffered
+                    .push(self.pending.keys().last().copied().unwrap());
             } else {
                 // Ready to apply
                 let op_id = op.id;
@@ -228,7 +234,9 @@ impl Document {
                     .max()
                     .unwrap_or(0);
 
-                if op_id.counter == current_applied + 1 {
+                // Split the condition to avoid overlapping borrows
+                let is_ready = op_id.counter == current_applied + 1;
+                if is_ready {
                     if let Some(op) = self.pending.remove(&op_id) {
                         self.ops.insert(op.id, op.payload);
                         result.applied.push(op_id);
@@ -390,7 +398,10 @@ mod tests {
         let message = ChangeMessage {
             since: StateVector::new(),
             ops: vec![Operation {
-                id: OpId { counter: 1, peer: 1 },
+                id: OpId {
+                    counter: 1,
+                    peer: 1,
+                },
                 payload: vec![], // Empty payload is malformed
             }],
         };
@@ -408,7 +419,10 @@ mod tests {
         let message = ChangeMessage {
             since: StateVector::new(),
             ops: vec![Operation {
-                id: OpId { counter: 0, peer: 1 }, // Zero counter is invalid
+                id: OpId {
+                    counter: 0,
+                    peer: 1,
+                }, // Zero counter is invalid
                 payload: vec![1],
             }],
         };
@@ -452,7 +466,10 @@ mod tests {
         let message = ChangeMessage {
             since: StateVector::new(),
             ops: vec![Operation {
-                id: OpId { counter: 1, peer: 1 },
+                id: OpId {
+                    counter: 1,
+                    peer: 1,
+                },
                 payload: vec![0; 1001], // 1001 bytes
             }],
         };
@@ -473,7 +490,10 @@ mod tests {
         let message = ChangeMessage {
             since: StateVector::new(),
             ops: vec![Operation {
-                id: OpId { counter: 1, peer: 1 },
+                id: OpId {
+                    counter: 1,
+                    peer: 1,
+                },
                 payload: vec![1],
             }],
         };
@@ -495,7 +515,10 @@ mod tests {
         let message = ChangeMessage {
             since: StateVector::new(),
             ops: vec![Operation {
-                id: OpId { counter: 1, peer: 1 },
+                id: OpId {
+                    counter: 1,
+                    peer: 1,
+                },
                 payload: vec![1, 2, 3],
             }],
         };
@@ -513,11 +536,17 @@ mod tests {
             since: StateVector::new(),
             ops: vec![
                 Operation {
-                    id: OpId { counter: 1, peer: 1 },
+                    id: OpId {
+                        counter: 1,
+                        peer: 1,
+                    },
                     payload: vec![1],
                 },
                 Operation {
-                    id: OpId { counter: 2, peer: 1 },
+                    id: OpId {
+                        counter: 2,
+                        peer: 1,
+                    },
                     payload: vec![2],
                 },
             ],
@@ -535,7 +564,10 @@ mod tests {
         let mut doc = Document::new();
         // Apply counter=1 first
         doc.apply_op(Operation {
-            id: OpId { counter: 1, peer: 1 },
+            id: OpId {
+                counter: 1,
+                peer: 1,
+            },
             payload: vec![1],
         });
 
@@ -543,7 +575,10 @@ mod tests {
         let message = ChangeMessage {
             since: StateVector::new(),
             ops: vec![Operation {
-                id: OpId { counter: 3, peer: 1 },
+                id: OpId {
+                    counter: 3,
+                    peer: 1,
+                },
                 payload: vec![3],
             }],
         };
@@ -560,7 +595,10 @@ mod tests {
         let mut doc = Document::new();
         // Apply counter=1 first
         doc.apply_op(Operation {
-            id: OpId { counter: 1, peer: 1 },
+            id: OpId {
+                counter: 1,
+                peer: 1,
+            },
             payload: vec![1],
         });
 
@@ -568,7 +606,10 @@ mod tests {
         let message1 = ChangeMessage {
             since: StateVector::new(),
             ops: vec![Operation {
-                id: OpId { counter: 3, peer: 1 },
+                id: OpId {
+                    counter: 3,
+                    peer: 1,
+                },
                 payload: vec![3],
             }],
         };
@@ -579,7 +620,10 @@ mod tests {
         let message2 = ChangeMessage {
             since: StateVector::new(),
             ops: vec![Operation {
-                id: OpId { counter: 2, peer: 1 },
+                id: OpId {
+                    counter: 2,
+                    peer: 1,
+                },
                 payload: vec![2],
             }],
         };
@@ -594,7 +638,10 @@ mod tests {
     fn test_apply_changes_idempotent() {
         let mut doc = Document::new();
         let op = Operation {
-            id: OpId { counter: 1, peer: 1 },
+            id: OpId {
+                counter: 1,
+                peer: 1,
+            },
             payload: vec![1],
         };
 
@@ -619,7 +666,10 @@ mod tests {
     fn test_outbox_local_op() {
         let mut doc = Document::new();
         let op = Operation {
-            id: OpId { counter: 1, peer: 1 },
+            id: OpId {
+                counter: 1,
+                peer: 1,
+            },
             payload: vec![1, 2, 3],
         };
 
@@ -634,7 +684,10 @@ mod tests {
     fn test_mark_sent() {
         let mut doc = Document::new();
         let op = Operation {
-            id: OpId { counter: 1, peer: 1 },
+            id: OpId {
+                counter: 1,
+                peer: 1,
+            },
             payload: vec![1],
         };
         doc.add_local_op(op.clone());
@@ -651,7 +704,10 @@ mod tests {
         let mut doc = Document::new();
         // Apply counter=1
         doc.apply_op(Operation {
-            id: OpId { counter: 1, peer: 1 },
+            id: OpId {
+                counter: 1,
+                peer: 1,
+            },
             payload: vec![1],
         });
 
@@ -659,7 +715,10 @@ mod tests {
         let message = ChangeMessage {
             since: StateVector::new(),
             ops: vec![Operation {
-                id: OpId { counter: 3, peer: 1 },
+                id: OpId {
+                    counter: 3,
+                    peer: 1,
+                },
                 payload: vec![3],
             }],
         };
@@ -673,7 +732,10 @@ mod tests {
         // Simulate crash recovery - new document
         let mut doc2 = Document::new();
         doc2.apply_op(Operation {
-            id: OpId { counter: 1, peer: 1 },
+            id: OpId {
+                counter: 1,
+                peer: 1,
+            },
             payload: vec![1],
         });
         doc2.restore_pending(pending_ops);
@@ -683,7 +745,10 @@ mod tests {
         let message2 = ChangeMessage {
             since: StateVector::new(),
             ops: vec![Operation {
-                id: OpId { counter: 2, peer: 1 },
+                id: OpId {
+                    counter: 2,
+                    peer: 1,
+                },
                 payload: vec![2],
             }],
         };

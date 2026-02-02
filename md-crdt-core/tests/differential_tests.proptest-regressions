@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 525813270af40ebf689d8f87cb5268b941cb4f86ded4ab4c292b6f64879c1de9 # shrinks to ops = [(OpId { counter: 1, peer: 1 }, 0), (OpId { counter: 1, peer: 1 }, 0)]
+cc a7b0c9b120be3ad8c73d016ac29a44546b7e63f4b10ca5af5b13d0f7efd3aad2 # shrinks to specs = [Delete { target_index: Some(0), peer: 1 }]
+cc 65a7431985a1cf8ef759652e7392f65e700d5f414017a86ba2ebe7a8f53fc77a # shrinks to specs = [Insert { after_index: None, value: 0, peer: 1 }, Insert { after_index: None, value: 0, peer: 1 }, Insert { after_index: None, value: 0, peer: 1 }, Insert { after_index: Some(53), value: 158, peer: 3 }, Insert { after_index: None, value: 112, peer: 2 }, Insert { after_index: Some(76), value: 239, peer: 2 }, Insert { after_index: Some(46), value: 17, peer: 1 }, Insert { after_index: None, value: 10, peer: 3 }]

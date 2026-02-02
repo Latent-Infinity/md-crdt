@@ -9,3 +9,8 @@ serde = { version = "1.0.228", features = ["derive"] }
 [dev-dependencies]
 md-crdt-naive-oracle = { path = "../md-crdt-naive-oracle" }
 proptest = "1.9.0"
+criterion = "0.5.1"
+
+[[bench]]
+name = "sequence"
+harness = false

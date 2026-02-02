@@ -19,6 +19,10 @@ check: fmt lint test
 differential-test:
     PROPTEST_CASES=${PROPTEST_CASES:-100000} cargo test -p md-crdt-core differential_test_sequence
 
+# Run benchmarks
+bench:
+    cargo bench
+
 # Generate code coverage report
 coverage:
     cargo llvm-cov

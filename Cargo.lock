@@ -449,6 +449,7 @@ dependencies = [
 name = "md-crdt-core"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "md-crdt-naive-oracle",
  "proptest",
  "serde",

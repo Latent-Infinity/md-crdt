@@ -186,17 +186,26 @@ fn test_two_peer_sync_simulation() {
 
     // Peer 1 generates operations
     let peer1_op1 = Operation {
-        id: OpId { counter: 1, peer: 1 },
+        id: OpId {
+            counter: 1,
+            peer: 1,
+        },
         payload: vec![1, 1],
     };
     let peer1_op2 = Operation {
-        id: OpId { counter: 2, peer: 1 },
+        id: OpId {
+            counter: 2,
+            peer: 1,
+        },
         payload: vec![1, 2],
     };
 
     // Peer 2 generates operations
     let peer2_op1 = Operation {
-        id: OpId { counter: 1, peer: 2 },
+        id: OpId {
+            counter: 1,
+            peer: 2,
+        },
         payload: vec![2, 1],
     };
 
