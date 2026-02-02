@@ -44,5 +44,6 @@ fn test_vault_open_errors_for_non_existent_path() {
         VaultError::PathDoesNotExist(path) => {
             assert_eq!(path, non_existent_path);
         }
+        other => panic!("Expected PathDoesNotExist error, got {other:?}"),
     }
 }

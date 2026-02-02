@@ -1,114 +1,557 @@
-//! A minimal parser for Markdown documents.
+//! Markdown document model, parser, serializer, and editing API.
+
+use md_crdt_core::{MarkInterval, MarkSet, OpId, Sequence, TextAnchor};
+use unicode_segmentation::UnicodeSegmentation;
+use uuid::Uuid;
+
+pub type BlockId = Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Document {
     pub frontmatter: Option<String>,
-    pub blocks: Vec<Block>,
+    pub blocks: Sequence<Block>,
+    raw_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
+    pub id: BlockId,
+    pub elem_id: OpId,
     pub kind: BlockKind,
-    pub text: String,
+    pub marks: MarkSet<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockKind {
-    Paragraph,
-    CodeFence(Option<String>),
+    Paragraph { text: String },
+    CodeFence { info: Option<String>, text: String },
+    BlockQuote { children: Sequence<Block> },
+    RawBlock { raw: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquivalenceMode {
+    Exact,
+    Structural,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InsertTextRun {
+    pub block_id: BlockId,
+    pub grapheme_offset: usize,
+    pub byte_offset: usize,
+    pub text: String,
+    pub op_id: OpId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditOp {
+    InsertText(InsertTextRun),
+    AddMark {
+        interval: MarkInterval<String, String>,
+    },
+    RemoveMark {
+        add_id: OpId,
+        remove_id: OpId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditError {
+    BlockNotFound,
+    InvalidOffset,
+    InvalidGraphemeBoundary,
+}
+
+impl Document {
+    pub fn new() -> Self {
+        Self {
+            frontmatter: None,
+            blocks: Sequence::new(),
+            raw_source: None,
+        }
+    }
+
+    pub fn set_raw_source(&mut self, source: String) {
+        self.raw_source = Some(source);
+    }
+
+    pub fn clear_raw_source(&mut self) {
+        self.raw_source = None;
+    }
+
+    pub fn blocks_in_order(&self) -> Vec<&Block> {
+        self.blocks.iter_asc().collect()
+    }
+
+    pub fn insert_text(
+        &mut self,
+        block_id: BlockId,
+        grapheme_offset: usize,
+        text: &str,
+        op_id: OpId,
+    ) -> Result<Vec<EditOp>, EditError> {
+        let block = self
+            .blocks
+            .iter_asc()
+            .find(|block| block.id == block_id)
+            .cloned();
+
+        let Some(mut block) = block else {
+            return Err(EditError::BlockNotFound);
+        };
+
+        let BlockKind::Paragraph { text: ref mut body } = block.kind else {
+            return Err(EditError::InvalidOffset);
+        };
+
+        let byte_offset =
+            grapheme_offset_to_byte(body, grapheme_offset).ok_or(EditError::InvalidOffset)?;
+        body.insert_str(byte_offset, text);
+
+        let mut updated = Sequence::new();
+        for existing in self.blocks.iter_asc() {
+            if existing.id == block_id {
+                updated.apply_op((existing.elem_id, block.clone()));
+            } else {
+                updated.apply_op((existing.elem_id, existing.clone()));
+            }
+        }
+        self.blocks = updated;
+        self.clear_raw_source();
+
+        Ok(vec![EditOp::InsertText(InsertTextRun {
+            block_id,
+            grapheme_offset,
+            byte_offset,
+            text: text.to_string(),
+            op_id,
+        })])
+    }
+
+    pub fn raw_apply_op(
+        &mut self,
+        op: EditOp,
+        validate_grapheme_boundaries: bool,
+    ) -> Result<(), EditError> {
+        match op {
+            EditOp::InsertText(run) => {
+                let block = self
+                    .blocks
+                    .iter_asc()
+                    .find(|block| block.id == run.block_id)
+                    .cloned();
+                let Some(mut block) = block else {
+                    return Err(EditError::BlockNotFound);
+                };
+                let BlockKind::Paragraph { text: ref mut body } = block.kind else {
+                    return Err(EditError::InvalidOffset);
+                };
+
+                let byte_offset = run.byte_offset;
+                if byte_offset > body.len() {
+                    return Err(EditError::InvalidOffset);
+                }
+                if !body.is_char_boundary(byte_offset) {
+                    return Err(EditError::InvalidOffset);
+                }
+                if validate_grapheme_boundaries && !is_grapheme_boundary(body, byte_offset) {
+                    return Err(EditError::InvalidGraphemeBoundary);
+                }
+                body.insert_str(byte_offset, &run.text);
+
+                let mut updated = Sequence::new();
+                for existing in self.blocks.iter_asc() {
+                    if existing.id == run.block_id {
+                        updated.apply_op((existing.elem_id, block.clone()));
+                    } else {
+                        updated.apply_op((existing.elem_id, existing.clone()));
+                    }
+                }
+                self.blocks = updated;
+                self.clear_raw_source();
+                Ok(())
+            }
+            EditOp::AddMark { interval } => {
+                let mut updated = Sequence::new();
+                for existing in self.blocks.iter_asc() {
+                    let mut block = existing.clone();
+                    if block.elem_id == interval.id {
+                        block.marks.add(interval.clone());
+                    }
+                    updated.apply_op((existing.elem_id, block));
+                }
+                self.blocks = updated;
+                self.clear_raw_source();
+                Ok(())
+            }
+            EditOp::RemoveMark { add_id, remove_id } => {
+                let mut updated = Sequence::new();
+                for existing in self.blocks.iter_asc() {
+                    let mut block = existing.clone();
+                    block.marks.remove(add_id, remove_id);
+                    updated.apply_op((existing.elem_id, block));
+                }
+                self.blocks = updated;
+                self.clear_raw_source();
+                Ok(())
+            }
+        }
+    }
+
+    pub fn remove_mark(
+        &mut self,
+        block_id: BlockId,
+        add_id: OpId,
+        remove_id: OpId,
+        remove_start: TextAnchor,
+        remove_end: TextAnchor,
+    ) -> Result<Vec<EditOp>, EditError> {
+        let block = self
+            .blocks
+            .iter_asc()
+            .find(|block| block.id == block_id)
+            .cloned();
+
+        let Some(mut block) = block else {
+            return Err(EditError::BlockNotFound);
+        };
+
+        let Some(interval) = block.marks.interval(&add_id).cloned() else {
+            return Err(EditError::InvalidOffset);
+        };
+
+        let mut ops = Vec::new();
+        block.marks.remove(add_id, remove_id);
+        ops.push(EditOp::RemoveMark { add_id, remove_id });
+
+        let left_needed = remove_start > interval.start;
+        let right_needed = remove_end < interval.end;
+
+        if left_needed {
+            let left_id = OpId {
+                counter: add_id.counter + 1,
+                peer: add_id.peer,
+            };
+            let mut left = MarkInterval::new(left_id, interval.start, remove_start);
+            left.attributes = interval.attributes.clone();
+            block.marks.add(left.clone());
+            ops.push(EditOp::AddMark { interval: left });
+        }
+
+        if right_needed {
+            let right_id = OpId {
+                counter: add_id.counter + 2,
+                peer: add_id.peer,
+            };
+            let mut right = MarkInterval::new(right_id, remove_end, interval.end);
+            right.attributes = interval.attributes.clone();
+            block.marks.add(right.clone());
+            ops.push(EditOp::AddMark { interval: right });
+        }
+
+        let mut updated = Sequence::new();
+        for existing in self.blocks.iter_asc() {
+            if existing.id == block_id {
+                updated.apply_op((existing.elem_id, block.clone()));
+            } else {
+                updated.apply_op((existing.elem_id, existing.clone()));
+            }
+        }
+        self.blocks = updated;
+        self.clear_raw_source();
+
+        Ok(ops)
+    }
+
+    pub fn serialize(&self, mode: EquivalenceMode) -> String {
+        if let EquivalenceMode::Exact = mode
+            && let Some(raw) = &self.raw_source
+        {
+            return raw.clone();
+        }
+
+        let mut output = String::new();
+        if let Some(frontmatter) = &self.frontmatter {
+            output.push_str("---\n");
+            output.push_str(frontmatter);
+            output.push_str("\n---\n\n");
+        }
+
+        let blocks = self.blocks_in_order();
+        for (index, block) in blocks.iter().enumerate() {
+            if index > 0 {
+                output.push_str("\n\n");
+            }
+            output.push_str(&serialize_block(block));
+        }
+
+        match mode {
+            EquivalenceMode::Exact => output,
+            EquivalenceMode::Structural => normalize_structural(&output),
+        }
+    }
+}
+
+impl Default for Document {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Block {
+    pub fn new(kind: BlockKind, insert_id: OpId) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            elem_id: insert_id,
+            kind,
+            marks: MarkSet::new(),
+        }
+    }
 }
 
 pub struct Parser;
 
 impl Parser {
     pub fn parse(text: &str) -> Document {
-        let mut lines = text.lines();
+        let mut lines = text
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
         let mut frontmatter = None;
 
-        let mut remaining = Vec::new();
-        if let Some(first) = lines.next() {
-            if first.trim() == "---" {
-                let mut fm_lines = Vec::new();
-                for line in lines.by_ref() {
-                    if line.trim() == "---" {
-                        frontmatter = Some(fm_lines.join("\n"));
-                        break;
-                    }
-                    fm_lines.push(line);
+        if lines
+            .first()
+            .map(|line| line.trim() == "---")
+            .unwrap_or(false)
+        {
+            let mut fm_lines = Vec::new();
+            let mut index = 1;
+            while index < lines.len() {
+                if lines[index].trim() == "---" {
+                    frontmatter = Some(fm_lines.join("\n"));
+                    lines.drain(0..=index);
+                    break;
                 }
-                remaining.extend(lines.map(|l| l.to_string()));
-            } else {
-                remaining.push(first.to_string());
-                remaining.extend(lines.map(|l| l.to_string()));
+                fm_lines.push(lines[index].clone());
+                index += 1;
             }
         }
 
+        let mut counter = 1u64;
         let mut blocks = Vec::new();
-        let mut current = Vec::new();
-        let mut in_code = false;
-        let mut code_info: Option<String> = None;
+        parse_blocks(&lines, &mut counter, &mut blocks);
 
-        for line in remaining {
-            let trimmed = line.trim();
-            if trimmed.starts_with("```") {
-                if !in_code {
-                    if !current.is_empty() {
-                        blocks.push(Block {
-                            kind: BlockKind::Paragraph,
-                            text: current.join("\n"),
-                        });
-                        current.clear();
-                    }
-                    let info = trimmed.trim_start_matches("```").trim();
-                    code_info = if info.is_empty() {
-                        None
-                    } else {
-                        Some(info.to_string())
-                    };
-                    in_code = true;
-                    current.push(line);
-                } else {
-                    current.push(line);
-                    blocks.push(Block {
-                        kind: BlockKind::CodeFence(code_info.take()),
-                        text: current.join("\n"),
-                    });
-                    current.clear();
-                    in_code = false;
-                }
-                continue;
-            }
-
-            if !in_code && trimmed.is_empty() {
-                if !current.is_empty() {
-                    blocks.push(Block {
-                        kind: BlockKind::Paragraph,
-                        text: current.join("\n"),
-                    });
-                    current.clear();
-                }
-                continue;
-            }
-
-            current.push(line);
-        }
-
-        if !current.is_empty() {
-            blocks.push(Block {
-                kind: if in_code {
-                    BlockKind::CodeFence(code_info)
-                } else {
-                    BlockKind::Paragraph
-                },
-                text: current.join("\n"),
-            });
+        let mut sequence = Sequence::new();
+        for block in blocks {
+            sequence.apply_op((block.elem_id, block));
         }
 
         Document {
             frontmatter,
-            blocks,
+            blocks: sequence,
+            raw_source: Some(text.to_string()),
         }
     }
+}
+
+fn parse_blocks(lines: &[String], counter: &mut u64, out: &mut Vec<Block>) {
+    let mut index = 0;
+    while index < lines.len() {
+        let line = &lines[index];
+        if line.trim().is_empty() {
+            index += 1;
+            continue;
+        }
+
+        if let Some(code_info) = line.trim().strip_prefix("```") {
+            let info = code_info.trim();
+            let mut contents = Vec::new();
+            let mut end_index = index + 1;
+            while end_index < lines.len() {
+                if lines[end_index].trim() == "```" {
+                    break;
+                }
+                contents.push(lines[end_index].clone());
+                end_index += 1;
+            }
+            let text = contents.join("\n");
+            let block = Block::new(
+                BlockKind::CodeFence {
+                    info: if info.is_empty() {
+                        None
+                    } else {
+                        Some(info.to_string())
+                    },
+                    text,
+                },
+                next_op_id(counter),
+            );
+            out.push(block);
+            index = (end_index + 1).min(lines.len());
+            continue;
+        }
+
+        if line.trim().starts_with(">") {
+            let mut quote_lines = Vec::new();
+            let mut end_index = index;
+            while end_index < lines.len() {
+                let current = &lines[end_index];
+                if !current.trim().starts_with(">") {
+                    break;
+                }
+                let stripped = current.trim_start().trim_start_matches('>').trim_start();
+                quote_lines.push(stripped.to_string());
+                end_index += 1;
+            }
+            let mut child_blocks = Vec::new();
+            parse_blocks(&quote_lines, counter, &mut child_blocks);
+            let mut children = Sequence::new();
+            for child in child_blocks {
+                children.apply_op((child.elem_id, child));
+            }
+            let block = Block::new(BlockKind::BlockQuote { children }, next_op_id(counter));
+            out.push(block);
+            index = end_index;
+            continue;
+        }
+
+        if line.trim().starts_with(":::") {
+            let mut raw_lines = Vec::new();
+            let mut end_index = index;
+            while end_index < lines.len() {
+                if lines[end_index].trim().is_empty() && end_index > index {
+                    break;
+                }
+                raw_lines.push(lines[end_index].clone());
+                end_index += 1;
+            }
+            let block = Block::new(
+                BlockKind::RawBlock {
+                    raw: raw_lines.join("\n"),
+                },
+                next_op_id(counter),
+            );
+            out.push(block);
+            index = end_index;
+            continue;
+        }
+
+        let mut paragraph_lines = Vec::new();
+        let mut end_index = index;
+        while end_index < lines.len() {
+            let current = &lines[end_index];
+            if current.trim().is_empty()
+                || current.trim().starts_with("```")
+                || current.trim().starts_with(">")
+                || current.trim().starts_with(":::")
+            {
+                break;
+            }
+            paragraph_lines.push(current.clone());
+            end_index += 1;
+        }
+        let block = Block::new(
+            BlockKind::Paragraph {
+                text: paragraph_lines.join("\n"),
+            },
+            next_op_id(counter),
+        );
+        out.push(block);
+        index = end_index;
+    }
+}
+
+fn next_op_id(counter: &mut u64) -> OpId {
+    let id = OpId {
+        counter: *counter,
+        peer: 0,
+    };
+    *counter += 1;
+    id
+}
+
+fn serialize_block(block: &Block) -> String {
+    match &block.kind {
+        BlockKind::Paragraph { text } => text.clone(),
+        BlockKind::CodeFence { info, text } => {
+            let mut output = String::from("```");
+            if let Some(info) = info {
+                output.push_str(info);
+            }
+            output.push('\n');
+            output.push_str(text);
+            output.push_str("\n```");
+            output
+        }
+        BlockKind::BlockQuote { children } => {
+            let mut inner = String::new();
+            let mut rendered = Vec::new();
+            for child in children.iter_asc() {
+                rendered.push(serialize_block(child));
+            }
+            inner.push_str(&rendered.join("\n\n"));
+            inner
+                .lines()
+                .map(|line| format!("> {}", line))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        BlockKind::RawBlock { raw } => raw.clone(),
+    }
+}
+
+fn grapheme_offset_to_byte(text: &str, grapheme_offset: usize) -> Option<usize> {
+    if grapheme_offset == 0 {
+        return Some(0);
+    }
+
+    let mut count = 0;
+    for (byte_index, _) in text.grapheme_indices(true) {
+        if count == grapheme_offset {
+            return Some(byte_index);
+        }
+        count += 1;
+    }
+    if count == grapheme_offset {
+        Some(text.len())
+    } else {
+        None
+    }
+}
+
+fn is_grapheme_boundary(text: &str, byte_offset: usize) -> bool {
+    if byte_offset == 0 || byte_offset == text.len() {
+        return true;
+    }
+    text.grapheme_indices(true)
+        .any(|(index, _)| index == byte_offset)
+}
+
+fn normalize_structural(text: &str) -> String {
+    let mut lines = Vec::new();
+    let mut previous_blank = false;
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            if !previous_blank {
+                lines.push(String::new());
+                previous_blank = true;
+            }
+        } else {
+            lines.push(trimmed.to_string());
+            previous_blank = false;
+        }
+    }
+
+    while lines.first().map(|line| line.is_empty()).unwrap_or(false) {
+        lines.remove(0);
+    }
+    while lines.last().map(|line| line.is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -116,35 +559,852 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_frontmatter_and_blocks() {
-        let input = "---\ntitle: Test\n---\n\nHello world\n\nSecond block";
-        let doc = Parser::parse(input);
-        assert_eq!(doc.frontmatter, Some("title: Test".to_string()));
-        assert_eq!(doc.blocks.len(), 2);
-        assert_eq!(
-            doc.blocks[0],
-            Block {
-                kind: BlockKind::Paragraph,
-                text: "Hello world".to_string(),
-            }
-        );
-        assert_eq!(
-            doc.blocks[1],
-            Block {
-                kind: BlockKind::Paragraph,
-                text: "Second block".to_string(),
-            }
-        );
+    fn test_block_ids_and_elem_ids() {
+        let id = OpId {
+            counter: 1,
+            peer: 1,
+        };
+        let block_a = Block::new(BlockKind::Paragraph { text: "A".into() }, id);
+        let block_b = Block::new(BlockKind::Paragraph { text: "B".into() }, id);
+        assert_ne!(block_a.id, block_b.id);
+        assert_eq!(block_a.elem_id, id);
     }
 
     #[test]
-    fn test_parse_code_fence_block() {
-        let input = "Intro\n\n```rust\nfn main() {}\n```\n\nAfter";
-        let doc = Parser::parse(input);
-        assert_eq!(doc.blocks.len(), 3);
-        assert_eq!(
-            doc.blocks[1].kind,
-            BlockKind::CodeFence(Some("rust".to_string()))
+    fn test_blockquote_hierarchy() {
+        let child = Block::new(
+            BlockKind::Paragraph {
+                text: "Nested".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
         );
+        let mut children = Sequence::new();
+        children.apply_op((child.elem_id, child.clone()));
+        let quote = Block::new(
+            BlockKind::BlockQuote { children },
+            OpId {
+                counter: 2,
+                peer: 0,
+            },
+        );
+        if let BlockKind::BlockQuote { children } = &quote.kind {
+            let collected: Vec<_> = children.iter().collect();
+            assert_eq!(collected.len(), 1);
+            assert_eq!(collected[0].kind, child.kind);
+        } else {
+            panic!("Expected blockquote block");
+        }
+    }
+
+    #[test]
+    fn test_exact_equivalence_roundtrip() {
+        let input = "---\ntitle: Test\n---\n\nHello\n\n```rust\nfn main() {}\n```\n\n:::custom\nraw block\n";
+        let doc = Parser::parse(input);
+        let output = doc.serialize(EquivalenceMode::Exact);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_structural_equivalence() {
+        let a = "Hello\n\nWorld\n";
+        let b = "Hello\n\n\nWorld";
+        let doc_a = Parser::parse(a);
+        let doc_b = Parser::parse(b);
+        let norm_a = doc_a.serialize(EquivalenceMode::Structural);
+        let norm_b = doc_b.serialize(EquivalenceMode::Structural);
+        assert_eq!(norm_a, norm_b);
+    }
+
+    #[test]
+    fn test_raw_block_preservation() {
+        let input = ":::custom\nraw line\n\nNext";
+        let doc = Parser::parse(input);
+        let output = doc.serialize(EquivalenceMode::Structural);
+        assert!(output.contains(":::custom\nraw line"));
+    }
+
+    #[test]
+    fn test_insert_text_grapheme_offsets() {
+        let mut doc = Document::new();
+        let block = Block::new(
+            BlockKind::Paragraph {
+                text: "a🇺🇸b".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let block_id = block.id;
+        doc.blocks.apply_op((block.elem_id, block));
+
+        let ops = doc
+            .insert_text(
+                block_id,
+                1,
+                "X",
+                OpId {
+                    counter: 2,
+                    peer: 0,
+                },
+            )
+            .unwrap();
+        match &ops[0] {
+            EditOp::InsertText(run) => {
+                assert_eq!(run.grapheme_offset, 1);
+                assert_eq!(run.text, "X");
+                assert!(run.byte_offset > 0);
+            }
+            _ => panic!("Expected insert op"),
+        }
+
+        let updated = doc.blocks.iter().next().unwrap();
+        if let BlockKind::Paragraph { text } = &updated.kind {
+            assert_eq!(text, "aX🇺🇸b");
+        } else {
+            panic!("Expected paragraph block");
+        }
+    }
+
+    #[test]
+    fn test_remove_mark_split() {
+        let mut doc = Document::new();
+        let mut block = Block::new(
+            BlockKind::Paragraph {
+                text: "Hello".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let interval = MarkInterval::new(
+            OpId {
+                counter: 10,
+                peer: 0,
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 1,
+                    peer: 0,
+                },
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 5,
+                    peer: 0,
+                },
+            },
+        );
+        block.marks.add(interval.clone());
+        let block_id = block.id;
+        doc.blocks.apply_op((block.elem_id, block));
+
+        let ops = doc
+            .remove_mark(
+                block_id,
+                interval.id,
+                OpId {
+                    counter: 20,
+                    peer: 0,
+                },
+                TextAnchor {
+                    op_id: OpId {
+                        counter: 2,
+                        peer: 0,
+                    },
+                },
+                TextAnchor {
+                    op_id: OpId {
+                        counter: 4,
+                        peer: 0,
+                    },
+                },
+            )
+            .unwrap();
+
+        let add_ops = ops
+            .iter()
+            .filter(|op| matches!(op, EditOp::AddMark { .. }))
+            .count();
+        assert_eq!(add_ops, 2, "Expected split into two add ops");
+    }
+
+    #[test]
+    fn test_raw_apply_op_grapheme_validation() {
+        let mut doc = Document::new();
+        let block = Block::new(
+            BlockKind::Paragraph {
+                text: "a🇺🇸b".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let block_id = block.id;
+        doc.blocks.apply_op((block.elem_id, block));
+
+        let mut chars = "a🇺🇸b".char_indices();
+        chars.next();
+        let _first_flag = chars.next().unwrap().0;
+        let bad_offset = chars.next().unwrap().0;
+        let op = EditOp::InsertText(InsertTextRun {
+            block_id,
+            grapheme_offset: 0,
+            byte_offset: bad_offset,
+            text: "X".into(),
+            op_id: OpId {
+                counter: 2,
+                peer: 0,
+            },
+        });
+
+        assert_eq!(
+            doc.raw_apply_op(op.clone(), true),
+            Err(EditError::InvalidGraphemeBoundary)
+        );
+        assert!(doc.raw_apply_op(op, false).is_ok());
+    }
+
+    #[test]
+    fn test_insert_text_error_cases() {
+        let mut doc = Document::new();
+        let block = Block::new(
+            BlockKind::Paragraph {
+                text: "Hello".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let block_id = block.id;
+        doc.blocks.apply_op((block.elem_id, block.clone()));
+
+        // Test BlockNotFound
+        let fake_id = Uuid::new_v4();
+        let result = doc.insert_text(
+            fake_id,
+            0,
+            "X",
+            OpId {
+                counter: 2,
+                peer: 0,
+            },
+        );
+        assert_eq!(result, Err(EditError::BlockNotFound));
+
+        // Test InvalidOffset (too large)
+        let result = doc.insert_text(
+            block_id,
+            1000,
+            "X",
+            OpId {
+                counter: 2,
+                peer: 0,
+            },
+        );
+        assert_eq!(result, Err(EditError::InvalidOffset));
+
+        // Test inserting into non-paragraph block
+        let code_block = Block::new(
+            BlockKind::CodeFence {
+                info: None,
+                text: "code".into(),
+            },
+            OpId {
+                counter: 3,
+                peer: 0,
+            },
+        );
+        let code_id = code_block.id;
+        doc.blocks.apply_op((code_block.elem_id, code_block));
+
+        let result = doc.insert_text(
+            code_id,
+            0,
+            "X",
+            OpId {
+                counter: 4,
+                peer: 0,
+            },
+        );
+        assert_eq!(result, Err(EditError::InvalidOffset));
+    }
+
+    #[test]
+    fn test_raw_apply_op_error_cases() {
+        let mut doc = Document::new();
+        let block = Block::new(
+            BlockKind::Paragraph {
+                text: "Hello".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let block_id = block.id;
+        doc.blocks.apply_op((block.elem_id, block));
+
+        // Test BlockNotFound for InsertText
+        let fake_id = Uuid::new_v4();
+        let op = EditOp::InsertText(InsertTextRun {
+            block_id: fake_id,
+            grapheme_offset: 0,
+            byte_offset: 0,
+            text: "X".into(),
+            op_id: OpId {
+                counter: 2,
+                peer: 0,
+            },
+        });
+        assert_eq!(doc.raw_apply_op(op, false), Err(EditError::BlockNotFound));
+
+        // Test InvalidOffset (byte offset too large)
+        let op = EditOp::InsertText(InsertTextRun {
+            block_id,
+            grapheme_offset: 0,
+            byte_offset: 1000,
+            text: "X".into(),
+            op_id: OpId {
+                counter: 2,
+                peer: 0,
+            },
+        });
+        assert_eq!(doc.raw_apply_op(op, false), Err(EditError::InvalidOffset));
+
+        // Test InvalidOffset (not on char boundary)
+        // Create block with multi-byte character to properly test char boundaries
+        let mut doc2 = Document::new();
+        let mb_block = Block::new(
+            BlockKind::Paragraph {
+                text: "こんにちは".into(), // Japanese text
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let mb_id = mb_block.id;
+        doc2.blocks.apply_op((mb_block.elem_id, mb_block));
+
+        // Try to insert at invalid byte offset (middle of character)
+        let op = EditOp::InsertText(InsertTextRun {
+            block_id: mb_id,
+            grapheme_offset: 0,
+            byte_offset: 1, // Invalid: middle of multi-byte character
+            text: "X".into(),
+            op_id: OpId {
+                counter: 2,
+                peer: 0,
+            },
+        });
+        assert_eq!(doc2.raw_apply_op(op, false), Err(EditError::InvalidOffset));
+
+        // Test inserting into non-paragraph block
+        let code_block = Block::new(
+            BlockKind::CodeFence {
+                info: None,
+                text: "code".into(),
+            },
+            OpId {
+                counter: 3,
+                peer: 0,
+            },
+        );
+        let code_id = code_block.id;
+        doc.blocks.apply_op((code_block.elem_id, code_block));
+
+        let op = EditOp::InsertText(InsertTextRun {
+            block_id: code_id,
+            grapheme_offset: 0,
+            byte_offset: 0,
+            text: "X".into(),
+            op_id: OpId {
+                counter: 4,
+                peer: 0,
+            },
+        });
+        assert_eq!(doc.raw_apply_op(op, false), Err(EditError::InvalidOffset));
+    }
+
+    #[test]
+    fn test_raw_apply_op_add_mark() {
+        let mut doc = Document::new();
+        let block = Block::new(
+            BlockKind::Paragraph {
+                text: "Hello".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let block_elem_id = block.elem_id;
+        doc.blocks.apply_op((block.elem_id, block));
+
+        // Create and apply AddMark operation
+        let interval = MarkInterval::new(
+            block_elem_id,
+            TextAnchor {
+                op_id: OpId {
+                    counter: 0,
+                    peer: 0,
+                },
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 5,
+                    peer: 0,
+                },
+            },
+        );
+
+        let op = EditOp::AddMark {
+            interval: interval.clone(),
+        };
+        assert!(doc.raw_apply_op(op, false).is_ok());
+
+        // Verify the mark was added
+        let updated_block = doc.blocks.iter().next().unwrap();
+        assert!(updated_block.marks.is_active(&block_elem_id));
+    }
+
+    #[test]
+    fn test_remove_mark_error_cases() {
+        let mut doc = Document::new();
+        let block = Block::new(
+            BlockKind::Paragraph {
+                text: "Hello".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let block_id = block.id;
+        doc.blocks.apply_op((block.elem_id, block));
+
+        // Test BlockNotFound
+        let fake_id = Uuid::new_v4();
+        let result = doc.remove_mark(
+            fake_id,
+            OpId {
+                counter: 10,
+                peer: 0,
+            },
+            OpId {
+                counter: 20,
+                peer: 0,
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 2,
+                    peer: 0,
+                },
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 4,
+                    peer: 0,
+                },
+            },
+        );
+        assert_eq!(result, Err(EditError::BlockNotFound));
+
+        // Test mark not found (InvalidOffset)
+        let result = doc.remove_mark(
+            block_id,
+            OpId {
+                counter: 999,
+                peer: 0,
+            },
+            OpId {
+                counter: 20,
+                peer: 0,
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 2,
+                    peer: 0,
+                },
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 4,
+                    peer: 0,
+                },
+            },
+        );
+        assert_eq!(result, Err(EditError::InvalidOffset));
+    }
+
+    #[test]
+    fn test_set_raw_source() {
+        let mut doc = Document::new();
+        assert_eq!(doc.raw_source, None);
+
+        doc.set_raw_source("test".into());
+        assert_eq!(doc.raw_source, Some("test".into()));
+
+        doc.clear_raw_source();
+        assert_eq!(doc.raw_source, None);
+    }
+
+    #[test]
+    fn test_parser_edge_cases() {
+        // Test empty document
+        let doc = Parser::parse("");
+        assert!(doc.blocks.iter().next().is_none());
+
+        // Test only whitespace
+        let doc = Parser::parse("\n\n\n");
+        assert!(doc.blocks.iter().next().is_none());
+
+        // Test unclosed code fence
+        let doc = Parser::parse("```rust\ncode\n");
+        let blocks: Vec<_> = doc.blocks.iter().collect();
+        assert_eq!(blocks.len(), 1);
+        if let BlockKind::CodeFence { info, text } = &blocks[0].kind {
+            assert_eq!(info, &Some("rust".into()));
+            assert_eq!(text, "code");
+        } else {
+            panic!("Expected code fence");
+        }
+
+        // Test empty code fence
+        let doc = Parser::parse("```\n```");
+        let blocks: Vec<_> = doc.blocks.iter().collect();
+        assert_eq!(blocks.len(), 1);
+        if let BlockKind::CodeFence { info, text } = &blocks[0].kind {
+            assert_eq!(info, &None);
+            assert_eq!(text, "");
+        } else {
+            panic!("Expected code fence");
+        }
+
+        // Test blockquote at end
+        let doc = Parser::parse("> Quote");
+        let blocks: Vec<_> = doc.blocks.iter().collect();
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(blocks[0].kind, BlockKind::BlockQuote { .. }));
+
+        // Test raw block at end
+        let doc = Parser::parse(":::raw\nContent");
+        let blocks: Vec<_> = doc.blocks.iter().collect();
+        assert_eq!(blocks.len(), 1);
+        if let BlockKind::RawBlock { raw } = &blocks[0].kind {
+            assert!(raw.contains(":::raw"));
+        } else {
+            panic!("Expected raw block");
+        }
+    }
+
+    #[test]
+    fn test_serialize_structural_edge_cases() {
+        // Test normalization removes leading/trailing blank lines
+        let doc = Parser::parse("\n\nHello\n\n\n");
+        let output = doc.serialize(EquivalenceMode::Structural);
+        assert_eq!(output, "Hello");
+
+        // Test normalization collapses multiple blank lines
+        let doc = Parser::parse("A\n\n\n\nB");
+        let output = doc.serialize(EquivalenceMode::Structural);
+        assert_eq!(output, "A\n\nB");
+
+        // Test normalization trims trailing whitespace
+        let doc = Parser::parse("Hello   \nWorld  ");
+        let output = doc.serialize(EquivalenceMode::Structural);
+        assert_eq!(output, "Hello\nWorld");
+    }
+
+    #[test]
+    fn test_grapheme_offset_edge_cases() {
+        // Test empty string
+        assert_eq!(grapheme_offset_to_byte("", 0), Some(0));
+        assert_eq!(grapheme_offset_to_byte("", 1), None);
+
+        // Test offset at end
+        assert_eq!(grapheme_offset_to_byte("abc", 3), Some(3));
+
+        // Test with multi-byte grapheme clusters
+        let text = "a🇺🇸b";
+        assert_eq!(grapheme_offset_to_byte(text, 0), Some(0));
+        assert_eq!(grapheme_offset_to_byte(text, 1), Some(1));
+        assert_eq!(grapheme_offset_to_byte(text, 2), Some(9)); // After flag
+        assert_eq!(grapheme_offset_to_byte(text, 3), Some(10)); // At end
+    }
+
+    #[test]
+    fn test_is_grapheme_boundary() {
+        // Test boundaries
+        assert!(is_grapheme_boundary("abc", 0));
+        assert!(is_grapheme_boundary("abc", 3));
+        assert!(is_grapheme_boundary("abc", 1));
+
+        // Test with multi-byte
+        let text = "a🇺🇸b";
+        assert!(is_grapheme_boundary(text, 0));
+        assert!(is_grapheme_boundary(text, 1)); // After 'a'
+        assert!(!is_grapheme_boundary(text, 2)); // Middle of flag
+        assert!(is_grapheme_boundary(text, 9)); // After flag
+        assert!(is_grapheme_boundary(text, text.len()));
+    }
+
+    #[test]
+    fn test_raw_apply_op_remove_mark() {
+        let mut doc = Document::new();
+        let block = Block::new(
+            BlockKind::Paragraph {
+                text: "Hello".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        doc.blocks.apply_op((block.elem_id, block));
+
+        // Apply RemoveMark operation
+        let op = EditOp::RemoveMark {
+            add_id: OpId {
+                counter: 10,
+                peer: 0,
+            },
+            remove_id: OpId {
+                counter: 20,
+                peer: 0,
+            },
+        };
+        assert!(doc.raw_apply_op(op, false).is_ok());
+        assert_eq!(doc.raw_source, None);
+    }
+
+    #[test]
+    fn test_serialize_with_frontmatter_structural() {
+        let input = "---\ntitle: Test\nauthor: Me\n---\n\nContent";
+        let doc = Parser::parse(input);
+        let output = doc.serialize(EquivalenceMode::Structural);
+        assert!(output.contains("---\n"));
+        assert!(output.contains("title: Test"));
+        assert!(output.contains("author: Me"));
+        assert!(output.contains("Content"));
+    }
+
+    #[test]
+    fn test_serialize_code_fence_with_info() {
+        let input = "```rust\nfn main() {}\n```";
+        let doc = Parser::parse(input);
+        let output = doc.serialize(EquivalenceMode::Structural);
+        assert!(output.contains("```rust\n"));
+        assert!(output.contains("fn main() {}"));
+        assert!(output.contains("\n```"));
+    }
+
+    #[test]
+    fn test_serialize_blockquote_with_children() {
+        let input = "> Line 1\n> Line 2\n> \n> Line 3";
+        let doc = Parser::parse(input);
+        let output = doc.serialize(EquivalenceMode::Structural);
+        assert!(output.contains("> Line 1"));
+        assert!(output.contains("> Line 2"));
+        assert!(output.contains("> Line 3"));
+    }
+
+    #[test]
+    fn test_parser_blockquote_multiline() {
+        let input = "> First\n> Second\nNot quote";
+        let doc = Parser::parse(input);
+        let blocks: Vec<_> = doc.blocks.iter().collect();
+        // Parser creates blockquote and paragraph
+        assert!(!blocks.is_empty());
+
+        // Find the blockquote
+        let has_blockquote = blocks
+            .iter()
+            .any(|b| matches!(b.kind, BlockKind::BlockQuote { .. }));
+        assert!(has_blockquote, "Expected at least one blockquote");
+
+        // Verify blockquote has children
+        for block in &blocks {
+            if let BlockKind::BlockQuote { children } = &block.kind {
+                let child_blocks: Vec<_> = children.iter().collect();
+                assert!(!child_blocks.is_empty(), "Blockquote should have children");
+            }
+        }
+    }
+
+    #[test]
+    fn test_insert_text_updates_all_blocks() {
+        let mut doc = Document::new();
+        let block1 = Block::new(
+            BlockKind::Paragraph {
+                text: "First".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let block2 = Block::new(
+            BlockKind::Paragraph {
+                text: "Second".into(),
+            },
+            OpId {
+                counter: 2,
+                peer: 0,
+            },
+        );
+        let block1_id = block1.id;
+        doc.blocks.apply_op((block1.elem_id, block1));
+        doc.blocks.apply_op((block2.elem_id, block2));
+
+        // Insert into first block
+        let result = doc.insert_text(
+            block1_id,
+            0,
+            "X",
+            OpId {
+                counter: 3,
+                peer: 0,
+            },
+        );
+        assert!(result.is_ok());
+
+        // Verify both blocks are still present
+        let blocks: Vec<_> = doc.blocks.iter().collect();
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn test_raw_apply_op_updates_all_blocks() {
+        let mut doc = Document::new();
+        let block1 = Block::new(
+            BlockKind::Paragraph {
+                text: "First".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let block2 = Block::new(
+            BlockKind::Paragraph {
+                text: "Second".into(),
+            },
+            OpId {
+                counter: 2,
+                peer: 0,
+            },
+        );
+        let block1_elem_id = block1.elem_id;
+        doc.blocks.apply_op((block1.elem_id, block1));
+        doc.blocks.apply_op((block2.elem_id, block2));
+
+        // Add mark to first block via raw_apply_op
+        let interval = MarkInterval::new(
+            block1_elem_id,
+            TextAnchor {
+                op_id: OpId {
+                    counter: 0,
+                    peer: 0,
+                },
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 5,
+                    peer: 0,
+                },
+            },
+        );
+        let op = EditOp::AddMark { interval };
+        assert!(doc.raw_apply_op(op, false).is_ok());
+
+        // Verify both blocks are still present
+        let blocks: Vec<_> = doc.blocks.iter().collect();
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn test_remove_mark_updates_all_blocks() {
+        let mut doc = Document::new();
+        let block1 = Block::new(
+            BlockKind::Paragraph {
+                text: "First".into(),
+            },
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let block2 = Block::new(
+            BlockKind::Paragraph {
+                text: "Second".into(),
+            },
+            OpId {
+                counter: 2,
+                peer: 0,
+            },
+        );
+
+        // Add mark to block1
+        let mut block1 = block1;
+        let interval = MarkInterval::new(
+            OpId {
+                counter: 10,
+                peer: 0,
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 0,
+                    peer: 0,
+                },
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 5,
+                    peer: 0,
+                },
+            },
+        );
+        block1.marks.add(interval.clone());
+        let block1_id = block1.id;
+        doc.blocks.apply_op((block1.elem_id, block1));
+        doc.blocks.apply_op((block2.elem_id, block2));
+
+        // Remove the mark
+        let result = doc.remove_mark(
+            block1_id,
+            OpId {
+                counter: 10,
+                peer: 0,
+            },
+            OpId {
+                counter: 20,
+                peer: 0,
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 1,
+                    peer: 0,
+                },
+            },
+            TextAnchor {
+                op_id: OpId {
+                    counter: 4,
+                    peer: 0,
+                },
+            },
+        );
+        assert!(result.is_ok());
+
+        // Verify both blocks are still present
+        let blocks: Vec<_> = doc.blocks.iter().collect();
+        assert_eq!(blocks.len(), 2);
     }
 }

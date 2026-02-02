@@ -5,6 +5,8 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  schedule:
+    - cron: "0 3 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,3 +35,26 @@ jobs:
 
     - name: Run tests
       run: just test
+
+    - name: Differential tests
+      run: just differential-test
+
+  nightly-differential-test:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        components: clippy, rustfmt
+
+    - name: Install just
+      run: cargo install just
+
+    - name: Differential tests (nightly)
+      env:
+        PROPTEST_CASES: 1000000
+      run: just differential-test

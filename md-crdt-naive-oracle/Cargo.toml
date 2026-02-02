@@ -4,3 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+md-crdt-core = { version = "0.1.0", path = "../md-crdt-core" }
