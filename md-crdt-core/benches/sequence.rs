@@ -24,10 +24,7 @@ fn bench_insert_start(c: &mut Criterion) {
             let mut seq = create_sequence(size);
             let mut counter = size as u64 + 1;
             b.iter(|| {
-                let id = OpId {
-                    counter,
-                    peer: 2,
-                };
+                let id = OpId { counter, peer: 2 };
                 counter += 1;
                 seq.insert(None, 999, id);
                 black_box(&seq);
@@ -48,10 +45,7 @@ fn bench_insert_middle(c: &mut Criterion) {
             let after = ids.get(size / 2).copied();
             let mut counter = size as u64 + 1;
             b.iter(|| {
-                let id = OpId {
-                    counter,
-                    peer: 2,
-                };
+                let id = OpId { counter, peer: 2 };
                 counter += 1;
                 seq.insert(after, 999, id);
                 black_box(&seq);
@@ -72,10 +66,7 @@ fn bench_insert_end(c: &mut Criterion) {
             let after = ids.last().copied();
             let mut counter = size as u64 + 1;
             b.iter(|| {
-                let id = OpId {
-                    counter,
-                    peer: 2,
-                };
+                let id = OpId { counter, peer: 2 };
                 counter += 1;
                 seq.insert(after, 999, id);
                 black_box(&seq);
@@ -95,13 +86,7 @@ fn bench_delete_start(c: &mut Criterion) {
             let target = seq.element_ids()[0];
             let mut counter = size as u64 + 1;
             b.iter(|| {
-                seq.delete(
-                    target,
-                    OpId {
-                        counter,
-                        peer: 2,
-                    },
-                );
+                seq.delete(target, OpId { counter, peer: 2 });
                 counter += 1;
                 black_box(&seq);
             });
@@ -120,13 +105,7 @@ fn bench_delete_middle(c: &mut Criterion) {
             let target = seq.element_ids()[size / 2];
             let mut counter = size as u64 + 1;
             b.iter(|| {
-                seq.delete(
-                    target,
-                    OpId {
-                        counter,
-                        peer: 2,
-                    },
-                );
+                seq.delete(target, OpId { counter, peer: 2 });
                 counter += 1;
                 black_box(&seq);
             });
@@ -146,13 +125,7 @@ fn bench_delete_end(c: &mut Criterion) {
             let target = *ids.last().unwrap();
             let mut counter = size as u64 + 1;
             b.iter(|| {
-                seq.delete(
-                    target,
-                    OpId {
-                        counter,
-                        peer: 2,
-                    },
-                );
+                seq.delete(target, OpId { counter, peer: 2 });
                 counter += 1;
                 black_box(&seq);
             });

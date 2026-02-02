@@ -236,14 +236,12 @@ impl Document {
 
                 // Split the condition to avoid overlapping borrows
                 let is_ready = op_id.counter == current_applied + 1;
-                if is_ready {
-                    if let Some(op) = self.pending.remove(&op_id) {
-                        self.ops.insert(op.id, op.payload);
-                        result.applied.push(op_id);
-                        // Remove from buffered if it was there
-                        result.buffered.retain(|id| *id != op_id);
-                        made_progress = true;
-                    }
+                if is_ready && let Some(op) = self.pending.remove(&op_id) {
+                    self.ops.insert(op.id, op.payload);
+                    result.applied.push(op_id);
+                    // Remove from buffered if it was there
+                    result.buffered.retain(|id| *id != op_id);
+                    made_progress = true;
                 }
             }
         }
