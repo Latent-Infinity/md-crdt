@@ -1,0 +1,23 @@
+# Clippy configuration per Rust Code Standards
+# See: .docs/Rust Code Standards.md
+#
+# Note: Lint levels (warn/allow) are configured via:
+# - #![warn(...)] / #![allow(...)] in lib.rs files
+# - Command-line flags in CI: cargo clippy -- -W clippy::perf -W clippy::nursery
+#
+# This file configures Clippy thresholds and settings.
+
+# MSRV - Minimum Supported Rust Version
+msrv = "1.85"
+
+# Allow slightly larger enums before warning
+enum-variant-size-threshold = 200
+
+# Cognitive complexity threshold for functions
+cognitive-complexity-threshold = 30
+
+# Maximum function parameters with bool type
+max-fn-params-bools = 3
+
+# Allow more struct fields with bool type
+max-struct-bools = 4

@@ -203,10 +203,13 @@ pub enum EditOp {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EditError {
+    #[error("block not found")]
     BlockNotFound,
+    #[error("invalid offset")]
     InvalidOffset,
+    #[error("invalid grapheme boundary")]
     InvalidGraphemeBoundary,
 }
 

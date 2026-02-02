@@ -7,6 +7,7 @@ edition = "2024"
 md-crdt-doc = { path = "../md-crdt-doc" }
 md-crdt-storage = { path = "../md-crdt-storage" }
 thiserror = "2.0.18"
+tracing = "0.1"
 walkdir = "2.5.0"
 serde = { version = "1.0.228", features = ["derive"] }
 bincode = "1.3.3"

@@ -15,16 +15,42 @@ pub struct ChangeMessage {
 }
 
 /// Validation errors for incoming sync messages
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValidationError {
     /// Operation data is malformed or invalid
-    MalformedOperation { op_id: OpId, reason: String },
+    #[error("malformed operation {op_id:?}: {kind}")]
+    MalformedOperation { op_id: OpId, kind: MalformedKind },
     /// Operation references a non-existent element
+    #[error("invalid reference in operation {op_id:?}")]
     InvalidReference { op_id: OpId },
     /// Message exceeds configured resource limits
+    #[error("resource limit exceeded: {actual} > {limit}")]
     ResourceLimitExceeded { limit: usize, actual: usize },
     /// Pending operation buffer is full (backpressure)
+    #[error("buffer full (capacity: {capacity})")]
     BufferFull { capacity: usize },
+}
+
+/// Kinds of malformed operations (avoids String allocation on error path)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MalformedKind {
+    EmptyPayload,
+    ZeroCounter,
+    InvalidPayload,
+    InvalidSequence,
+    UnexpectedFormat,
+}
+
+impl std::fmt::Display for MalformedKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MalformedKind::EmptyPayload => write!(f, "empty payload"),
+            MalformedKind::ZeroCounter => write!(f, "counter cannot be zero"),
+            MalformedKind::InvalidPayload => write!(f, "invalid payload"),
+            MalformedKind::InvalidSequence => write!(f, "invalid sequence"),
+            MalformedKind::UnexpectedFormat => write!(f, "unexpected format"),
+        }
+    }
 }
 
 /// Configuration for validation limits
@@ -81,7 +107,7 @@ pub fn validate_changes(
         if op.payload.is_empty() {
             return Err(ValidationError::MalformedOperation {
                 op_id: op.id,
-                reason: "empty payload".to_string(),
+                kind: MalformedKind::EmptyPayload,
             });
         }
 
@@ -89,7 +115,7 @@ pub fn validate_changes(
         if op.id.counter == 0 {
             return Err(ValidationError::MalformedOperation {
                 op_id: op.id,
-                reason: "counter cannot be zero".to_string(),
+                kind: MalformedKind::ZeroCounter,
             });
         }
     }

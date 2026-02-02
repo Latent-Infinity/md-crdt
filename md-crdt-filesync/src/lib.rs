@@ -6,6 +6,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
+use tracing::debug;
 use walkdir::WalkDir;
 
 #[derive(Debug)]
@@ -219,7 +220,7 @@ pub fn match_blocks(old: &[BlockFingerprint], new: &[BlockFingerprint]) -> Vec<(
         if let Some(count) = counts.get(&block.content_hash)
             && *count > 1
         {
-            eprintln!("Possible copy detected for hash {:#x}", block.content_hash);
+            debug!(content_hash = %format!("{:#x}", block.content_hash), "possible copy detected");
         }
     }
 
