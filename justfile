@@ -12,6 +12,9 @@ fmt:
 lint:
     cargo clippy --all-targets --all-features -- -D warnings
 
+# Run all quality checks
+check: fmt lint test
+
 # Generate code coverage report
 coverage:
     cargo llvm-cov
