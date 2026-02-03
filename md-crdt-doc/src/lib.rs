@@ -367,17 +367,24 @@ impl Document {
         text: &str,
         op_id: OpId,
     ) -> Result<Vec<EditOp>, EditError> {
-        let block = self
+        // Find block's elem_id by block_id (O(n) search, unavoidable without block_id index)
+        let elem_id = self
             .blocks
             .iter_asc()
             .find(|block| block.id == block_id)
-            .cloned();
+            .map(|block| block.elem_id)
+            .ok_or(EditError::BlockNotFound)?;
 
-        let Some(mut block) = block else {
+        // Get element via O(1) lookup and clone block for modification
+        let Some(existing) = self.blocks.get_element(&elem_id) else {
+            return Err(EditError::BlockNotFound);
+        };
+        let Some(block) = existing.value.as_ref() else {
             return Err(EditError::BlockNotFound);
         };
 
-        let BlockKind::Paragraph { text: ref mut body } = block.kind else {
+        let mut updated = block.clone();
+        let BlockKind::Paragraph { text: ref mut body } = updated.kind else {
             return Err(EditError::InvalidOffset);
         };
 
@@ -385,15 +392,8 @@ impl Document {
             grapheme_offset_to_byte(body, grapheme_offset).ok_or(EditError::InvalidOffset)?;
         body.insert_str(byte_offset, text);
 
-        let mut updated = Sequence::new();
-        for existing in self.blocks.iter_asc() {
-            if existing.id == block_id {
-                updated.apply_op((existing.elem_id, block.clone()));
-            } else {
-                updated.apply_op((existing.elem_id, existing.clone()));
-            }
-        }
-        self.blocks = updated;
+        // O(1) update instead of O(n) sequence rebuild
+        self.blocks.update_value(elem_id, updated);
         self.clear_raw_source();
 
         Ok(vec![EditOp::InsertText(InsertTextRun {
@@ -412,15 +412,24 @@ impl Document {
     ) -> Result<(), EditError> {
         match op {
             EditOp::InsertText(run) => {
-                let block = self
+                // Find block's elem_id by block_id
+                let elem_id = self
                     .blocks
                     .iter_asc()
                     .find(|block| block.id == run.block_id)
-                    .cloned();
-                let Some(mut block) = block else {
+                    .map(|block| block.elem_id)
+                    .ok_or(EditError::BlockNotFound)?;
+
+                // Get element via O(1) lookup and clone block for modification
+                let Some(existing) = self.blocks.get_element(&elem_id) else {
                     return Err(EditError::BlockNotFound);
                 };
-                let BlockKind::Paragraph { text: ref mut body } = block.kind else {
+                let Some(block) = existing.value.as_ref() else {
+                    return Err(EditError::BlockNotFound);
+                };
+
+                let mut updated = block.clone();
+                let BlockKind::Paragraph { text: ref mut body } = updated.kind else {
                     return Err(EditError::InvalidOffset);
                 };
 
@@ -436,39 +445,43 @@ impl Document {
                 }
                 body.insert_str(byte_offset, &run.text);
 
-                let mut updated = Sequence::new();
-                for existing in self.blocks.iter_asc() {
-                    if existing.id == run.block_id {
-                        updated.apply_op((existing.elem_id, block.clone()));
-                    } else {
-                        updated.apply_op((existing.elem_id, existing.clone()));
-                    }
-                }
-                self.blocks = updated;
+                // O(1) update instead of O(n) sequence rebuild
+                self.blocks.update_value(elem_id, updated);
                 self.clear_raw_source();
                 Ok(())
             }
             EditOp::AddMark { interval } => {
-                let mut updated = Sequence::new();
-                for existing in self.blocks.iter_asc() {
-                    let mut block = existing.clone();
-                    if block.elem_id == interval.id {
-                        block.marks.add(interval.clone());
-                    }
-                    updated.apply_op((existing.elem_id, block));
+                // Only clone and update the target block with matching elem_id
+                let target_elem_id = interval.id;
+                if let Some(existing) = self.blocks.get_element(&target_elem_id)
+                    && let Some(block) = existing.value.as_ref()
+                {
+                    let mut updated = block.clone();
+                    updated.marks.add(interval);
+                    self.blocks.update_value(target_elem_id, updated);
                 }
-                self.blocks = updated;
                 self.clear_raw_source();
                 Ok(())
             }
             EditOp::RemoveMark { add_id, remove_id } => {
-                let mut updated = Sequence::new();
-                for existing in self.blocks.iter_asc() {
-                    let mut block = existing.clone();
-                    block.marks.remove(add_id, remove_id);
-                    updated.apply_op((existing.elem_id, block));
+                // Only clone and update blocks that actually have the mark
+                // Collect elem_ids first to avoid borrow conflict
+                let elem_ids_with_mark: Vec<_> = self
+                    .blocks
+                    .iter_asc()
+                    .filter(|block| block.marks.interval(&add_id).is_some())
+                    .map(|block| block.elem_id)
+                    .collect();
+
+                for elem_id in elem_ids_with_mark {
+                    if let Some(existing) = self.blocks.get_element(&elem_id)
+                        && let Some(block) = existing.value.as_ref()
+                    {
+                        let mut updated = block.clone();
+                        updated.marks.remove(add_id, remove_id);
+                        self.blocks.update_value(elem_id, updated);
+                    }
                 }
-                self.blocks = updated;
                 self.clear_raw_source();
                 Ok(())
             }
@@ -483,13 +496,19 @@ impl Document {
         remove_start: TextAnchor,
         remove_end: TextAnchor,
     ) -> Result<Vec<EditOp>, EditError> {
-        let block = self
+        // Find block's elem_id by block_id
+        let elem_id = self
             .blocks
             .iter_asc()
             .find(|block| block.id == block_id)
-            .cloned();
+            .map(|block| block.elem_id)
+            .ok_or(EditError::BlockNotFound)?;
 
-        let Some(mut block) = block else {
+        // Get element via O(1) lookup and clone block for modification
+        let Some(existing) = self.blocks.get_element(&elem_id) else {
+            return Err(EditError::BlockNotFound);
+        };
+        let Some(block) = existing.value.as_ref() else {
             return Err(EditError::BlockNotFound);
         };
 
@@ -497,8 +516,9 @@ impl Document {
             return Err(EditError::InvalidOffset);
         };
 
+        let mut updated = block.clone();
         let mut ops = Vec::new();
-        block.marks.remove(add_id, remove_id);
+        updated.marks.remove(add_id, remove_id);
         ops.push(EditOp::RemoveMark { add_id, remove_id });
 
         let left_needed = remove_start > interval.start;
@@ -511,7 +531,7 @@ impl Document {
             };
             let mut left = MarkInterval::new(left_id, interval.start, remove_start);
             left.attributes = interval.attributes.clone();
-            block.marks.add(left.clone());
+            updated.marks.add(left.clone());
             ops.push(EditOp::AddMark { interval: left });
         }
 
@@ -522,19 +542,12 @@ impl Document {
             };
             let mut right = MarkInterval::new(right_id, remove_end, interval.end);
             right.attributes = interval.attributes.clone();
-            block.marks.add(right.clone());
+            updated.marks.add(right.clone());
             ops.push(EditOp::AddMark { interval: right });
         }
 
-        let mut updated = Sequence::new();
-        for existing in self.blocks.iter_asc() {
-            if existing.id == block_id {
-                updated.apply_op((existing.elem_id, block.clone()));
-            } else {
-                updated.apply_op((existing.elem_id, existing.clone()));
-            }
-        }
-        self.blocks = updated;
+        // O(1) update instead of O(n) sequence rebuild
+        self.blocks.update_value(elem_id, updated);
         self.clear_raw_source();
 
         Ok(ops)
@@ -599,33 +612,31 @@ pub struct Parser;
 
 impl Parser {
     pub fn parse(text: &str) -> Document {
-        let mut lines = text
-            .lines()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>();
+        let lines: Vec<&str> = text.lines().collect();
         let mut frontmatter = None;
+        let mut start_index = 0;
 
         if lines
             .first()
             .map(|line| line.trim() == "---")
             .unwrap_or(false)
         {
-            let mut fm_lines = Vec::new();
+            let mut fm_lines: Vec<&str> = Vec::new();
             let mut index = 1;
             while index < lines.len() {
                 if lines[index].trim() == "---" {
                     frontmatter = Some(fm_lines.join("\n"));
-                    lines.drain(0..=index);
+                    start_index = index + 1;
                     break;
                 }
-                fm_lines.push(lines[index].clone());
+                fm_lines.push(lines[index]);
                 index += 1;
             }
         }
 
         let mut counter = 1u64;
         let mut blocks = Vec::new();
-        parse_blocks(&lines, &mut counter, &mut blocks);
+        parse_blocks(&lines[start_index..], &mut counter, &mut blocks);
 
         let sequence = Sequence::from_ordered(
             blocks
@@ -642,24 +653,25 @@ impl Parser {
     }
 }
 
-fn parse_blocks(lines: &[String], counter: &mut u64, out: &mut Vec<Block>) {
+fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
     let mut index = 0;
     while index < lines.len() {
-        let line = &lines[index];
-        if line.trim().is_empty() {
+        let line = lines[index];
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
             index += 1;
             continue;
         }
 
-        if let Some(code_info) = line.trim().strip_prefix("```") {
+        if let Some(code_info) = trimmed.strip_prefix("```") {
             let info = code_info.trim();
-            let mut contents = Vec::new();
+            let mut contents: Vec<&str> = Vec::new();
             let mut end_index = index + 1;
             while end_index < lines.len() {
                 if lines[end_index].trim() == "```" {
                     break;
                 }
-                contents.push(lines[end_index].clone());
+                contents.push(lines[end_index]);
                 end_index += 1;
             }
             let text = contents.join("\n");
@@ -679,16 +691,17 @@ fn parse_blocks(lines: &[String], counter: &mut u64, out: &mut Vec<Block>) {
             continue;
         }
 
-        if line.trim().starts_with(">") {
-            let mut quote_lines = Vec::new();
+        if trimmed.starts_with('>') {
+            let mut quote_lines: Vec<&str> = Vec::new();
             let mut end_index = index;
             while end_index < lines.len() {
-                let current = &lines[end_index];
-                if !current.trim().starts_with(">") {
+                let current = lines[end_index];
+                let current_trimmed = current.trim();
+                if !current_trimmed.starts_with('>') {
                     break;
                 }
-                let stripped = current.trim_start().trim_start_matches('>').trim_start();
-                quote_lines.push(stripped.to_string());
+                let stripped = current_trimmed.trim_start_matches('>').trim_start();
+                quote_lines.push(stripped);
                 end_index += 1;
             }
             let mut child_blocks = Vec::new();
@@ -705,14 +718,14 @@ fn parse_blocks(lines: &[String], counter: &mut u64, out: &mut Vec<Block>) {
             continue;
         }
 
-        if line.trim().starts_with(":::") {
-            let mut raw_lines = Vec::new();
+        if trimmed.starts_with(":::") {
+            let mut raw_lines: Vec<&str> = Vec::new();
             let mut end_index = index;
             while end_index < lines.len() {
                 if lines[end_index].trim().is_empty() && end_index > index {
                     break;
                 }
-                raw_lines.push(lines[end_index].clone());
+                raw_lines.push(lines[end_index]);
                 end_index += 1;
             }
             let block = Block::new(
@@ -726,18 +739,19 @@ fn parse_blocks(lines: &[String], counter: &mut u64, out: &mut Vec<Block>) {
             continue;
         }
 
-        let mut paragraph_lines = Vec::new();
+        let mut paragraph_lines: Vec<&str> = Vec::new();
         let mut end_index = index;
         while end_index < lines.len() {
-            let current = &lines[end_index];
-            if current.trim().is_empty()
-                || current.trim().starts_with("```")
-                || current.trim().starts_with(">")
-                || current.trim().starts_with(":::")
+            let current = lines[end_index];
+            let current_trimmed = current.trim();
+            if current_trimmed.is_empty()
+                || current_trimmed.starts_with("```")
+                || current_trimmed.starts_with('>')
+                || current_trimmed.starts_with(":::")
             {
                 break;
             }
-            paragraph_lines.push(current.clone());
+            paragraph_lines.push(current);
             end_index += 1;
         }
         let block = Block::new(

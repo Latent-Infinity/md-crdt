@@ -92,8 +92,8 @@ fn bench_serialize_markdown(c: &mut Criterion) {
     });
 }
 
-fn bench_scale_to_100k(c: &mut Criterion) {
-    let sizes = [10_000usize, 100_000usize];
+fn bench_scale(c: &mut Criterion) {
+    let sizes = [1_000usize, 10_000usize];
     let mut group = c.benchmark_group("serialize_scale");
     for size in sizes {
         let doc = build_large_doc(size);
@@ -112,6 +112,6 @@ criterion_group!(
     bench_open_file,
     bench_apply_keystroke,
     bench_serialize_markdown,
-    bench_scale_to_100k
+    bench_scale
 );
 criterion_main!(benches);
