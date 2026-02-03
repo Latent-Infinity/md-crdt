@@ -1,5 +1,6 @@
 use md_crdt_core::{MarkInterval, MarkSet, OpId, TextAnchor};
 use proptest::prelude::*;
+mod proptest_config;
 
 fn op_id_strategy() -> impl Strategy<Value = OpId> {
     (1..100u64, 1..3u64).prop_map(|(counter, peer)| OpId { counter, peer })
@@ -10,7 +11,7 @@ fn text_anchor_strategy() -> impl Strategy<Value = TextAnchor> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
     #[test]
     fn test_causal_add_wins(
         add_id in op_id_strategy(),
@@ -41,7 +42,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
     #[test]
     fn test_lww_attribute_update(
         add_id in op_id_strategy(),

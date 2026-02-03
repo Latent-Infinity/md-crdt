@@ -2,6 +2,7 @@ use md_crdt_core::{OpId, Sequence, SequenceOp};
 use md_crdt_naive_oracle::Sequence as OracleSequence;
 use proptest::collection::vec;
 use proptest::prelude::*;
+mod proptest_config;
 
 #[derive(Clone, Debug)]
 enum OpSpec {
@@ -100,7 +101,7 @@ fn realize_ops(specs: &[OpSpec]) -> Vec<SequenceOp<u8>> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
     #[test]
     fn differential_test_sequence(specs in op_spec_strategy()) {
         let ops = realize_ops(&specs);

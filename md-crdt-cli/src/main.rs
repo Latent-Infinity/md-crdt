@@ -85,7 +85,11 @@ fn status_command(json: bool) {
         });
         // serde_json::to_string_pretty only fails for non-serializable types,
         // which is impossible for json! macro output
-        println!("{}", serde_json::to_string_pretty(&output).expect("json! macro output is always serializable"));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output)
+                .expect("json! macro output is always serializable")
+        );
         if is_dirty {
             std::process::exit(1);
         }

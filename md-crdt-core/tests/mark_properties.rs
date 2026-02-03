@@ -5,6 +5,7 @@ use md_crdt_core::{OpId, StateVector};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use std::collections::BTreeMap;
+mod proptest_config;
 
 fn op_id_strategy() -> impl Strategy<Value = OpId> {
     (1u64..10, 1u64..4).prop_map(|(counter, peer)| OpId { counter, peer })
@@ -138,15 +139,17 @@ fn mark_op_strategy() -> impl Strategy<Value = MarkOp> {
                 end,
                 op_id
             }),
-        (op_id_strategy(), 0u64..5, op_id_strategy()).prop_map(|(interval_id, seen_counter, op_id)| {
-            let mut observed = StateVector::new();
-            observed.set(1, seen_counter);
-            MarkOp::Remove {
-                interval_id,
-                observed,
-                op_id,
+        (op_id_strategy(), 0u64..5, op_id_strategy()).prop_map(
+            |(interval_id, seen_counter, op_id)| {
+                let mut observed = StateVector::new();
+                observed.set(1, seen_counter);
+                MarkOp::Remove {
+                    interval_id,
+                    observed,
+                    op_id,
+                }
             }
-        }),
+        ),
     ]
 }
 
@@ -159,7 +162,14 @@ fn apply_op(set: &mut MarkSet, op: &MarkOp) {
             end,
             op_id,
         } => {
-            set.set_mark(*interval_id, kind.clone(), *start, *end, BTreeMap::new(), *op_id);
+            set.set_mark(
+                *interval_id,
+                kind.clone(),
+                *start,
+                *end,
+                BTreeMap::new(),
+                *op_id,
+            );
         }
         MarkOp::Remove {
             interval_id,
@@ -172,7 +182,7 @@ fn apply_op(set: &mut MarkSet, op: &MarkOp) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
 
     /// Property: Convergence - N peers applying same ops in different orders converge
     #[test]

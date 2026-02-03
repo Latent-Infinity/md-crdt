@@ -27,12 +27,138 @@ pub enum BlockKind {
     CodeFence { info: Option<String>, text: String },
     BlockQuote { children: Sequence<Block> },
     RawBlock { raw: String },
+    Table { table: Table },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EquivalenceMode {
     Exact,
     Structural,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SerializeConfig {
+    pub equivalence: EquivalenceMode,
+    pub prefer_raw_source: bool,
+}
+
+impl SerializeConfig {
+    pub fn exact() -> Self {
+        Self {
+            equivalence: EquivalenceMode::Exact,
+            prefer_raw_source: true,
+        }
+    }
+
+    pub fn structural() -> Self {
+        Self {
+            equivalence: EquivalenceMode::Structural,
+            prefer_raw_source: false,
+        }
+    }
+}
+
+impl Default for SerializeConfig {
+    fn default() -> Self {
+        Self::exact()
+    }
+}
+
+pub type RowId = Uuid;
+pub type CellContent = String;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnAlignment {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnDef {
+    pub alignment: ColumnAlignment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table {
+    pub id: BlockId,
+    pub elem_id: OpId,
+    pub deleted: md_crdt_core::LwwRegister<bool>,
+    pub columns: md_crdt_core::LwwRegister<Vec<ColumnDef>>,
+    pub header: md_crdt_core::LwwRegister<Vec<CellContent>>,
+    pub rows: Sequence<TableRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableRow {
+    pub id: RowId,
+    pub elem_id: OpId,
+    pub deleted: md_crdt_core::LwwRegister<bool>,
+    pub cells: md_crdt_core::LwwRegister<Vec<CellContent>>,
+}
+
+impl Table {
+    pub fn new(
+        id: BlockId,
+        elem_id: OpId,
+        columns: Vec<ColumnDef>,
+        header: Vec<CellContent>,
+        op_id: OpId,
+    ) -> Self {
+        Self {
+            id,
+            elem_id,
+            deleted: md_crdt_core::LwwRegister::new(false, op_id),
+            columns: md_crdt_core::LwwRegister::new(columns, op_id),
+            header: md_crdt_core::LwwRegister::new(header, op_id),
+            rows: Sequence::new(),
+        }
+    }
+
+    pub fn insert_row(&mut self, after: Option<OpId>, cells: Vec<CellContent>, op_id: OpId) {
+        let row = TableRow {
+            id: Uuid::new_v4(),
+            elem_id: op_id,
+            deleted: md_crdt_core::LwwRegister::new(false, op_id),
+            cells: md_crdt_core::LwwRegister::new(cells, op_id),
+        };
+        self.rows.insert(after, row, op_id);
+    }
+
+    pub fn remove_row(&mut self, target: OpId, op_id: OpId) {
+        // Clone only the necessary row, not twice
+        if let Some(existing) = self.rows.get_element(&target)
+            && let Some(row) = existing.value.as_ref()
+        {
+            let mut updated = row.clone();
+            updated.deleted.set(true, op_id);
+            self.rows.update_value(target, updated);
+        }
+        self.rows.delete(target, op_id);
+    }
+
+    pub fn set_row_cells(&mut self, row_elem_id: OpId, cells: Vec<CellContent>, op_id: OpId) {
+        // Clone only once instead of twice
+        if let Some(existing) = self.rows.get_element(&row_elem_id)
+            && let Some(row) = existing.value.as_ref()
+        {
+            let mut updated = row.clone();
+            updated.cells.set(cells, op_id);
+            self.rows.update_value(row_elem_id, updated);
+        }
+    }
+
+    pub fn set_columns(&mut self, columns: Vec<ColumnDef>, op_id: OpId) {
+        self.columns.set(columns, op_id);
+    }
+
+    pub fn set_header(&mut self, cells: Vec<CellContent>, op_id: OpId) {
+        self.header.set(cells, op_id);
+    }
+
+    pub fn rows_in_order(&self) -> Vec<TableRow> {
+        self.rows.iter().cloned().collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -415,7 +541,16 @@ impl Document {
     }
 
     pub fn serialize(&self, mode: EquivalenceMode) -> String {
-        if let EquivalenceMode::Exact = mode
+        let config = SerializeConfig {
+            equivalence: mode,
+            prefer_raw_source: true,
+        };
+        self.serialize_with_config(&config)
+    }
+
+    pub fn serialize_with_config(&self, config: &SerializeConfig) -> String {
+        if let EquivalenceMode::Exact = config.equivalence
+            && config.prefer_raw_source
             && let Some(raw) = &self.raw_source
         {
             return raw.clone();
@@ -436,7 +571,7 @@ impl Document {
             output.push_str(&serialize_block(block));
         }
 
-        match mode {
+        match config.equivalence {
             EquivalenceMode::Exact => output,
             EquivalenceMode::Structural => normalize_structural(&output),
         }
@@ -492,10 +627,12 @@ impl Parser {
         let mut blocks = Vec::new();
         parse_blocks(&lines, &mut counter, &mut blocks);
 
-        let mut sequence = Sequence::new();
-        for block in blocks {
-            sequence.apply_op((block.elem_id, block));
-        }
+        let sequence = Sequence::from_ordered(
+            blocks
+                .into_iter()
+                .map(|block| (block.elem_id, block))
+                .collect(),
+        );
 
         Document {
             frontmatter,
@@ -556,10 +693,12 @@ fn parse_blocks(lines: &[String], counter: &mut u64, out: &mut Vec<Block>) {
             }
             let mut child_blocks = Vec::new();
             parse_blocks(&quote_lines, counter, &mut child_blocks);
-            let mut children = Sequence::new();
-            for child in child_blocks {
-                children.apply_op((child.elem_id, child));
-            }
+            let children = Sequence::from_ordered(
+                child_blocks
+                    .into_iter()
+                    .map(|child| (child.elem_id, child))
+                    .collect(),
+            );
             let block = Block::new(BlockKind::BlockQuote { children }, next_op_id(counter));
             out.push(block);
             index = end_index;
@@ -635,20 +774,84 @@ fn serialize_block(block: &Block) -> String {
             output
         }
         BlockKind::BlockQuote { children } => {
-            let mut inner = String::new();
             let mut rendered = Vec::new();
             for child in children.iter_asc() {
-                rendered.push(serialize_block(child));
+                let child_output = serialize_block(child);
+                // Skip empty children (e.g., empty nested blockquotes)
+                if !child_output.trim().is_empty() {
+                    rendered.push(child_output);
+                }
             }
-            inner.push_str(&rendered.join("\n\n"));
+            if rendered.is_empty() {
+                // Empty blockquote - return empty string
+                return String::new();
+            }
+            let inner = rendered.join("\n\n");
             inner
                 .lines()
-                .map(|line| format!("> {}", line))
+                .map(|line| {
+                    if line.is_empty() {
+                        ">".to_string()
+                    } else {
+                        format!("> {}", line)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         }
         BlockKind::RawBlock { raw } => raw.clone(),
+        BlockKind::Table { table } => serialize_table(table),
     }
+}
+
+fn serialize_table(table: &Table) -> String {
+    let header = table.header.get();
+    let mut rows: Vec<Vec<CellContent>> = table
+        .rows
+        .iter()
+        .filter(|row| !row.deleted.get())
+        .map(|row| row.cells.get())
+        .collect();
+    let columns = table.columns.get();
+
+    let mut col_count = header.len().max(columns.len());
+    for row in &rows {
+        col_count = col_count.max(row.len());
+    }
+    if col_count == 0 {
+        return String::new();
+    }
+
+    let mut header_cells = header;
+    header_cells.resize(col_count, String::new());
+    let header_line = format!("| {} |", header_cells.join(" | "));
+
+    let mut align_cells = Vec::with_capacity(col_count);
+    for idx in 0..col_count {
+        let alignment = columns
+            .get(idx)
+            .map(|col| &col.alignment)
+            .unwrap_or(&ColumnAlignment::Left);
+        let align = match alignment {
+            ColumnAlignment::Left => "---",
+            ColumnAlignment::Center => ":---:",
+            ColumnAlignment::Right => "---:",
+        };
+        align_cells.push(align);
+    }
+    let align_line = format!("| {} |", align_cells.join(" | "));
+
+    let mut rendered_rows = Vec::with_capacity(rows.len());
+    for row in &mut rows {
+        row.resize(col_count, String::new());
+        rendered_rows.push(format!("| {} |", row.join(" | ")));
+    }
+
+    let mut output = Vec::with_capacity(2 + rendered_rows.len());
+    output.push(header_line);
+    output.push(align_line);
+    output.extend(rendered_rows);
+    output.join("\n")
 }
 
 fn grapheme_offset_to_byte(text: &str, grapheme_offset: usize) -> Option<usize> {

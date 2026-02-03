@@ -416,7 +416,7 @@ mod tests {
         }));
     }
 
-    // Task 4.3: Validation tests
+    // Validation tests
     #[test]
     fn test_validate_changes_malformed_empty_payload() {
         let message = ChangeMessage {
@@ -552,7 +552,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // Task 4.5: Apply changes tests
+    // Apply changes tests
     #[test]
     fn test_apply_changes_in_order() {
         let mut doc = Document::new();
@@ -685,7 +685,7 @@ mod tests {
         assert!(result2.applied.is_empty()); // Already applied
     }
 
-    // Task 4.7: Outbox tests
+    // Outbox tests
     #[test]
     fn test_outbox_local_op() {
         let mut doc = Document::new();

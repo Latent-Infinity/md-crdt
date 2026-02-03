@@ -1,0 +1,457 @@
+[
+  {
+    "markdown": "*****Hello*world****",
+    "html": "<p>**<em><strong>Hello<em>world</em></strong></em></p>",
+    "example": 1,
+    "section": "Issue commonmark/cmark#383",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": "![test]\n\n![test](foo bar)",
+    "html": "<p>![test]</p>\n<p>![test](foo bar)</p>",
+    "example": 2,
+    "section": "Issue #55",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": "[test](<\\f\\o\\o\\>\\\\>)\n\n[test](foo \"\\\\\\\"\\b\\a\\r\")",
+    "html": "<p><a href=\"%5Cf%5Co%5Co%3E%5C\">test</a></p>\n<p><a href=\"foo\" title=\"\\&quot;\\b\\a\\r\">test</a></p>",
+    "example": 3,
+    "section": "Should unescape only needed things in link destinations/titles",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": "[](<&quot;> \"&amp;&ouml;\")\n\n[](<\\&quot;> \"\\&amp;\\&ouml;\")\n\n[](<\\\\&quot;> \"\\\\&quot;\\\\&ouml;\")",
+    "html": "<p><a href=\"%22\" title=\"&amp;ö\"></a></p>\n<p><a href=\"&amp;quot;\" title=\"&amp;amp;&amp;ouml;\"></a></p>\n<p><a href=\"%5C%22\" title=\"\\&quot;\\ö\"></a></p>",
+    "example": 4,
+    "section": "Escaping entities in links",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": "~~~ &amp;&bad;\\&amp;\\\\&amp;\njust a funny little fence\n~~~",
+    "html": "<pre><code class=\"&amp;&amp;bad;&amp;amp;\\&amp;\">just a funny little fence\n</code></pre>",
+    "example": 5,
+    "section": "Checking combination of replaceEntities and unescapeMd",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": "[*b]() [c*]()",
+    "html": "<p><a href=\"\">*b</a> <a href=\"\">c*</a></p>",
+    "example": 6,
+    "section": "Regression test, should not match emphasis markers in different link tags",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": " - > foo\n  > bar",
+    "html": "<ul>\n<li>\n<blockquote>\n<p>foo</p>\n</blockquote>\n</li>\n</ul>\n<blockquote>\n<p>bar</p>\n</blockquote>",
+    "example": 7,
+    "section": "Those are two separate blockquotes",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": "```&#x20;\ntest\n```",
+    "html": "<pre><code>test\n</code></pre>",
+    "example": 8,
+    "section": "Don't output empty class here",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": " - foo\nbar\n   ===",
+    "html": "<ul>\n<li>\n<h1>foo\nbar</h1>\n</li>\n</ul>",
+    "example": 9,
+    "section": "Setext header text supports lazy continuations",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": " - foo\n   bar\n  ===",
+    "html": "<ul>\n<li>foo\nbar\n===</li>\n</ul>",
+    "example": 10,
+    "section": "But setext header underline doesn't",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": "> foo\n    - - - -\n\n> foo\n    # not a heading",
+    "html": "<blockquote>\n<p>foo\n- - - -</p>\n</blockquote>\n<blockquote>\n<p>foo\n# not a heading</p>\n</blockquote>",
+    "example": 11,
+    "section": "Coverage. Various tags not interrupting blockquotes because of indentation",
+    "source": "markdown-it/commonmark_extras.txt"
+  },
+  {
+    "markdown": "http://cdecl.ridiculousfish.com/?q=int+%28*f%29+%28float+*%29%3B",
+    "html": "<p><a href=\"http://cdecl.ridiculousfish.com/?q=int+%28*f%29+%28float+*%29%3B\">http://cdecl.ridiculousfish.com/?q=int+(*f)+(float+*)%3B</a></p>",
+    "example": 1,
+    "section": "emphasis with '*', real link",
+    "source": "markdown-it/linkify.txt"
+  },
+  {
+    "markdown": "https://www.sell.fi/sites/default/files/elainlaakarilehti/tieteelliset_artikkelit/kahkonen_t._et_al.canine_pancreatitis-_review.pdf",
+    "html": "<p><a href=\"https://www.sell.fi/sites/default/files/elainlaakarilehti/tieteelliset_artikkelit/kahkonen_t._et_al.canine_pancreatitis-_review.pdf\">https://www.sell.fi/sites/default/files/elainlaakarilehti/tieteelliset_artikkelit/kahkonen_t._et_al.canine_pancreatitis-_review.pdf</a></p>",
+    "example": 2,
+    "section": "emphasis with '_', real link",
+    "source": "markdown-it/linkify.txt"
+  },
+  {
+    "markdown": "i.org[x[x][xx: htt://a.b://a",
+    "html": "<p><a href=\"http://i.org\">i.org</a>[x[x][xx: htt://a.b://a</p>",
+    "example": 3,
+    "section": "regression test, invalid link",
+    "source": "markdown-it/linkify.txt"
+  },
+  {
+    "markdown": "\"foo 'bar' baz\"\n\n'foo 'bar' baz'",
+    "html": "<p>“foo ‘bar’ baz”</p>\n<p>‘foo ‘bar’ baz’</p>",
+    "example": 1,
+    "section": "Should parse nested quotes",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "'foo \"bar' baz\"",
+    "html": "<p>‘foo &quot;bar’ baz&quot;</p>",
+    "example": 2,
+    "section": "Should not overlap quotes",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "\"foo *bar* baz\"",
+    "html": "<p>“foo <em>bar</em> baz”</p>",
+    "example": 3,
+    "section": "Should match quotes on the same level",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "'\"double in single\"'\n\n\"'single in double'\"",
+    "html": "<p>‘“double in single”’</p>\n<p>“‘single in double’”</p>",
+    "example": 4,
+    "section": "Should handle adjacent nested quotes",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "*\"foo* bar\"\n\n\"foo *bar\"*\n\n*\"foo* bar *baz\"*",
+    "html": "<p><em>&quot;foo</em> bar&quot;</p>\n<p>&quot;foo <em>bar&quot;</em></p>\n<p><em>&quot;foo</em> bar <em>baz&quot;</em></p>",
+    "example": 5,
+    "section": "Should not match quotes on different levels",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "*foo \"bar* *baz\" quux*",
+    "html": "<p><em>foo &quot;bar</em> <em>baz&quot; quux</em></p>",
+    "example": 6,
+    "section": "Smartquotes should not overlap with other tags",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "\"foo \"bar 'baz\"",
+    "html": "<p>&quot;foo “bar 'baz”</p>",
+    "example": 7,
+    "section": "Should try and find matching quote in this case",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "\"Monitor 21\"\" and \"Monitor\"\"",
+    "html": "<p>“Monitor 21&quot;” and “Monitor”&quot;</p>",
+    "example": 8,
+    "section": "Should not touch 'inches' in quotes",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "This isn't and can't be the best approach to implement this...",
+    "html": "<p>This isn’t and can’t be the best approach to implement this…</p>",
+    "example": 9,
+    "section": "Should render an apostrophe as a rsquo",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "users' stuff",
+    "html": "<p>users’ stuff</p>",
+    "example": 10,
+    "section": "Apostrophe could end the word, that's why original smartypants replaces all of them as rsquo",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "\"*foo* bar\"\n\n\"foo *bar*\"\n\n\"*foo bar*\"",
+    "html": "<p>“<em>foo</em> bar”</p>\n<p>“foo <em>bar</em>”</p>\n<p>“<em>foo bar</em>”</p>",
+    "example": 11,
+    "section": "Quotes at the start/end of the tokens",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "\"this\"\nand \"that\".\n\n\"this\" and\n\"that\".",
+    "html": "<p>“this”\nand “that”.</p>\n<p>“this” and\n“that”.</p>",
+    "example": 12,
+    "section": "Should treat softbreak as a space",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "\"this\"\\\nand \"that\".\n\n\"this\" and\\\n\"that\".",
+    "html": "<p>“this”<br>\nand “that”.</p>\n<p>“this” and<br>\n“that”.</p>",
+    "example": 13,
+    "section": "Should treat hardbreak as a space",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "The dog---\"'man's' best friend\"",
+    "html": "<p>The dog—“‘man’s’ best friend”</p>",
+    "example": 14,
+    "section": "Should allow quotes adjacent to other punctuation characters, #643",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "\"test `code`\"\n\n\"`code` test\"",
+    "html": "<p>“test <code>code</code>”</p>\n<p>“<code>code</code> test”</p>",
+    "example": 15,
+    "section": "Should parse quotes adjacent to code block, #677",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "\"test <br>\"\n\n\"<br> test\"",
+    "html": "<p>“test <br>”</p>\n<p>“<br> test”</p>",
+    "example": 16,
+    "section": "Should parse quotes adjacent to inline html, #677",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "\"foo\"\n\n\\\"foo\"\n\n\"foo\\\"",
+    "html": "<p>“foo”</p>\n<p>&quot;foo&quot;</p>\n<p>&quot;foo&quot;</p>",
+    "example": 17,
+    "section": "Should be escapable",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "&quot;foo&quot;\n\n&quot;foo\"\n\n\"foo&quot;",
+    "html": "<p>&quot;foo&quot;</p>\n<p>&quot;foo&quot;</p>\n<p>&quot;foo&quot;</p>",
+    "example": 18,
+    "section": "Should not replace entities",
+    "source": "markdown-it/smartquotes.txt"
+  },
+  {
+    "markdown": "**~~test**~~\n\n~~**test~~**",
+    "html": "<p><strong>~~test</strong>~~</p>\n<p><s>**test</s>**</p>",
+    "example": 1,
+    "section": "Strikeouts have the same priority as emphases",
+    "source": "markdown-it/strikethrough.txt"
+  },
+  {
+    "markdown": "[~~link]()~~\n\n~~[link~~]()",
+    "html": "<p><a href=\"\">~~link</a>~~</p>\n<p>~~<a href=\"\">link~~</a></p>",
+    "example": 2,
+    "section": "Strikeouts have the same priority as emphases with respect to links",
+    "source": "markdown-it/strikethrough.txt"
+  },
+  {
+    "markdown": "~~`code~~`\n\n`~~code`~~",
+    "html": "<p>~~<code>code~~</code></p>\n<p><code>~~code</code>~~</p>",
+    "example": 3,
+    "section": "Strikeouts have the same priority as emphases with respect to backticks",
+    "source": "markdown-it/strikethrough.txt"
+  },
+  {
+    "markdown": "~~foo ~~bar~~ baz~~\n\n~~f **o ~~o b~~ a** r~~",
+    "html": "<p><s>foo <s>bar</s> baz</s></p>\n<p><s>f <strong>o <s>o b</s> a</strong> r</s></p>",
+    "example": 4,
+    "section": "Nested strikeouts",
+    "source": "markdown-it/strikethrough.txt"
+  },
+  {
+    "markdown": "foo ~~ bar ~~ baz",
+    "html": "<p>foo ~~ bar ~~ baz</p>",
+    "example": 5,
+    "section": "Should not have a whitespace between text and \"~~\"",
+    "source": "markdown-it/strikethrough.txt"
+  },
+  {
+    "markdown": "[~~foo~~]()",
+    "html": "<p><a href=\"\"><s>foo</s></a></p>",
+    "example": 6,
+    "section": "Should parse strikethrough within link tags",
+    "source": "markdown-it/strikethrough.txt"
+  },
+  {
+    "markdown": "~~test\n~~\n\n~~\ntest~~\n\n~~\ntest\n~~",
+    "html": "<p>~~test\n~~</p>\n<p>~~\ntest~~</p>\n<p>~~\ntest\n~~</p>",
+    "example": 7,
+    "section": "Newline should be considered a whitespace",
+    "source": "markdown-it/strikethrough.txt"
+  },
+  {
+    "markdown": "-~~~~;~~~~~~",
+    "html": "<p>-<s><s>;</s></s>~~</p>",
+    "example": 8,
+    "section": "Regression test for #742",
+    "source": "markdown-it/strikethrough.txt"
+  },
+  {
+    "markdown": "| Heading 1 | Heading 2\n| --------- | ---------\n| Cell 1    | Cell 2\n| Cell 3    | Cell 4",
+    "html": "<table>\n<thead>\n<tr>\n<th>Heading 1</th>\n<th>Heading 2</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>Cell 1</td>\n<td>Cell 2</td>\n</tr>\n<tr>\n<td>Cell 3</td>\n<td>Cell 4</td>\n</tr>\n</tbody>\n</table>",
+    "example": 1,
+    "section": "Simple",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "| Header 1 | Header 2 | Header 3 | Header 4 |\n| :------: | -------: | :------- | -------- |\n| Cell 1   | Cell 2   | Cell 3   | Cell 4   |\n| Cell 5   | Cell 6   | Cell 7   | Cell 8   |",
+    "html": "<table>\n<thead>\n<tr>\n<th style=\"text-align:center\">Header 1</th>\n<th style=\"text-align:right\">Header 2</th>\n<th style=\"text-align:left\">Header 3</th>\n<th>Header 4</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td style=\"text-align:center\">Cell 1</td>\n<td style=\"text-align:right\">Cell 2</td>\n<td style=\"text-align:left\">Cell 3</td>\n<td>Cell 4</td>\n</tr>\n<tr>\n<td style=\"text-align:center\">Cell 5</td>\n<td style=\"text-align:right\">Cell 6</td>\n<td style=\"text-align:left\">Cell 7</td>\n<td>Cell 8</td>\n</tr>\n</tbody>\n</table>",
+    "example": 2,
+    "section": "Column alignment",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "Header 1|Header 2|Header 3|Header 4\n:-------|:------:|-------:|--------\nCell 1  |Cell 2  |Cell 3  |Cell 4\n*Cell 5*|Cell 6  |Cell 7  |Cell 8",
+    "html": "<table>\n<thead>\n<tr>\n<th style=\"text-align:left\">Header 1</th>\n<th style=\"text-align:center\">Header 2</th>\n<th style=\"text-align:right\">Header 3</th>\n<th>Header 4</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td style=\"text-align:left\">Cell 1</td>\n<td style=\"text-align:center\">Cell 2</td>\n<td style=\"text-align:right\">Cell 3</td>\n<td>Cell 4</td>\n</tr>\n<tr>\n<td style=\"text-align:left\"><em>Cell 5</em></td>\n<td style=\"text-align:center\">Cell 6</td>\n<td style=\"text-align:right\">Cell 7</td>\n<td>Cell 8</td>\n</tr>\n</tbody>\n</table>",
+    "example": 3,
+    "section": "Nested emphases",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "> foo|foo\n> ---|---\n> bar|bar\nbaz|baz",
+    "html": "<blockquote>\n<table>\n<thead>\n<tr>\n<th>foo</th>\n<th>foo</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>bar</td>\n<td>bar</td>\n</tr>\n</tbody>\n</table>\n</blockquote>\n<p>baz|baz</p>",
+    "example": 4,
+    "section": "Nested tables inside blockquotes",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "| foo\n|----\n| test2",
+    "html": "<table>\n<thead>\n<tr>\n<th>foo</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>test2</td>\n</tr>\n</tbody>\n</table>",
+    "example": 5,
+    "section": "Minimal one-column",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "-   foo|foo\n---|---\nbar|bar",
+    "html": "<table>\n<thead>\n<tr>\n<th>-   foo</th>\n<th>foo</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>bar</td>\n<td>bar</td>\n</tr>\n</tbody>\n</table>",
+    "example": 6,
+    "section": "This is parsed as one big table",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "foo|foo\n-----|-----s\nbar|bar",
+    "html": "<p>foo|foo\n-----|-----s\nbar|bar</p>",
+    "example": 7,
+    "section": "Second line should not contain symbols except \"-\", \":\", \"|\" and \" \"",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "foo|foo\n-----:-----\nbar|bar",
+    "html": "<p>foo|foo\n-----:-----\nbar|bar</p>",
+    "example": 8,
+    "section": "Second line should contain \"|\" symbol",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "foo|foo\n-----||-----\nbar|bar",
+    "html": "<p>foo|foo\n-----||-----\nbar|bar</p>",
+    "example": 9,
+    "section": "Second line should not have empty columns in the middle",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "foo|foo\n-----|-::-\nbar|bar",
+    "html": "<p>foo|foo\n-----|-::-\nbar|bar</p>",
+    "example": 10,
+    "section": "Wrong alignment symbol position",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "foo\n-----|-----\nbar|bar",
+    "html": "<p>foo\n-----|-----\nbar|bar</p>",
+    "example": 11,
+    "section": "Title line should contain \"|\" symbol",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "paragraph\nfoo|foo\n---|---\nbar|bar",
+    "html": "<p>paragraph</p>\n<table>\n<thead>\n<tr>\n<th>foo</th>\n<th>foo</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>bar</td>\n<td>bar</td>\n</tr>\n</tbody>\n</table>",
+    "example": 12,
+    "section": "Should terminate paragraph",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "| 1 | 2 |\n| :-----: |  :-----: |\n| 3 | 4 | 5 | 6 |",
+    "html": "<table>\n<thead>\n<tr>\n<th style=\"text-align:center\">1</th>\n<th style=\"text-align:center\">2</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td style=\"text-align:center\">3</td>\n<td style=\"text-align:center\">4</td>\n</tr>\n</tbody>\n</table>",
+    "example": 13,
+    "section": "An amount of rows might be different across the table (issue #171)",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "| 1 | 2 | 3 | 4 |\n| :-----: |  :-----: |  :-----: |  :-----: |\n| 5 | 6 |",
+    "html": "<table>\n<thead>\n<tr>\n<th style=\"text-align:center\">1</th>\n<th style=\"text-align:center\">2</th>\n<th style=\"text-align:center\">3</th>\n<th style=\"text-align:center\">4</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td style=\"text-align:center\">5</td>\n<td style=\"text-align:center\">6</td>\n<td style=\"text-align:center\"></td>\n<td style=\"text-align:center\"></td>\n</tr>\n</tbody>\n</table>",
+    "example": 14,
+    "section": "An amount of rows might be different across the table #2",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "| foo |\n:-----:\n| bar |",
+    "html": "<table>\n<thead>\n<tr>\n<th style=\"text-align:center\">foo</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td style=\"text-align:center\">bar</td>\n</tr>\n</tbody>\n</table>",
+    "example": 15,
+    "section": "Allow one-column tables (issue #171)",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "  | Col1a | Col2a |\n  | ----- | ----- |\n  | Col1b | Col2b |",
+    "html": "<table>\n<thead>\n<tr>\n<th>Col1a</th>\n<th>Col2a</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>Col1b</td>\n<td>Col2b</td>\n</tr>\n</tbody>\n</table>",
+    "example": 16,
+    "section": "Allow indented tables (issue #325)",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "    | Col1a | Col2a |\n  | ----- | ----- |\n  | Col1b | Col2b |",
+    "html": "<pre><code>| Col1a | Col2a |\n</code></pre>\n<p>| ----- | ----- |\n| Col1b | Col2b |</p>",
+    "example": 17,
+    "section": "Tables should not be indented more than 4 spaces (1st line)",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "  | Col1a | Col2a |\n    | ----- | ----- |\n  | Col1b | Col2b |",
+    "html": "<p>| Col1a | Col2a |\n| ----- | ----- |\n| Col1b | Col2b |</p>",
+    "example": 18,
+    "section": "Tables should not be indented more than 4 spaces (2nd line)",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "  | Col1a | Col2a |\n  | ----- | ----- |\n    | Col1b | Col2b |",
+    "html": "<table>\n<thead>\n<tr>\n<th>Col1a</th>\n<th>Col2a</th>\n</tr>\n</thead>\n</table>\n<pre><code>| Col1b | Col2b |\n</code></pre>",
+    "example": 19,
+    "section": "Tables should not be indented more than 4 spaces (3rd line)",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "  | Col1a | Col2a |\n  | ----- | ----- |",
+    "html": "<table>\n<thead>\n<tr>\n<th>Col1a</th>\n<th>Col2a</th>\n</tr>\n</thead>\n</table>",
+    "example": 20,
+    "section": "Allow tables with empty body",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "Col1a | Col1b | Col1c\n----- | -----\nCol2a | Col2b | Col2c",
+    "html": "<p>Col1a | Col1b | Col1c\n----- | -----\nCol2a | Col2b | Col2c</p>",
+    "example": 21,
+    "section": "Align row should be at least as large as any actual rows",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "| Heading 1 | Heading 2\n| --------- | ---------\n| Cell 1 | Cell 2\n| `Cell 3\\|` | Cell 4",
+    "html": "<table>\n<thead>\n<tr>\n<th>Heading 1</th>\n<th>Heading 2</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>Cell 1</td>\n<td>Cell 2</td>\n</tr>\n<tr>\n<td><code>Cell 3|</code></td>\n<td>Cell 4</td>\n</tr>\n</tbody>\n</table>",
+    "example": 22,
+    "section": "Escaped pipes inside backticks don't split cells",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "| Heading 1 | Heading 2\n| --------- | ---------\n| Cell 1 | Cell 2\n| `Cell 3\\\\|` | Cell 4",
+    "html": "<table>\n<thead>\n<tr>\n<th>Heading 1</th>\n<th>Heading 2</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>Cell 1</td>\n<td>Cell 2</td>\n</tr>\n<tr>\n<td><code>Cell 3\\|</code></td>\n<td>Cell 4</td>\n</tr>\n</tbody>\n</table>",
+    "example": 23,
+    "section": "Escape before escaped Pipes inside backticks don't split cells",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "- Level 1\n\n\t- Level 2\n\n\t\t| Column 1 | Column 2 |\n\t\t| -------- | -------- |\n\t\t| abcdefgh | ijklmnop |",
+    "html": "<ul>\n<li>\n<p>Level 1</p>\n<ul>\n<li>\n<p>Level 2</p>\n<table>\n<thead>\n<tr>\n<th>Column 1</th>\n<th>Column 2</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>abcdefgh</td>\n<td>ijklmnop</td>\n</tr>\n</tbody>\n</table>\n</li>\n</ul>\n</li>\n</ul>",
+    "example": 24,
+    "section": "Regression test for #721, table in a list indented with tabs",
+    "source": "markdown-it/tables.txt"
+  },
+  {
+    "markdown": "```js&#32;custom-class\ntest1\n```\n\n```js&#x0C;custom-class\ntest2\n```",
+    "html": "<pre><code class=\"js\">test1\n</code></pre>\n<pre><code class=\"js\">test2\n</code></pre>",
+    "example": 1,
+    "section": "Make sure we decode entities before split",
+    "source": "markdown-it/xss.txt"
+  }
+]

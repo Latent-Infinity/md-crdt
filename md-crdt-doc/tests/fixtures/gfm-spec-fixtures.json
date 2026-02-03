@@ -1,0 +1,4524 @@
+[
+  {
+    "markdown": "→foo→baz→→bim",
+    "html": "<pre><code>foo→baz→→bim\n</code></pre>",
+    "example": 1,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  →foo→baz→→bim",
+    "html": "<pre><code>foo→baz→→bim\n</code></pre>",
+    "example": 2,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    a→a\n    ὐ→a",
+    "html": "<pre><code>a→a\nὐ→a\n</code></pre>",
+    "example": 3,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  - foo\n\n→bar",
+    "html": "<ul>\n<li>\n<p>foo</p>\n<p>bar</p>\n</li>\n</ul>",
+    "example": 4,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n\n→→bar",
+    "html": "<ul>\n<li>\n<p>foo</p>\n<pre><code>  bar\n</code></pre>\n</li>\n</ul>",
+    "example": 5,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": ">→→foo",
+    "html": "<blockquote>\n<pre><code>  foo\n</code></pre>\n</blockquote>",
+    "example": 6,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "-→→foo",
+    "html": "<ul>\n<li>\n<pre><code>  foo\n</code></pre>\n</li>\n</ul>",
+    "example": 7,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    foo\n→bar",
+    "html": "<pre><code>foo\nbar\n</code></pre>",
+    "example": 8,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " - foo\n   - bar\n→ - baz",
+    "html": "<ul>\n<li>foo\n<ul>\n<li>bar\n<ul>\n<li>baz</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>",
+    "example": 9,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "#→Foo",
+    "html": "<h1>Foo</h1>",
+    "example": 10,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*→*→*→",
+    "html": "<hr />",
+    "example": 11,
+    "section": "Tabs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- `one\n- two`",
+    "html": "<ul>\n<li>`one</li>\n<li>two`</li>\n</ul>",
+    "example": 12,
+    "section": "Precedence",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "***\n---\n___",
+    "html": "<hr />\n<hr />\n<hr />",
+    "example": 13,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "+++",
+    "html": "<p>+++</p>",
+    "example": 14,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "===",
+    "html": "<p>===</p>",
+    "example": 15,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "--\n**\n__",
+    "html": "<p>--\n**\n__</p>",
+    "example": 16,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " ***\n  ***\n   ***",
+    "html": "<hr />\n<hr />\n<hr />",
+    "example": 17,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    ***",
+    "html": "<pre><code>***\n</code></pre>",
+    "example": 18,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n    ***",
+    "html": "<p>Foo\n***</p>",
+    "example": 19,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_____________________________________",
+    "html": "<hr />",
+    "example": 20,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " - - -",
+    "html": "<hr />",
+    "example": 21,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " **  * ** * ** * **",
+    "html": "<hr />",
+    "example": 22,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "-     -      -      -",
+    "html": "<hr />",
+    "example": 23,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- - - -    ",
+    "html": "<hr />",
+    "example": 24,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_ _ _ _ a\n\na------\n\n---a---",
+    "html": "<p>_ _ _ _ a</p>\n<p>a------</p>\n<p>---a---</p>",
+    "example": 25,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " *-*",
+    "html": "<p><em>-</em></p>",
+    "example": 26,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n***\n- bar",
+    "html": "<ul>\n<li>foo</li>\n</ul>\n<hr />\n<ul>\n<li>bar</li>\n</ul>",
+    "example": 27,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n***\nbar",
+    "html": "<p>Foo</p>\n<hr />\n<p>bar</p>",
+    "example": 28,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n---\nbar",
+    "html": "<h2>Foo</h2>\n<p>bar</p>",
+    "example": 29,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "* Foo\n* * *\n* Bar",
+    "html": "<ul>\n<li>Foo</li>\n</ul>\n<hr />\n<ul>\n<li>Bar</li>\n</ul>",
+    "example": 30,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- Foo\n- * * *",
+    "html": "<ul>\n<li>Foo</li>\n<li>\n<hr />\n</li>\n</ul>",
+    "example": 31,
+    "section": "Thematic breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "# foo\n## foo\n### foo\n#### foo\n##### foo\n###### foo",
+    "html": "<h1>foo</h1>\n<h2>foo</h2>\n<h3>foo</h3>\n<h4>foo</h4>\n<h5>foo</h5>\n<h6>foo</h6>",
+    "example": 32,
+    "section": "ATX headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "####### foo",
+    "html": "<p>####### foo</p>",
+    "example": 33,
+    "section": "foo",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "#5 bolt\n\n#hashtag",
+    "html": "<p>#5 bolt</p>\n<p>#hashtag</p>",
+    "example": 34,
+    "section": "foo",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "\\## foo",
+    "html": "<p>## foo</p>",
+    "example": 35,
+    "section": "foo",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "# foo *bar* \\*baz\\*",
+    "html": "<h1>foo <em>bar</em> *baz*</h1>",
+    "example": 36,
+    "section": "foo",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "#                  foo                     ",
+    "html": "<h1>foo</h1>",
+    "example": 37,
+    "section": "foo *bar* \\*baz\\*",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " ### foo\n  ## foo\n   # foo",
+    "html": "<h3>foo</h3>\n<h2>foo</h2>\n<h1>foo</h1>",
+    "example": 38,
+    "section": "foo                     ",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    # foo",
+    "html": "<pre><code># foo\n</code></pre>",
+    "example": 39,
+    "section": "foo                     ",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo\n    # bar",
+    "html": "<p>foo\n# bar</p>",
+    "example": 40,
+    "section": "foo                     ",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "## foo ##\n  ###   bar    ###",
+    "html": "<h2>foo</h2>\n<h3>bar</h3>",
+    "example": 41,
+    "section": "bar</p>",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "# foo ##################################\n##### foo ##",
+    "html": "<h1>foo</h1>\n<h5>foo</h5>",
+    "example": 42,
+    "section": "foo ##",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "### foo ###     ",
+    "html": "<h3>foo</h3>",
+    "example": 43,
+    "section": "foo ##",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "### foo ### b",
+    "html": "<h3>foo ### b</h3>",
+    "example": 44,
+    "section": "foo ###     ",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "# foo#",
+    "html": "<h1>foo#</h1>",
+    "example": 45,
+    "section": "foo ### b",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "### foo \\###\n## foo #\\##\n# foo \\#",
+    "html": "<h3>foo ###</h3>\n<h2>foo ###</h2>\n<h1>foo #</h1>",
+    "example": 46,
+    "section": "foo#",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "****\n## foo\n****",
+    "html": "<hr />\n<h2>foo</h2>\n<hr />",
+    "example": 47,
+    "section": "foo \\#",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo bar\n# baz\nBar foo",
+    "html": "<p>Foo bar</p>\n<h1>baz</h1>\n<p>Bar foo</p>",
+    "example": 48,
+    "section": "foo",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "## \n#\n### ###",
+    "html": "<h2></h2>\n<h1></h1>\n<h3></h3>",
+    "example": 49,
+    "section": "baz",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo *bar*\n=========\n\nFoo *bar*\n---------",
+    "html": "<h1>Foo <em>bar</em></h1>\n<h2>Foo <em>bar</em></h2>",
+    "example": 50,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo *bar\nbaz*\n====",
+    "html": "<h1>Foo <em>bar\nbaz</em></h1>",
+    "example": 51,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  Foo *bar\nbaz*→\n====",
+    "html": "<h1>Foo <em>bar\nbaz</em></h1>",
+    "example": 52,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n-------------------------\n\nFoo\n=",
+    "html": "<h2>Foo</h2>\n<h1>Foo</h1>",
+    "example": 53,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "   Foo\n---\n\n  Foo\n-----\n\n  Foo\n  ===",
+    "html": "<h2>Foo</h2>\n<h2>Foo</h2>\n<h1>Foo</h1>",
+    "example": 54,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    Foo\n    ---\n\n    Foo\n---",
+    "html": "<pre><code>Foo\n---\n\nFoo\n</code></pre>\n<hr />",
+    "example": 55,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n   ----      ",
+    "html": "<h2>Foo</h2>",
+    "example": 56,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n    ---",
+    "html": "<p>Foo\n---</p>",
+    "example": 57,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n= =\n\nFoo\n--- -",
+    "html": "<p>Foo\n= =</p>\n<p>Foo</p>\n<hr />",
+    "example": 58,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo  \n-----",
+    "html": "<h2>Foo</h2>",
+    "example": 59,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\\\n----",
+    "html": "<h2>Foo\\</h2>",
+    "example": 60,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`Foo\n----\n`\n\n<a title=\"a lot\n---\nof dashes\"/>",
+    "html": "<h2>`Foo</h2>\n<p>`</p>\n<h2>&lt;a title=&quot;a lot</h2>\n<p>of dashes&quot;/&gt;</p>",
+    "example": 61,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> Foo\n---",
+    "html": "<blockquote>\n<p>Foo</p>\n</blockquote>\n<hr />",
+    "example": 62,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> foo\nbar\n===",
+    "html": "<blockquote>\n<p>foo\nbar\n===</p>\n</blockquote>",
+    "example": 63,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- Foo\n---",
+    "html": "<ul>\n<li>Foo</li>\n</ul>\n<hr />",
+    "example": 64,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\nBar\n---",
+    "html": "<h2>Foo\nBar</h2>",
+    "example": 65,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "---\nFoo\n---\nBar\n---\nBaz",
+    "html": "<hr />\n<h2>Foo</h2>\n<h2>Bar</h2>\n<p>Baz</p>",
+    "example": 66,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "\n====",
+    "html": "<p>====</p>",
+    "example": 67,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "---\n---",
+    "html": "<hr />\n<hr />",
+    "example": 68,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n-----",
+    "html": "<ul>\n<li>foo</li>\n</ul>\n<hr />",
+    "example": 69,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    foo\n---",
+    "html": "<pre><code>foo\n</code></pre>\n<hr />",
+    "example": 70,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> foo\n-----",
+    "html": "<blockquote>\n<p>foo</p>\n</blockquote>\n<hr />",
+    "example": 71,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "\\> foo\n------",
+    "html": "<h2>&gt; foo</h2>",
+    "example": 72,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n\nbar\n---\nbaz",
+    "html": "<p>Foo</p>\n<h2>bar</h2>\n<p>baz</p>",
+    "example": 73,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\nbar\n\n---\n\nbaz",
+    "html": "<p>Foo\nbar</p>\n<hr />\n<p>baz</p>",
+    "example": 74,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\nbar\n* * *\nbaz",
+    "html": "<p>Foo\nbar</p>\n<hr />\n<p>baz</p>",
+    "example": 75,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\nbar\n\\---\nbaz",
+    "html": "<p>Foo\nbar\n---\nbaz</p>",
+    "example": 76,
+    "section": "Setext headings",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    a simple\n      indented code block",
+    "html": "<pre><code>a simple\n  indented code block\n</code></pre>",
+    "example": 77,
+    "section": "Indented code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  - foo\n\n    bar",
+    "html": "<ul>\n<li>\n<p>foo</p>\n<p>bar</p>\n</li>\n</ul>",
+    "example": 78,
+    "section": "Indented code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1.  foo\n\n    - bar",
+    "html": "<ol>\n<li>\n<p>foo</p>\n<ul>\n<li>bar</li>\n</ul>\n</li>\n</ol>",
+    "example": 79,
+    "section": "Indented code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    <a/>\n    *hi*\n\n    - one",
+    "html": "<pre><code>&lt;a/&gt;\n*hi*\n\n- one\n</code></pre>",
+    "example": 80,
+    "section": "Indented code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    chunk1\n\n    chunk2\n  \n \n \n    chunk3",
+    "html": "<pre><code>chunk1\n\nchunk2\n\n\n\nchunk3\n</code></pre>",
+    "example": 81,
+    "section": "Indented code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    chunk1\n      \n      chunk2",
+    "html": "<pre><code>chunk1\n  \n  chunk2\n</code></pre>",
+    "example": 82,
+    "section": "Indented code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n    bar\n",
+    "html": "<p>Foo\nbar</p>",
+    "example": 83,
+    "section": "Indented code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    foo\nbar",
+    "html": "<pre><code>foo\n</code></pre>\n<p>bar</p>",
+    "example": 84,
+    "section": "Indented code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "# Heading\n    foo\nHeading\n------\n    foo\n----",
+    "html": "<h1>Heading</h1>\n<pre><code>foo\n</code></pre>\n<h2>Heading</h2>\n<pre><code>foo\n</code></pre>\n<hr />",
+    "example": 85,
+    "section": "Indented code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "        foo\n    bar",
+    "html": "<pre><code>    foo\nbar\n</code></pre>",
+    "example": 86,
+    "section": "Heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "\n    \n    foo\n    \n",
+    "html": "<pre><code>foo\n</code></pre>",
+    "example": 87,
+    "section": "Heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    foo  ",
+    "html": "<pre><code>foo  \n</code></pre>",
+    "example": 88,
+    "section": "Heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```\n<\n >\n```",
+    "html": "<pre><code>&lt;\n &gt;\n</code></pre>",
+    "example": 89,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "~~~\n<\n >\n~~~",
+    "html": "<pre><code>&lt;\n &gt;\n</code></pre>",
+    "example": 90,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "``\nfoo\n``",
+    "html": "<p><code>foo</code></p>",
+    "example": 91,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```\naaa\n~~~\n```",
+    "html": "<pre><code>aaa\n~~~\n</code></pre>",
+    "example": 92,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "~~~\naaa\n```\n~~~",
+    "html": "<pre><code>aaa\n```\n</code></pre>",
+    "example": 93,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "````\naaa\n```\n``````",
+    "html": "<pre><code>aaa\n```\n</code></pre>",
+    "example": 94,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "~~~~\naaa\n~~~\n~~~~",
+    "html": "<pre><code>aaa\n~~~\n</code></pre>",
+    "example": 95,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```",
+    "html": "<pre><code></code></pre>",
+    "example": 96,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`````\n\n```\naaa",
+    "html": "<pre><code>\n```\naaa\n</code></pre>",
+    "example": 97,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> ```\n> aaa\n\nbbb",
+    "html": "<blockquote>\n<pre><code>aaa\n</code></pre>\n</blockquote>\n<p>bbb</p>",
+    "example": 98,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```\n\n  \n```",
+    "html": "<pre><code>\n  \n</code></pre>",
+    "example": 99,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```\n```",
+    "html": "<pre><code></code></pre>",
+    "example": 100,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " ```\n aaa\naaa\n```",
+    "html": "<pre><code>aaa\naaa\n</code></pre>",
+    "example": 101,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  ```\naaa\n  aaa\naaa\n  ```",
+    "html": "<pre><code>aaa\naaa\naaa\n</code></pre>",
+    "example": 102,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "   ```\n   aaa\n    aaa\n  aaa\n   ```",
+    "html": "<pre><code>aaa\n aaa\naaa\n</code></pre>",
+    "example": 103,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    ```\n    aaa\n    ```",
+    "html": "<pre><code>```\naaa\n```\n</code></pre>",
+    "example": 104,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```\naaa\n  ```",
+    "html": "<pre><code>aaa\n</code></pre>",
+    "example": 105,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "   ```\naaa\n  ```",
+    "html": "<pre><code>aaa\n</code></pre>",
+    "example": 106,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```\naaa\n    ```",
+    "html": "<pre><code>aaa\n    ```\n</code></pre>",
+    "example": 107,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "``` ```\naaa",
+    "html": "<p><code> </code>\naaa</p>",
+    "example": 108,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "~~~~~~\naaa\n~~~ ~~",
+    "html": "<pre><code>aaa\n~~~ ~~\n</code></pre>",
+    "example": 109,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo\n```\nbar\n```\nbaz",
+    "html": "<p>foo</p>\n<pre><code>bar\n</code></pre>\n<p>baz</p>",
+    "example": 110,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo\n---\n~~~\nbar\n~~~\n# baz",
+    "html": "<h2>foo</h2>\n<pre><code>bar\n</code></pre>\n<h1>baz</h1>",
+    "example": 111,
+    "section": "Fenced code blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```ruby\ndef foo(x)\n  return 3\nend\n```",
+    "html": "<pre><code class=\"language-ruby\">def foo(x)\n  return 3\nend\n</code></pre>",
+    "example": 112,
+    "section": "baz",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "~~~~    ruby startline=3 $%@#$\ndef foo(x)\n  return 3\nend\n~~~~~~~",
+    "html": "<pre><code class=\"language-ruby\">def foo(x)\n  return 3\nend\n</code></pre>",
+    "example": 113,
+    "section": "baz",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "````;\n````",
+    "html": "<pre><code class=\"language-;\"></code></pre>",
+    "example": 114,
+    "section": "baz",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "``` aa ```\nfoo",
+    "html": "<p><code>aa</code>\nfoo</p>",
+    "example": 115,
+    "section": "baz",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "~~~ aa ``` ~~~\nfoo\n~~~",
+    "html": "<pre><code class=\"language-aa\">foo\n</code></pre>",
+    "example": 116,
+    "section": "baz",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```\n``` aaa\n```",
+    "html": "<pre><code>``` aaa\n</code></pre>",
+    "example": 117,
+    "section": "baz",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<table><tr><td>\n<pre>\n**Hello**,\n\n_world_.\n</pre>\n</td></tr></table>",
+    "html": "<table><tr><td>\n<pre>\n**Hello**,\n<p><em>world</em>.\n</pre></p>\n</td></tr></table>",
+    "example": 118,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<table>\n  <tr>\n    <td>\n           hi\n    </td>\n  </tr>\n</table>\n\nokay.",
+    "html": "<table>\n  <tr>\n    <td>\n           hi\n    </td>\n  </tr>\n</table>\n<p>okay.</p>",
+    "example": 119,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " <div>\n  *hello*\n         <foo><a>",
+    "html": " <div>\n  *hello*\n         <foo><a>",
+    "example": 120,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "</div>\n*foo*",
+    "html": "</div>\n*foo*",
+    "example": 121,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<DIV CLASS=\"foo\">\n\n*Markdown*\n\n</DIV>",
+    "html": "<DIV CLASS=\"foo\">\n<p><em>Markdown</em></p>\n</DIV>",
+    "example": 122,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div id=\"foo\"\n  class=\"bar\">\n</div>",
+    "html": "<div id=\"foo\"\n  class=\"bar\">\n</div>",
+    "example": 123,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div id=\"foo\" class=\"bar\n  baz\">\n</div>",
+    "html": "<div id=\"foo\" class=\"bar\n  baz\">\n</div>",
+    "example": 124,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div>\n*foo*\n\n*bar*",
+    "html": "<div>\n*foo*\n<p><em>bar</em></p>",
+    "example": 125,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div id=\"foo\"\n*hi*",
+    "html": "<div id=\"foo\"\n*hi*",
+    "example": 126,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div class\nfoo",
+    "html": "<div class\nfoo",
+    "example": 127,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div *???-&&&-<---\n*foo*",
+    "html": "<div *???-&&&-<---\n*foo*",
+    "example": 128,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div><a href=\"bar\">*foo*</a></div>",
+    "html": "<div><a href=\"bar\">*foo*</a></div>",
+    "example": 129,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<table><tr><td>\nfoo\n</td></tr></table>",
+    "html": "<table><tr><td>\nfoo\n</td></tr></table>",
+    "example": 130,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div></div>\n``` c\nint x = 33;\n```",
+    "html": "<div></div>\n``` c\nint x = 33;\n```",
+    "example": 131,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a href=\"foo\">\n*bar*\n</a>",
+    "html": "<a href=\"foo\">\n*bar*\n</a>",
+    "example": 132,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<Warning>\n*bar*\n</Warning>",
+    "html": "<Warning>\n*bar*\n</Warning>",
+    "example": 133,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<i class=\"foo\">\n*bar*\n</i>",
+    "html": "<i class=\"foo\">\n*bar*\n</i>",
+    "example": 134,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "</ins>\n*bar*",
+    "html": "</ins>\n*bar*",
+    "example": 135,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<del>\n*foo*\n</del>",
+    "html": "<del>\n*foo*\n</del>",
+    "example": 136,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<del>\n\n*foo*\n\n</del>",
+    "html": "<del>\n<p><em>foo</em></p>\n</del>",
+    "example": 137,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<del>*foo*</del>",
+    "html": "<p><del><em>foo</em></del></p>",
+    "example": 138,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<pre language=\"haskell\"><code>\nimport Text.HTML.TagSoup\n\nmain :: IO ()\nmain = print $ parseTags tags\n</code></pre>\nokay",
+    "html": "<pre language=\"haskell\"><code>\nimport Text.HTML.TagSoup\n\nmain :: IO ()\nmain = print $ parseTags tags\n</code></pre>\n<p>okay</p>",
+    "example": 139,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<script type=\"text/javascript\">\n// JavaScript example\n\ndocument.getElementById(\"demo\").innerHTML = \"Hello JavaScript!\";\n</script>\nokay",
+    "html": "<script type=\"text/javascript\">\n// JavaScript example\n\ndocument.getElementById(\"demo\").innerHTML = \"Hello JavaScript!\";\n</script>\n<p>okay</p>",
+    "example": 140,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<style\n  type=\"text/css\">\nh1 {color:red;}\n\np {color:blue;}\n</style>\nokay",
+    "html": "<style\n  type=\"text/css\">\nh1 {color:red;}\n\np {color:blue;}\n</style>\n<p>okay</p>",
+    "example": 141,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<style\n  type=\"text/css\">\n\nfoo",
+    "html": "<style\n  type=\"text/css\">\n\nfoo",
+    "example": 142,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> <div>\n> foo\n\nbar",
+    "html": "<blockquote>\n<div>\nfoo\n</blockquote>\n<p>bar</p>",
+    "example": 143,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- <div>\n- foo",
+    "html": "<ul>\n<li>\n<div>\n</li>\n<li>foo</li>\n</ul>",
+    "example": 144,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<style>p{color:red;}</style>\n*foo*",
+    "html": "<style>p{color:red;}</style>\n<p><em>foo</em></p>",
+    "example": 145,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<!-- foo -->*bar*\n*baz*",
+    "html": "<!-- foo -->*bar*\n<p><em>baz</em></p>",
+    "example": 146,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<script>\nfoo\n</script>1. *bar*",
+    "html": "<script>\nfoo\n</script>1. *bar*",
+    "example": 147,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<!-- Foo\n\nbar\n   baz -->\nokay",
+    "html": "<!-- Foo\n\nbar\n   baz -->\n<p>okay</p>",
+    "example": 148,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<?php\n\n  echo '>';\n\n?>\nokay",
+    "html": "<?php\n\n  echo '>';\n\n?>\n<p>okay</p>",
+    "example": 149,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<!DOCTYPE html>",
+    "html": "<!DOCTYPE html>",
+    "example": 150,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<![CDATA[\nfunction matchwo(a,b)\n{\n  if (a < b && a < 0) then {\n    return 1;\n\n  } else {\n\n    return 0;\n  }\n}\n]]>\nokay",
+    "html": "<![CDATA[\nfunction matchwo(a,b)\n{\n  if (a < b && a < 0) then {\n    return 1;\n\n  } else {\n\n    return 0;\n  }\n}\n]]>\n<p>okay</p>",
+    "example": 151,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  <!-- foo -->\n\n    <!-- foo -->",
+    "html": "  <!-- foo -->\n<pre><code>&lt;!-- foo --&gt;\n</code></pre>",
+    "example": 152,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  <div>\n\n    <div>",
+    "html": "  <div>\n<pre><code>&lt;div&gt;\n</code></pre>",
+    "example": 153,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n<div>\nbar\n</div>",
+    "html": "<p>Foo</p>\n<div>\nbar\n</div>",
+    "example": 154,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div>\nbar\n</div>\n*foo*",
+    "html": "<div>\nbar\n</div>\n*foo*",
+    "example": 155,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n<a href=\"bar\">\nbaz",
+    "html": "<p>Foo\n<a href=\"bar\">\nbaz</p>",
+    "example": 156,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div>\n\n*Emphasized* text.\n\n</div>",
+    "html": "<div>\n<p><em>Emphasized</em> text.</p>\n</div>",
+    "example": 157,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<div>\n*Emphasized* text.\n</div>",
+    "html": "<div>\n*Emphasized* text.\n</div>",
+    "example": 158,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<table>\n\n<tr>\n\n<td>\nHi\n</td>\n\n</tr>\n\n</table>",
+    "html": "<table>\n<tr>\n<td>\nHi\n</td>\n</tr>\n</table>",
+    "example": 159,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<table>\n\n  <tr>\n\n    <td>\n      Hi\n    </td>\n\n  </tr>\n\n</table>",
+    "html": "<table>\n  <tr>\n<pre><code>&lt;td&gt;\n  Hi\n&lt;/td&gt;\n</code></pre>\n  </tr>\n</table>",
+    "example": 160,
+    "section": "HTML blocks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url \"title\"\n\n[foo]",
+    "html": "<p><a href=\"/url\" title=\"title\">foo</a></p>",
+    "example": 161,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "   [foo]: \n      /url  \n           'the title'  \n\n[foo]",
+    "html": "<p><a href=\"/url\" title=\"the title\">foo</a></p>",
+    "example": 162,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[Foo*bar\\]]:my_(url) 'title (with parens)'\n\n[Foo*bar\\]]",
+    "html": "<p><a href=\"my_(url)\" title=\"title (with parens)\">Foo*bar]</a></p>",
+    "example": 163,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[Foo bar]:\n<my url>\n'title'\n\n[Foo bar]",
+    "html": "<p><a href=\"my%20url\" title=\"title\">Foo bar</a></p>",
+    "example": 164,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url '\ntitle\nline1\nline2\n'\n\n[foo]",
+    "html": "<p><a href=\"/url\" title=\"\ntitle\nline1\nline2\n\">foo</a></p>",
+    "example": 165,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url 'title\n\nwith blank line'\n\n[foo]",
+    "html": "<p>[foo]: /url 'title</p>\n<p>with blank line'</p>\n<p>[foo]</p>",
+    "example": 166,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]:\n/url\n\n[foo]",
+    "html": "<p><a href=\"/url\">foo</a></p>",
+    "example": 167,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]:\n\n[foo]",
+    "html": "<p>[foo]:</p>\n<p>[foo]</p>",
+    "example": 168,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: <>\n\n[foo]",
+    "html": "<p><a href=\"\">foo</a></p>",
+    "example": 169,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: <bar>(baz)\n\n[foo]",
+    "html": "<p>[foo]: <bar>(baz)</p>\n<p>[foo]</p>",
+    "example": 170,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url\\bar\\*baz \"foo\\\"bar\\baz\"\n\n[foo]",
+    "html": "<p><a href=\"/url%5Cbar*baz\" title=\"foo&quot;bar\\baz\">foo</a></p>",
+    "example": 171,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]\n\n[foo]: url",
+    "html": "<p><a href=\"url\">foo</a></p>",
+    "example": 172,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]\n\n[foo]: first\n[foo]: second",
+    "html": "<p><a href=\"first\">foo</a></p>",
+    "example": 173,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[FOO]: /url\n\n[Foo]",
+    "html": "<p><a href=\"/url\">Foo</a></p>",
+    "example": 174,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[ΑΓΩ]: /φου\n\n[αγω]",
+    "html": "<p><a href=\"/%CF%86%CE%BF%CF%85\">αγω</a></p>",
+    "example": 175,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url",
+    "html": "````````````````````````````````\n\n\nHere is another one:\n",
+    "example": 176,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url \"title\" ok",
+    "html": "<p>[foo]: /url &quot;title&quot; ok</p>",
+    "example": 177,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url\n\"title\" ok",
+    "html": "<p>&quot;title&quot; ok</p>",
+    "example": 178,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    [foo]: /url \"title\"\n\n[foo]",
+    "html": "<pre><code>[foo]: /url &quot;title&quot;\n</code></pre>\n<p>[foo]</p>",
+    "example": 179,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```\n[foo]: /url\n```\n\n[foo]",
+    "html": "<pre><code>[foo]: /url\n</code></pre>\n<p>[foo]</p>",
+    "example": 180,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n[bar]: /baz\n\n[bar]",
+    "html": "<p>Foo\n[bar]: /baz</p>\n<p>[bar]</p>",
+    "example": 181,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "# [Foo]\n[foo]: /url\n> bar",
+    "html": "<h1><a href=\"/url\">Foo</a></h1>\n<blockquote>\n<p>bar</p>\n</blockquote>",
+    "example": 182,
+    "section": "Link reference definitions",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url\nbar\n===\n[foo]",
+    "html": "<h1>bar</h1>\n<p><a href=\"/url\">foo</a></p>",
+    "example": 183,
+    "section": "[Foo]",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url\n===\n[foo]",
+    "html": "<p>===\n<a href=\"/url\">foo</a></p>",
+    "example": 184,
+    "section": "[Foo]",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /foo-url \"foo\"\n[bar]: /bar-url\n  \"bar\"\n[baz]: /baz-url\n\n[foo],\n[bar],\n[baz]",
+    "html": "<p><a href=\"/foo-url\" title=\"foo\">foo</a>,\n<a href=\"/bar-url\" title=\"bar\">bar</a>,\n<a href=\"/baz-url\">baz</a></p>",
+    "example": 185,
+    "section": "[Foo]",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]\n\n> [foo]: /url",
+    "html": "<p><a href=\"/url\">foo</a></p>\n<blockquote>\n</blockquote>",
+    "example": 186,
+    "section": "[Foo]",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url",
+    "html": "````````````````````````````````\n\n\n## Paragraphs\n\nA sequence of non-blank lines that cannot be interpreted as other\nkinds of blocks forms a [paragraph](@).\nThe contents of the paragraph are the result of parsing the\nparagraph's raw content as inlines.  The paragraph's raw content\nis formed by concatenating the lines and removing initial and final\n[whitespace].\n\nA simple example with two paragraphs:\n",
+    "example": 187,
+    "section": "[Foo]",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "aaa\nbbb\n\nccc\nddd",
+    "html": "<p>aaa\nbbb</p>\n<p>ccc\nddd</p>",
+    "example": 188,
+    "section": "Paragraphs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "aaa\n\n\nbbb",
+    "html": "<p>aaa</p>\n<p>bbb</p>",
+    "example": 189,
+    "section": "Paragraphs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  aaa\n bbb",
+    "html": "<p>aaa\nbbb</p>",
+    "example": 190,
+    "section": "Paragraphs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "aaa\n             bbb\n                                       ccc",
+    "html": "<p>aaa\nbbb\nccc</p>",
+    "example": 191,
+    "section": "Paragraphs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "   aaa\nbbb",
+    "html": "<p>aaa\nbbb</p>",
+    "example": 192,
+    "section": "Paragraphs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    aaa\nbbb",
+    "html": "<pre><code>aaa\n</code></pre>\n<p>bbb</p>",
+    "example": 193,
+    "section": "Paragraphs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "aaa     \nbbb     ",
+    "html": "<p>aaa<br />\nbbb</p>",
+    "example": 194,
+    "section": "Paragraphs",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  \n\naaa\n  \n\n# aaa\n\n  ",
+    "html": "<p>aaa</p>\n<h1>aaa</h1>",
+    "example": 195,
+    "section": "Blank lines",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> # Foo\n> bar\n> baz",
+    "html": "<blockquote>\n<h1>Foo</h1>\n<p>bar\nbaz</p>\n</blockquote>",
+    "example": 196,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "># Foo\n>bar\n> baz",
+    "html": "<blockquote>\n<h1>Foo</h1>\n<p>bar\nbaz</p>\n</blockquote>",
+    "example": 197,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "   > # Foo\n   > bar\n > baz",
+    "html": "<blockquote>\n<h1>Foo</h1>\n<p>bar\nbaz</p>\n</blockquote>",
+    "example": 198,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    > # Foo\n    > bar\n    > baz",
+    "html": "<pre><code>&gt; # Foo\n&gt; bar\n&gt; baz\n</code></pre>",
+    "example": 199,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> # Foo\n> bar\nbaz",
+    "html": "<blockquote>\n<h1>Foo</h1>\n<p>bar\nbaz</p>\n</blockquote>",
+    "example": 200,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> bar\nbaz\n> foo",
+    "html": "<blockquote>\n<p>bar\nbaz\nfoo</p>\n</blockquote>",
+    "example": 201,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> foo\n---",
+    "html": "<blockquote>\n<p>foo</p>\n</blockquote>\n<hr />",
+    "example": 202,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> - foo\n- bar",
+    "html": "<blockquote>\n<ul>\n<li>foo</li>\n</ul>\n</blockquote>\n<ul>\n<li>bar</li>\n</ul>",
+    "example": 203,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": ">     foo\n    bar",
+    "html": "<blockquote>\n<pre><code>foo\n</code></pre>\n</blockquote>\n<pre><code>bar\n</code></pre>",
+    "example": 204,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> ```\nfoo\n```",
+    "html": "<blockquote>\n<pre><code></code></pre>\n</blockquote>\n<p>foo</p>\n<pre><code></code></pre>",
+    "example": 205,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> foo\n    - bar",
+    "html": "<blockquote>\n<p>foo\n- bar</p>\n</blockquote>",
+    "example": 206,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": ">",
+    "html": "<blockquote>\n</blockquote>",
+    "example": 207,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": ">\n>  \n> ",
+    "html": "<blockquote>\n</blockquote>",
+    "example": 208,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": ">\n> foo\n>  ",
+    "html": "<blockquote>\n<p>foo</p>\n</blockquote>",
+    "example": 209,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> foo\n\n> bar",
+    "html": "<blockquote>\n<p>foo</p>\n</blockquote>\n<blockquote>\n<p>bar</p>\n</blockquote>",
+    "example": 210,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> foo\n> bar",
+    "html": "<blockquote>\n<p>foo\nbar</p>\n</blockquote>",
+    "example": 211,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> foo\n>\n> bar",
+    "html": "<blockquote>\n<p>foo</p>\n<p>bar</p>\n</blockquote>",
+    "example": 212,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo\n> bar",
+    "html": "<p>foo</p>\n<blockquote>\n<p>bar</p>\n</blockquote>",
+    "example": 213,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> aaa\n***\n> bbb",
+    "html": "<blockquote>\n<p>aaa</p>\n</blockquote>\n<hr />\n<blockquote>\n<p>bbb</p>\n</blockquote>",
+    "example": 214,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> bar\nbaz",
+    "html": "<blockquote>\n<p>bar\nbaz</p>\n</blockquote>",
+    "example": 215,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> bar\n\nbaz",
+    "html": "<blockquote>\n<p>bar</p>\n</blockquote>\n<p>baz</p>",
+    "example": 216,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> bar\n>\nbaz",
+    "html": "<blockquote>\n<p>bar</p>\n</blockquote>\n<p>baz</p>",
+    "example": 217,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> > > foo\nbar",
+    "html": "<blockquote>\n<blockquote>\n<blockquote>\n<p>foo\nbar</p>\n</blockquote>\n</blockquote>\n</blockquote>",
+    "example": 218,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": ">>> foo\n> bar\n>>baz",
+    "html": "<blockquote>\n<blockquote>\n<blockquote>\n<p>foo\nbar\nbaz</p>\n</blockquote>\n</blockquote>\n</blockquote>",
+    "example": 219,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": ">     code\n\n>    not code",
+    "html": "<blockquote>\n<pre><code>code\n</code></pre>\n</blockquote>\n<blockquote>\n<p>not code</p>\n</blockquote>",
+    "example": 220,
+    "section": "Block quotes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "A paragraph\nwith two lines.\n\n    indented code\n\n> A block quote.",
+    "html": "<p>A paragraph\nwith two lines.</p>\n<pre><code>indented code\n</code></pre>\n<blockquote>\n<p>A block quote.</p>\n</blockquote>",
+    "example": 221,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1.  A paragraph\n    with two lines.\n\n        indented code\n\n    > A block quote.",
+    "html": "<ol>\n<li>\n<p>A paragraph\nwith two lines.</p>\n<pre><code>indented code\n</code></pre>\n<blockquote>\n<p>A block quote.</p>\n</blockquote>\n</li>\n</ol>",
+    "example": 222,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- one\n\n two",
+    "html": "<ul>\n<li>one</li>\n</ul>\n<p>two</p>",
+    "example": 223,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- one\n\n  two",
+    "html": "<ul>\n<li>\n<p>one</p>\n<p>two</p>\n</li>\n</ul>",
+    "example": 224,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " -    one\n\n     two",
+    "html": "<ul>\n<li>one</li>\n</ul>\n<pre><code> two\n</code></pre>",
+    "example": 225,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " -    one\n\n      two",
+    "html": "<ul>\n<li>\n<p>one</p>\n<p>two</p>\n</li>\n</ul>",
+    "example": 226,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "   > > 1.  one\n>>\n>>     two",
+    "html": "<blockquote>\n<blockquote>\n<ol>\n<li>\n<p>one</p>\n<p>two</p>\n</li>\n</ol>\n</blockquote>\n</blockquote>",
+    "example": 227,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": ">>- one\n>>\n  >  > two",
+    "html": "<blockquote>\n<blockquote>\n<ul>\n<li>one</li>\n</ul>\n<p>two</p>\n</blockquote>\n</blockquote>",
+    "example": 228,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "-one\n\n2.two",
+    "html": "<p>-one</p>\n<p>2.two</p>",
+    "example": 229,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n\n\n  bar",
+    "html": "<ul>\n<li>\n<p>foo</p>\n<p>bar</p>\n</li>\n</ul>",
+    "example": 230,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1.  foo\n\n    ```\n    bar\n    ```\n\n    baz\n\n    > bam",
+    "html": "<ol>\n<li>\n<p>foo</p>\n<pre><code>bar\n</code></pre>\n<p>baz</p>\n<blockquote>\n<p>bam</p>\n</blockquote>\n</li>\n</ol>",
+    "example": 231,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- Foo\n\n      bar\n\n\n      baz",
+    "html": "<ul>\n<li>\n<p>Foo</p>\n<pre><code>bar\n\n\nbaz\n</code></pre>\n</li>\n</ul>",
+    "example": 232,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "123456789. ok",
+    "html": "<ol start=\"123456789\">\n<li>ok</li>\n</ol>",
+    "example": 233,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1234567890. not ok",
+    "html": "<p>1234567890. not ok</p>",
+    "example": 234,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "0. ok",
+    "html": "<ol start=\"0\">\n<li>ok</li>\n</ol>",
+    "example": 235,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "003. ok",
+    "html": "<ol start=\"3\">\n<li>ok</li>\n</ol>",
+    "example": 236,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "-1. not ok",
+    "html": "<p>-1. not ok</p>",
+    "example": 237,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n\n      bar",
+    "html": "<ul>\n<li>\n<p>foo</p>\n<pre><code>bar\n</code></pre>\n</li>\n</ul>",
+    "example": 238,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  10.  foo\n\n           bar",
+    "html": "<ol start=\"10\">\n<li>\n<p>foo</p>\n<pre><code>bar\n</code></pre>\n</li>\n</ol>",
+    "example": 239,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    indented code\n\nparagraph\n\n    more code",
+    "html": "<pre><code>indented code\n</code></pre>\n<p>paragraph</p>\n<pre><code>more code\n</code></pre>",
+    "example": 240,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1.     indented code\n\n   paragraph\n\n       more code",
+    "html": "<ol>\n<li>\n<pre><code>indented code\n</code></pre>\n<p>paragraph</p>\n<pre><code>more code\n</code></pre>\n</li>\n</ol>",
+    "example": 241,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1.      indented code\n\n   paragraph\n\n       more code",
+    "html": "<ol>\n<li>\n<pre><code> indented code\n</code></pre>\n<p>paragraph</p>\n<pre><code>more code\n</code></pre>\n</li>\n</ol>",
+    "example": 242,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "   foo\n\nbar",
+    "html": "<p>foo</p>\n<p>bar</p>",
+    "example": 243,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "-    foo\n\n  bar",
+    "html": "<ul>\n<li>foo</li>\n</ul>\n<p>bar</p>",
+    "example": 244,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "-  foo\n\n   bar",
+    "html": "<ul>\n<li>\n<p>foo</p>\n<p>bar</p>\n</li>\n</ul>",
+    "example": 245,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "-\n  foo\n-\n  ```\n  bar\n  ```\n-\n      baz",
+    "html": "<ul>\n<li>foo</li>\n<li>\n<pre><code>bar\n</code></pre>\n</li>\n<li>\n<pre><code>baz\n</code></pre>\n</li>\n</ul>",
+    "example": 246,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "-   \n  foo",
+    "html": "<ul>\n<li>foo</li>\n</ul>",
+    "example": 247,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "-\n\n  foo",
+    "html": "<ul>\n<li></li>\n</ul>\n<p>foo</p>",
+    "example": 248,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n-\n- bar",
+    "html": "<ul>\n<li>foo</li>\n<li></li>\n<li>bar</li>\n</ul>",
+    "example": 249,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n-   \n- bar",
+    "html": "<ul>\n<li>foo</li>\n<li></li>\n<li>bar</li>\n</ul>",
+    "example": 250,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1. foo\n2.\n3. bar",
+    "html": "<ol>\n<li>foo</li>\n<li></li>\n<li>bar</li>\n</ol>",
+    "example": 251,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*",
+    "html": "<ul>\n<li></li>\n</ul>",
+    "example": 252,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo\n*\n\nfoo\n1.",
+    "html": "<p>foo\n*</p>\n<p>foo\n1.</p>",
+    "example": 253,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": " 1.  A paragraph\n     with two lines.\n\n         indented code\n\n     > A block quote.",
+    "html": "<ol>\n<li>\n<p>A paragraph\nwith two lines.</p>\n<pre><code>indented code\n</code></pre>\n<blockquote>\n<p>A block quote.</p>\n</blockquote>\n</li>\n</ol>",
+    "example": 254,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  1.  A paragraph\n      with two lines.\n\n          indented code\n\n      > A block quote.",
+    "html": "<ol>\n<li>\n<p>A paragraph\nwith two lines.</p>\n<pre><code>indented code\n</code></pre>\n<blockquote>\n<p>A block quote.</p>\n</blockquote>\n</li>\n</ol>",
+    "example": 255,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "   1.  A paragraph\n       with two lines.\n\n           indented code\n\n       > A block quote.",
+    "html": "<ol>\n<li>\n<p>A paragraph\nwith two lines.</p>\n<pre><code>indented code\n</code></pre>\n<blockquote>\n<p>A block quote.</p>\n</blockquote>\n</li>\n</ol>",
+    "example": 256,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    1.  A paragraph\n        with two lines.\n\n            indented code\n\n        > A block quote.",
+    "html": "<pre><code>1.  A paragraph\n    with two lines.\n\n        indented code\n\n    &gt; A block quote.\n</code></pre>",
+    "example": 257,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  1.  A paragraph\nwith two lines.\n\n          indented code\n\n      > A block quote.",
+    "html": "<ol>\n<li>\n<p>A paragraph\nwith two lines.</p>\n<pre><code>indented code\n</code></pre>\n<blockquote>\n<p>A block quote.</p>\n</blockquote>\n</li>\n</ol>",
+    "example": 258,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "  1.  A paragraph\n    with two lines.",
+    "html": "<ol>\n<li>A paragraph\nwith two lines.</li>\n</ol>",
+    "example": 259,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> 1. > Blockquote\ncontinued here.",
+    "html": "<blockquote>\n<ol>\n<li>\n<blockquote>\n<p>Blockquote\ncontinued here.</p>\n</blockquote>\n</li>\n</ol>\n</blockquote>",
+    "example": 260,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "> 1. > Blockquote\n> continued here.",
+    "html": "<blockquote>\n<ol>\n<li>\n<blockquote>\n<p>Blockquote\ncontinued here.</p>\n</blockquote>\n</li>\n</ol>\n</blockquote>",
+    "example": 261,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n  - bar\n    - baz\n      - boo",
+    "html": "<ul>\n<li>foo\n<ul>\n<li>bar\n<ul>\n<li>baz\n<ul>\n<li>boo</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>",
+    "example": 262,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n - bar\n  - baz\n   - boo",
+    "html": "<ul>\n<li>foo</li>\n<li>bar</li>\n<li>baz</li>\n<li>boo</li>\n</ul>",
+    "example": 263,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "10) foo\n    - bar",
+    "html": "<ol start=\"10\">\n<li>foo\n<ul>\n<li>bar</li>\n</ul>\n</li>\n</ol>",
+    "example": 264,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "10) foo\n   - bar",
+    "html": "<ol start=\"10\">\n<li>foo</li>\n</ol>\n<ul>\n<li>bar</li>\n</ul>",
+    "example": 265,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- - foo",
+    "html": "<ul>\n<li>\n<ul>\n<li>foo</li>\n</ul>\n</li>\n</ul>",
+    "example": 266,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1. - 2. foo",
+    "html": "<ol>\n<li>\n<ul>\n<li>\n<ol start=\"2\">\n<li>foo</li>\n</ol>\n</li>\n</ul>\n</li>\n</ol>",
+    "example": 267,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- # Foo\n- Bar\n  ---\n  baz",
+    "html": "<ul>\n<li>\n<h1>Foo</h1>\n</li>\n<li>\n<h2>Bar</h2>\nbaz</li>\n</ul>",
+    "example": 268,
+    "section": "List items",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n- bar\n+ baz",
+    "html": "<ul>\n<li>foo</li>\n<li>bar</li>\n</ul>\n<ul>\n<li>baz</li>\n</ul>",
+    "example": 269,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1. foo\n2. bar\n3) baz",
+    "html": "<ol>\n<li>foo</li>\n<li>bar</li>\n</ol>\n<ol start=\"3\">\n<li>baz</li>\n</ol>",
+    "example": 270,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo\n- bar\n- baz",
+    "html": "<p>Foo</p>\n<ul>\n<li>bar</li>\n<li>baz</li>\n</ul>",
+    "example": 271,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "The number of windows in my house is\n14.  The number of doors is 6.",
+    "html": "<p>The number of windows in my house is\n14.  The number of doors is 6.</p>",
+    "example": 272,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "The number of windows in my house is\n1.  The number of doors is 6.",
+    "html": "<p>The number of windows in my house is</p>\n<ol>\n<li>The number of doors is 6.</li>\n</ol>",
+    "example": 273,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n\n- bar\n\n\n- baz",
+    "html": "<ul>\n<li>\n<p>foo</p>\n</li>\n<li>\n<p>bar</p>\n</li>\n<li>\n<p>baz</p>\n</li>\n</ul>",
+    "example": 274,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n  - bar\n    - baz\n\n\n      bim",
+    "html": "<ul>\n<li>foo\n<ul>\n<li>bar\n<ul>\n<li>\n<p>baz</p>\n<p>bim</p>\n</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>",
+    "example": 275,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- foo\n- bar\n\n<!-- -->\n\n- baz\n- bim",
+    "html": "<ul>\n<li>foo</li>\n<li>bar</li>\n</ul>\n<!-- -->\n<ul>\n<li>baz</li>\n<li>bim</li>\n</ul>",
+    "example": 276,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "-   foo\n\n    notcode\n\n-   foo\n\n<!-- -->\n\n    code",
+    "html": "<ul>\n<li>\n<p>foo</p>\n<p>notcode</p>\n</li>\n<li>\n<p>foo</p>\n</li>\n</ul>\n<!-- -->\n<pre><code>code\n</code></pre>",
+    "example": 277,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a\n - b\n  - c\n   - d\n  - e\n - f\n- g",
+    "html": "<ul>\n<li>a</li>\n<li>b</li>\n<li>c</li>\n<li>d</li>\n<li>e</li>\n<li>f</li>\n<li>g</li>\n</ul>",
+    "example": 278,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1. a\n\n  2. b\n\n   3. c",
+    "html": "<ol>\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>\n<li>\n<p>c</p>\n</li>\n</ol>",
+    "example": 279,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a\n - b\n  - c\n   - d\n    - e",
+    "html": "<ul>\n<li>a</li>\n<li>b</li>\n<li>c</li>\n<li>d\n- e</li>\n</ul>",
+    "example": 280,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1. a\n\n  2. b\n\n    3. c",
+    "html": "<ol>\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>\n</ol>\n<pre><code>3. c\n</code></pre>",
+    "example": 281,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a\n- b\n\n- c",
+    "html": "<ul>\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>\n<li>\n<p>c</p>\n</li>\n</ul>",
+    "example": 282,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "* a\n*\n\n* c",
+    "html": "<ul>\n<li>\n<p>a</p>\n</li>\n<li></li>\n<li>\n<p>c</p>\n</li>\n</ul>",
+    "example": 283,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a\n- b\n\n  c\n- d",
+    "html": "<ul>\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n<p>c</p>\n</li>\n<li>\n<p>d</p>\n</li>\n</ul>",
+    "example": 284,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a\n- b\n\n  [ref]: /url\n- d",
+    "html": "<ul>\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>\n<li>\n<p>d</p>\n</li>\n</ul>",
+    "example": 285,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a\n- ```\n  b\n\n\n  ```\n- c",
+    "html": "<ul>\n<li>a</li>\n<li>\n<pre><code>b\n\n\n</code></pre>\n</li>\n<li>c</li>\n</ul>",
+    "example": 286,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a\n  - b\n\n    c\n- d",
+    "html": "<ul>\n<li>a\n<ul>\n<li>\n<p>b</p>\n<p>c</p>\n</li>\n</ul>\n</li>\n<li>d</li>\n</ul>",
+    "example": 287,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "* a\n  > b\n  >\n* c",
+    "html": "<ul>\n<li>a\n<blockquote>\n<p>b</p>\n</blockquote>\n</li>\n<li>c</li>\n</ul>",
+    "example": 288,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a\n  > b\n  ```\n  c\n  ```\n- d",
+    "html": "<ul>\n<li>a\n<blockquote>\n<p>b</p>\n</blockquote>\n<pre><code>c\n</code></pre>\n</li>\n<li>d</li>\n</ul>",
+    "example": 289,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a",
+    "html": "<ul>\n<li>a</li>\n</ul>",
+    "example": 290,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a\n  - b",
+    "html": "<ul>\n<li>a\n<ul>\n<li>b</li>\n</ul>\n</li>\n</ul>",
+    "example": 291,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "1. ```\n   foo\n   ```\n\n   bar",
+    "html": "<ol>\n<li>\n<pre><code>foo\n</code></pre>\n<p>bar</p>\n</li>\n</ol>",
+    "example": 292,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "* foo\n  * bar\n\n  baz",
+    "html": "<ul>\n<li>\n<p>foo</p>\n<ul>\n<li>bar</li>\n</ul>\n<p>baz</p>\n</li>\n</ul>",
+    "example": 293,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "- a\n  - b\n  - c\n\n- d\n  - e\n  - f",
+    "html": "<ul>\n<li>\n<p>a</p>\n<ul>\n<li>b</li>\n<li>c</li>\n</ul>\n</li>\n<li>\n<p>d</p>\n<ul>\n<li>e</li>\n<li>f</li>\n</ul>\n</li>\n</ul>",
+    "example": 294,
+    "section": "Lists",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`hi`lo`",
+    "html": "<p><code>hi</code>lo`</p>",
+    "example": 295,
+    "section": "Inlines",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "\\!\\\"\\#\\$\\%\\&\\'\\(\\)\\*\\+\\,\\-\\.\\/\\:\\;\\<\\=\\>\\?\\@\\[\\\\\\]\\^\\_\\`\\{\\|\\}\\~",
+    "html": "<p>!&quot;#$%&amp;'()*+,-./:;&lt;=&gt;?@[\\]^_`{|}~</p>",
+    "example": 296,
+    "section": "Backslash escapes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "\\→\\A\\a\\ \\3\\φ\\«",
+    "html": "<p>\\→\\A\\a\\ \\3\\φ\\«</p>",
+    "example": 297,
+    "section": "Backslash escapes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "\\*not emphasized*\n\\<br/> not a tag\n\\[not a link](/foo)\n\\`not code`\n1\\. not a list\n\\* not a list\n\\# not a heading\n\\[foo]: /url \"not a reference\"\n\\&ouml; not a character entity",
+    "html": "<p>*not emphasized*\n&lt;br/&gt; not a tag\n[not a link](/foo)\n`not code`\n1. not a list\n* not a list\n# not a heading\n[foo]: /url &quot;not a reference&quot;\n&amp;ouml; not a character entity</p>",
+    "example": 298,
+    "section": "Backslash escapes",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "\\\\*emphasis*",
+    "html": "<p>\\<em>emphasis</em></p>",
+    "example": 299,
+    "section": "not a heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo\\\nbar",
+    "html": "<p>foo<br />\nbar</p>",
+    "example": 300,
+    "section": "not a heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`` \\[\\` ``",
+    "html": "<p><code>\\[\\`</code></p>",
+    "example": 301,
+    "section": "not a heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    \\[\\]",
+    "html": "<pre><code>\\[\\]\n</code></pre>",
+    "example": 302,
+    "section": "not a heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "~~~\n\\[\\]\n~~~",
+    "html": "<pre><code>\\[\\]\n</code></pre>",
+    "example": 303,
+    "section": "not a heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<http://example.com?find=\\*>",
+    "html": "<p><a href=\"http://example.com?find=%5C*\">http://example.com?find=\\*</a></p>",
+    "example": 304,
+    "section": "not a heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a href=\"/bar\\/)\">",
+    "html": "<a href=\"/bar\\/)\">",
+    "example": 305,
+    "section": "not a heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo](/bar\\* \"ti\\*tle\")",
+    "html": "<p><a href=\"/bar*\" title=\"ti*tle\">foo</a></p>",
+    "example": 306,
+    "section": "not a heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]\n\n[foo]: /bar\\* \"ti\\*tle\"",
+    "html": "<p><a href=\"/bar*\" title=\"ti*tle\">foo</a></p>",
+    "example": 307,
+    "section": "not a heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "``` foo\\+bar\nfoo\n```",
+    "html": "<pre><code class=\"language-foo+bar\">foo\n</code></pre>",
+    "example": 308,
+    "section": "not a heading",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "&nbsp; &amp; &copy; &AElig; &Dcaron;\n&frac34; &HilbertSpace; &DifferentialD;\n&ClockwiseContourIntegral; &ngE;",
+    "html": "<p>  &amp; © Æ Ď\n¾ ℋ ⅆ\n∲ ≧̸</p>",
+    "example": 309,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "&#35; &#1234; &#992; &#0;",
+    "html": "<p># Ӓ Ϡ �</p>",
+    "example": 310,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "&#X22; &#XD06; &#xcab;",
+    "html": "<p>&quot; ആ ಫ</p>",
+    "example": 311,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "&nbsp &x; &#; &#x;\n&#987654321;\n&#abcdef0;\n&ThisIsNotDefined; &hi?;",
+    "html": "<p>&amp;nbsp &amp;x; &amp;#; &amp;#x;\n&amp;#987654321;\n&amp;#abcdef0;\n&amp;ThisIsNotDefined; &amp;hi?;</p>",
+    "example": 312,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "&copy",
+    "html": "<p>&amp;copy</p>",
+    "example": 313,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "&MadeUpEntity;",
+    "html": "<p>&amp;MadeUpEntity;</p>",
+    "example": 314,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a href=\"&ouml;&ouml;.html\">",
+    "html": "<a href=\"&ouml;&ouml;.html\">",
+    "example": 315,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo](/f&ouml;&ouml; \"f&ouml;&ouml;\")",
+    "html": "<p><a href=\"/f%C3%B6%C3%B6\" title=\"föö\">foo</a></p>",
+    "example": 316,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]\n\n[foo]: /f&ouml;&ouml; \"f&ouml;&ouml;\"",
+    "html": "<p><a href=\"/f%C3%B6%C3%B6\" title=\"föö\">foo</a></p>",
+    "example": 317,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "``` f&ouml;&ouml;\nfoo\n```",
+    "html": "<pre><code class=\"language-föö\">foo\n</code></pre>",
+    "example": 318,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`f&ouml;&ouml;`",
+    "html": "<p><code>f&amp;ouml;&amp;ouml;</code></p>",
+    "example": 319,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "    f&ouml;f&ouml;",
+    "html": "<pre><code>f&amp;ouml;f&amp;ouml;\n</code></pre>",
+    "example": 320,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "&#42;foo&#42;\n*foo*",
+    "html": "<p>*foo*\n<em>foo</em></p>",
+    "example": 321,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "&#42; foo\n\n* foo",
+    "html": "<p>* foo</p>\n<ul>\n<li>foo</li>\n</ul>",
+    "example": 322,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo&#10;&#10;bar",
+    "html": "<p>foo\n\nbar</p>",
+    "example": 323,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "&#9;foo",
+    "html": "<p>→foo</p>",
+    "example": 324,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[a](url &quot;tit&quot;)",
+    "html": "<p>[a](url &quot;tit&quot;)</p>",
+    "example": 325,
+    "section": "Entity and numeric character references",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`foo`",
+    "html": "<p><code>foo</code></p>",
+    "example": 326,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`` foo ` bar ``",
+    "html": "<p><code>foo ` bar</code></p>",
+    "example": 327,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "` `` `",
+    "html": "<p><code>``</code></p>",
+    "example": 328,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`  ``  `",
+    "html": "<p><code> `` </code></p>",
+    "example": 329,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "` a`",
+    "html": "<p><code> a</code></p>",
+    "example": 330,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "` b `",
+    "html": "<p><code> b </code></p>",
+    "example": 331,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "` `\n`  `",
+    "html": "<p><code> </code>\n<code>  </code></p>",
+    "example": 332,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "``\nfoo\nbar  \nbaz\n``",
+    "html": "<p><code>foo bar   baz</code></p>",
+    "example": 333,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "``\nfoo \n``",
+    "html": "<p><code>foo </code></p>",
+    "example": 334,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`foo   bar \nbaz`",
+    "html": "<p><code>foo   bar  baz</code></p>",
+    "example": 335,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`foo\\`bar`",
+    "html": "<p><code>foo\\</code>bar`</p>",
+    "example": 336,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "``foo`bar``",
+    "html": "<p><code>foo`bar</code></p>",
+    "example": 337,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "` foo `` bar `",
+    "html": "<p><code>foo `` bar</code></p>",
+    "example": 338,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo`*`",
+    "html": "<p>*foo<code>*</code></p>",
+    "example": 339,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[not a `link](/foo`)",
+    "html": "<p>[not a <code>link](/foo</code>)</p>",
+    "example": 340,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`<a href=\"`\">`",
+    "html": "<p><code>&lt;a href=&quot;</code>&quot;&gt;`</p>",
+    "example": 341,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a href=\"`\">`",
+    "html": "<p><a href=\"`\">`</p>",
+    "example": 342,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`<http://foo.bar.`baz>`",
+    "html": "<p><code>&lt;http://foo.bar.</code>baz&gt;`</p>",
+    "example": 343,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<http://foo.bar.`baz>`",
+    "html": "<p><a href=\"http://foo.bar.%60baz\">http://foo.bar.`baz</a>`</p>",
+    "example": 344,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "```foo``",
+    "html": "<p>```foo``</p>",
+    "example": 345,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`foo",
+    "html": "<p>`foo</p>",
+    "example": 346,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`foo``bar``",
+    "html": "<p>`foo<code>bar</code></p>",
+    "example": 347,
+    "section": "Code spans",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo bar*",
+    "html": "<p><em>foo bar</em></p>",
+    "example": 348,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "a * foo bar*",
+    "html": "<p>a * foo bar*</p>",
+    "example": 349,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "a*\"foo\"*",
+    "html": "<p>a*&quot;foo&quot;*</p>",
+    "example": 350,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "* a *",
+    "html": "<p>* a *</p>",
+    "example": 351,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo*bar*",
+    "html": "<p>foo<em>bar</em></p>",
+    "example": 352,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "5*6*78",
+    "html": "<p>5<em>6</em>78</p>",
+    "example": 353,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_foo bar_",
+    "html": "<p><em>foo bar</em></p>",
+    "example": 354,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_ foo bar_",
+    "html": "<p>_ foo bar_</p>",
+    "example": 355,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "a_\"foo\"_",
+    "html": "<p>a_&quot;foo&quot;_</p>",
+    "example": 356,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo_bar_",
+    "html": "<p>foo_bar_</p>",
+    "example": 357,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "5_6_78",
+    "html": "<p>5_6_78</p>",
+    "example": 358,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "пристаням_стремятся_",
+    "html": "<p>пристаням_стремятся_</p>",
+    "example": 359,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "aa_\"bb\"_cc",
+    "html": "<p>aa_&quot;bb&quot;_cc</p>",
+    "example": 360,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo-_(bar)_",
+    "html": "<p>foo-<em>(bar)</em></p>",
+    "example": 361,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_foo*",
+    "html": "<p>_foo*</p>",
+    "example": 362,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo bar *",
+    "html": "<p>*foo bar *</p>",
+    "example": 363,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo bar\n*",
+    "html": "<p>*foo bar\n*</p>",
+    "example": 364,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*(*foo)",
+    "html": "<p>*(*foo)</p>",
+    "example": 365,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*(*foo*)*",
+    "html": "<p><em>(<em>foo</em>)</em></p>",
+    "example": 366,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo*bar",
+    "html": "<p><em>foo</em>bar</p>",
+    "example": 367,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_foo bar _",
+    "html": "<p>_foo bar _</p>",
+    "example": 368,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_(_foo)",
+    "html": "<p>_(_foo)</p>",
+    "example": 369,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_(_foo_)_",
+    "html": "<p><em>(<em>foo</em>)</em></p>",
+    "example": 370,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_foo_bar",
+    "html": "<p>_foo_bar</p>",
+    "example": 371,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_пристаням_стремятся",
+    "html": "<p>_пристаням_стремятся</p>",
+    "example": 372,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_foo_bar_baz_",
+    "html": "<p><em>foo_bar_baz</em></p>",
+    "example": 373,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_(bar)_.",
+    "html": "<p><em>(bar)</em>.</p>",
+    "example": 374,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo bar**",
+    "html": "<p><strong>foo bar</strong></p>",
+    "example": 375,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "** foo bar**",
+    "html": "<p>** foo bar**</p>",
+    "example": 376,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "a**\"foo\"**",
+    "html": "<p>a**&quot;foo&quot;**</p>",
+    "example": 377,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo**bar**",
+    "html": "<p>foo<strong>bar</strong></p>",
+    "example": 378,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo bar__",
+    "html": "<p><strong>foo bar</strong></p>",
+    "example": 379,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__ foo bar__",
+    "html": "<p>__ foo bar__</p>",
+    "example": 380,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__\nfoo bar__",
+    "html": "<p>__\nfoo bar__</p>",
+    "example": 381,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "a__\"foo\"__",
+    "html": "<p>a__&quot;foo&quot;__</p>",
+    "example": 382,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo__bar__",
+    "html": "<p>foo__bar__</p>",
+    "example": 383,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "5__6__78",
+    "html": "<p>5__6__78</p>",
+    "example": 384,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "пристаням__стремятся__",
+    "html": "<p>пристаням__стремятся__</p>",
+    "example": 385,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo, __bar__, baz__",
+    "html": "<p><strong>foo, bar, baz</strong></p>",
+    "example": 386,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo-__(bar)__",
+    "html": "<p>foo-<strong>(bar)</strong></p>",
+    "example": 387,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo bar **",
+    "html": "<p>**foo bar **</p>",
+    "example": 388,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**(**foo)",
+    "html": "<p>**(**foo)</p>",
+    "example": 389,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*(**foo**)*",
+    "html": "<p><em>(<strong>foo</strong>)</em></p>",
+    "example": 390,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**Gomphocarpus (*Gomphocarpus physocarpus*, syn.\n*Asclepias physocarpa*)**",
+    "html": "<p><strong>Gomphocarpus (<em>Gomphocarpus physocarpus</em>, syn.\n<em>Asclepias physocarpa</em>)</strong></p>",
+    "example": 391,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo \"*bar*\" foo**",
+    "html": "<p><strong>foo &quot;<em>bar</em>&quot; foo</strong></p>",
+    "example": 392,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo**bar",
+    "html": "<p><strong>foo</strong>bar</p>",
+    "example": 393,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo bar __",
+    "html": "<p>__foo bar __</p>",
+    "example": 394,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__(__foo)",
+    "html": "<p>__(__foo)</p>",
+    "example": 395,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_(__foo__)_",
+    "html": "<p><em>(<strong>foo</strong>)</em></p>",
+    "example": 396,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo__bar",
+    "html": "<p>__foo__bar</p>",
+    "example": 397,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__пристаням__стремятся",
+    "html": "<p>__пристаням__стремятся</p>",
+    "example": 398,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo__bar__baz__",
+    "html": "<p><strong>foo__bar__baz</strong></p>",
+    "example": 399,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__(bar)__.",
+    "html": "<p><strong>(bar)</strong>.</p>",
+    "example": 400,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo [bar](/url)*",
+    "html": "<p><em>foo <a href=\"/url\">bar</a></em></p>",
+    "example": 401,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo\nbar*",
+    "html": "<p><em>foo\nbar</em></p>",
+    "example": 402,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_foo __bar__ baz_",
+    "html": "<p><em>foo <strong>bar</strong> baz</em></p>",
+    "example": 403,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_foo _bar_ baz_",
+    "html": "<p><em>foo <em>bar</em> baz</em></p>",
+    "example": 404,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo_ bar_",
+    "html": "<p><em><em>foo</em> bar</em></p>",
+    "example": 405,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo *bar**",
+    "html": "<p><em>foo <em>bar</em></em></p>",
+    "example": 406,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo **bar** baz*",
+    "html": "<p><em>foo <strong>bar</strong> baz</em></p>",
+    "example": 407,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo**bar**baz*",
+    "html": "<p><em>foo<strong>bar</strong>baz</em></p>",
+    "example": 408,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo**bar*",
+    "html": "<p><em>foo**bar</em></p>",
+    "example": 409,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "***foo** bar*",
+    "html": "<p><em><strong>foo</strong> bar</em></p>",
+    "example": 410,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo **bar***",
+    "html": "<p><em>foo <strong>bar</strong></em></p>",
+    "example": 411,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo**bar***",
+    "html": "<p><em>foo<strong>bar</strong></em></p>",
+    "example": 412,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo***bar***baz",
+    "html": "<p>foo<em><strong>bar</strong></em>baz</p>",
+    "example": 413,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo******bar*********baz",
+    "html": "<p>foo<strong>bar</strong>***baz</p>",
+    "example": 414,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo **bar *baz* bim** bop*",
+    "html": "<p><em>foo <strong>bar <em>baz</em> bim</strong> bop</em></p>",
+    "example": 415,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo [*bar*](/url)*",
+    "html": "<p><em>foo <a href=\"/url\"><em>bar</em></a></em></p>",
+    "example": 416,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "** is not an empty emphasis",
+    "html": "<p>** is not an empty emphasis</p>",
+    "example": 417,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**** is not an empty strong emphasis",
+    "html": "<p>**** is not an empty strong emphasis</p>",
+    "example": 418,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo [bar](/url)**",
+    "html": "<p><strong>foo <a href=\"/url\">bar</a></strong></p>",
+    "example": 419,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo\nbar**",
+    "html": "<p><strong>foo\nbar</strong></p>",
+    "example": 420,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo _bar_ baz__",
+    "html": "<p><strong>foo <em>bar</em> baz</strong></p>",
+    "example": 421,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo __bar__ baz__",
+    "html": "<p><strong>foo bar baz</strong></p>",
+    "example": 422,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "____foo__ bar__",
+    "html": "<p><strong>foo bar</strong></p>",
+    "example": 423,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo **bar****",
+    "html": "<p><strong>foo bar</strong></p>",
+    "example": 424,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo *bar* baz**",
+    "html": "<p><strong>foo <em>bar</em> baz</strong></p>",
+    "example": 425,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo*bar*baz**",
+    "html": "<p><strong>foo<em>bar</em>baz</strong></p>",
+    "example": 426,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "***foo* bar**",
+    "html": "<p><strong><em>foo</em> bar</strong></p>",
+    "example": 427,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo *bar***",
+    "html": "<p><strong>foo <em>bar</em></strong></p>",
+    "example": 428,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo *bar **baz**\nbim* bop**",
+    "html": "<p><strong>foo <em>bar <strong>baz</strong>\nbim</em> bop</strong></p>",
+    "example": 429,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo [*bar*](/url)**",
+    "html": "<p><strong>foo <a href=\"/url\"><em>bar</em></a></strong></p>",
+    "example": 430,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__ is not an empty emphasis",
+    "html": "<p>__ is not an empty emphasis</p>",
+    "example": 431,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "____ is not an empty strong emphasis",
+    "html": "<p>____ is not an empty strong emphasis</p>",
+    "example": 432,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo ***",
+    "html": "<p>foo ***</p>",
+    "example": 433,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo *\\**",
+    "html": "<p>foo <em>*</em></p>",
+    "example": 434,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo *_*",
+    "html": "<p>foo <em>_</em></p>",
+    "example": 435,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo *****",
+    "html": "<p>foo *****</p>",
+    "example": 436,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo **\\***",
+    "html": "<p>foo <strong>*</strong></p>",
+    "example": 437,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo **_**",
+    "html": "<p>foo <strong>_</strong></p>",
+    "example": 438,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo*",
+    "html": "<p>*<em>foo</em></p>",
+    "example": 439,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo**",
+    "html": "<p><em>foo</em>*</p>",
+    "example": 440,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "***foo**",
+    "html": "<p>*<strong>foo</strong></p>",
+    "example": 441,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "****foo*",
+    "html": "<p>***<em>foo</em></p>",
+    "example": 442,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo***",
+    "html": "<p><strong>foo</strong>*</p>",
+    "example": 443,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo****",
+    "html": "<p><em>foo</em>***</p>",
+    "example": 444,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo ___",
+    "html": "<p>foo ___</p>",
+    "example": 445,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo _\\__",
+    "html": "<p>foo <em>_</em></p>",
+    "example": 446,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo _*_",
+    "html": "<p>foo <em>*</em></p>",
+    "example": 447,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo _____",
+    "html": "<p>foo _____</p>",
+    "example": 448,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo __\\___",
+    "html": "<p>foo <strong>_</strong></p>",
+    "example": 449,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo __*__",
+    "html": "<p>foo <strong>*</strong></p>",
+    "example": 450,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo_",
+    "html": "<p>_<em>foo</em></p>",
+    "example": 451,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_foo__",
+    "html": "<p><em>foo</em>_</p>",
+    "example": 452,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "___foo__",
+    "html": "<p>_<strong>foo</strong></p>",
+    "example": 453,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "____foo_",
+    "html": "<p>___<em>foo</em></p>",
+    "example": 454,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo___",
+    "html": "<p><strong>foo</strong>_</p>",
+    "example": 455,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_foo____",
+    "html": "<p><em>foo</em>___</p>",
+    "example": 456,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo**",
+    "html": "<p><strong>foo</strong></p>",
+    "example": 457,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*_foo_*",
+    "html": "<p><em><em>foo</em></em></p>",
+    "example": 458,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__foo__",
+    "html": "<p><strong>foo</strong></p>",
+    "example": 459,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_*foo*_",
+    "html": "<p><em><em>foo</em></em></p>",
+    "example": 460,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "****foo****",
+    "html": "<p><strong>foo</strong></p>",
+    "example": 461,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "____foo____",
+    "html": "<p><strong>foo</strong></p>",
+    "example": 462,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "******foo******",
+    "html": "<p><strong>foo</strong></p>",
+    "example": 463,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "***foo***",
+    "html": "<p><em><strong>foo</strong></em></p>",
+    "example": 464,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_____foo_____",
+    "html": "<p><em><strong>foo</strong></em></p>",
+    "example": 465,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo _bar* baz_",
+    "html": "<p><em>foo _bar</em> baz_</p>",
+    "example": 466,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo __bar *baz bim__ bam*",
+    "html": "<p><em>foo <strong>bar *baz bim</strong> bam</em></p>",
+    "example": 467,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**foo **bar baz**",
+    "html": "<p>**foo <strong>bar baz</strong></p>",
+    "example": 468,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo *bar baz*",
+    "html": "<p>*foo <em>bar baz</em></p>",
+    "example": 469,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*[bar*](/url)",
+    "html": "<p>*<a href=\"/url\">bar*</a></p>",
+    "example": 470,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_foo [bar_](/url)",
+    "html": "<p>_foo <a href=\"/url\">bar_</a></p>",
+    "example": 471,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*<img src=\"foo\" title=\"*\"/>",
+    "html": "<p>*<img src=\"foo\" title=\"*\"/></p>",
+    "example": 472,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**<a href=\"**\">",
+    "html": "<p>**<a href=\"**\"></p>",
+    "example": 473,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__<a href=\"__\">",
+    "html": "<p>__<a href=\"__\"></p>",
+    "example": 474,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*a `*`*",
+    "html": "<p><em>a <code>*</code></em></p>",
+    "example": 475,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "_a `_`_",
+    "html": "<p><em>a <code>_</code></em></p>",
+    "example": 476,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "**a<http://foo.bar/?q=**>",
+    "html": "<p>**a<a href=\"http://foo.bar/?q=**\">http://foo.bar/?q=**</a></p>",
+    "example": 477,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "__a<http://foo.bar/?q=__>",
+    "html": "<p>__a<a href=\"http://foo.bar/?q=__\">http://foo.bar/?q=__</a></p>",
+    "example": 478,
+    "section": "Emphasis and strong emphasis",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](/uri \"title\")",
+    "html": "<p><a href=\"/uri\" title=\"title\">link</a></p>",
+    "example": 479,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](/uri)",
+    "html": "<p><a href=\"/uri\">link</a></p>",
+    "example": 480,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link]()",
+    "html": "<p><a href=\"\">link</a></p>",
+    "example": 481,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](<>)",
+    "html": "<p><a href=\"\">link</a></p>",
+    "example": 482,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](/my uri)",
+    "html": "<p>[link](/my uri)</p>",
+    "example": 483,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](</my uri>)",
+    "html": "<p><a href=\"/my%20uri\">link</a></p>",
+    "example": 484,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](foo\nbar)",
+    "html": "<p>[link](foo\nbar)</p>",
+    "example": 485,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](<foo\nbar>)",
+    "html": "<p>[link](<foo\nbar>)</p>",
+    "example": 486,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[a](<b)c>)",
+    "html": "<p><a href=\"b)c\">a</a></p>",
+    "example": 487,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](<foo\\>)",
+    "html": "<p>[link](&lt;foo&gt;)</p>",
+    "example": 488,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[a](<b)c\n[a](<b)c>\n[a](<b>c)",
+    "html": "<p>[a](&lt;b)c\n[a](&lt;b)c&gt;\n[a](<b>c)</p>",
+    "example": 489,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](\\(foo\\))",
+    "html": "<p><a href=\"(foo)\">link</a></p>",
+    "example": 490,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](foo(and(bar)))",
+    "html": "<p><a href=\"foo(and(bar))\">link</a></p>",
+    "example": 491,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](foo\\(and\\(bar\\))",
+    "html": "<p><a href=\"foo(and(bar)\">link</a></p>",
+    "example": 492,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](<foo(and(bar)>)",
+    "html": "<p><a href=\"foo(and(bar)\">link</a></p>",
+    "example": 493,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](foo\\)\\:)",
+    "html": "<p><a href=\"foo):\">link</a></p>",
+    "example": 494,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](#fragment)\n\n[link](http://example.com#fragment)\n\n[link](http://example.com?foo=3#frag)",
+    "html": "<p><a href=\"#fragment\">link</a></p>\n<p><a href=\"http://example.com#fragment\">link</a></p>\n<p><a href=\"http://example.com?foo=3#frag\">link</a></p>",
+    "example": 495,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](foo\\bar)",
+    "html": "<p><a href=\"foo%5Cbar\">link</a></p>",
+    "example": 496,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](foo%20b&auml;)",
+    "html": "<p><a href=\"foo%20b%C3%A4\">link</a></p>",
+    "example": 497,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](\"title\")",
+    "html": "<p><a href=\"%22title%22\">link</a></p>",
+    "example": 498,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](/url \"title\")\n[link](/url 'title')\n[link](/url (title))",
+    "html": "<p><a href=\"/url\" title=\"title\">link</a>\n<a href=\"/url\" title=\"title\">link</a>\n<a href=\"/url\" title=\"title\">link</a></p>",
+    "example": 499,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](/url \"title \\\"&quot;\")",
+    "html": "<p><a href=\"/url\" title=\"title &quot;&quot;\">link</a></p>",
+    "example": 500,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](/url \"title\")",
+    "html": "<p><a href=\"/url%C2%A0%22title%22\">link</a></p>",
+    "example": 501,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](/url \"title \"and\" title\")",
+    "html": "<p>[link](/url &quot;title &quot;and&quot; title&quot;)</p>",
+    "example": 502,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](/url 'title \"and\" title')",
+    "html": "<p><a href=\"/url\" title=\"title &quot;and&quot; title\">link</a></p>",
+    "example": 503,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link](   /uri\n  \"title\"  )",
+    "html": "<p><a href=\"/uri\" title=\"title\">link</a></p>",
+    "example": 504,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link] (/uri)",
+    "html": "<p>[link] (/uri)</p>",
+    "example": 505,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link [foo [bar]]](/uri)",
+    "html": "<p><a href=\"/uri\">link [foo [bar]]</a></p>",
+    "example": 506,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link] bar](/uri)",
+    "html": "<p>[link] bar](/uri)</p>",
+    "example": 507,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link [bar](/uri)",
+    "html": "<p>[link <a href=\"/uri\">bar</a></p>",
+    "example": 508,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link \\[bar](/uri)",
+    "html": "<p><a href=\"/uri\">link [bar</a></p>",
+    "example": 509,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link *foo **bar** `#`*](/uri)",
+    "html": "<p><a href=\"/uri\">link <em>foo <strong>bar</strong> <code>#</code></em></a></p>",
+    "example": 510,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[![moon](moon.jpg)](/uri)",
+    "html": "<p><a href=\"/uri\"><img src=\"moon.jpg\" alt=\"moon\" /></a></p>",
+    "example": 511,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo [bar](/uri)](/uri)",
+    "html": "<p>[foo <a href=\"/uri\">bar</a>](/uri)</p>",
+    "example": 512,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo *[bar [baz](/uri)](/uri)*](/uri)",
+    "html": "<p>[foo <em>[bar <a href=\"/uri\">baz</a>](/uri)</em>](/uri)</p>",
+    "example": 513,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![[[foo](uri1)](uri2)](uri3)",
+    "html": "<p><img src=\"uri3\" alt=\"[foo](uri2)\" /></p>",
+    "example": 514,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*[foo*](/uri)",
+    "html": "<p>*<a href=\"/uri\">foo*</a></p>",
+    "example": 515,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo *bar](baz*)",
+    "html": "<p><a href=\"baz*\">foo *bar</a></p>",
+    "example": 516,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo [bar* baz]",
+    "html": "<p><em>foo [bar</em> baz]</p>",
+    "example": 517,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo <bar attr=\"](baz)\">",
+    "html": "<p>[foo <bar attr=\"](baz)\"></p>",
+    "example": 518,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo`](/uri)`",
+    "html": "<p>[foo<code>](/uri)</code></p>",
+    "example": 519,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo<http://example.com/?search=](uri)>",
+    "html": "<p>[foo<a href=\"http://example.com/?search=%5D(uri)\">http://example.com/?search=](uri)</a></p>",
+    "example": 520,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][bar]\n\n[bar]: /url \"title\"",
+    "html": "<p><a href=\"/url\" title=\"title\">foo</a></p>",
+    "example": 521,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link [foo [bar]]][ref]\n\n[ref]: /uri",
+    "html": "<p><a href=\"/uri\">link [foo [bar]]</a></p>",
+    "example": 522,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link \\[bar][ref]\n\n[ref]: /uri",
+    "html": "<p><a href=\"/uri\">link [bar</a></p>",
+    "example": 523,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[link *foo **bar** `#`*][ref]\n\n[ref]: /uri",
+    "html": "<p><a href=\"/uri\">link <em>foo <strong>bar</strong> <code>#</code></em></a></p>",
+    "example": 524,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[![moon](moon.jpg)][ref]\n\n[ref]: /uri",
+    "html": "<p><a href=\"/uri\"><img src=\"moon.jpg\" alt=\"moon\" /></a></p>",
+    "example": 525,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo [bar](/uri)][ref]\n\n[ref]: /uri",
+    "html": "<p>[foo <a href=\"/uri\">bar</a>]<a href=\"/uri\">ref</a></p>",
+    "example": 526,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo *bar [baz][ref]*][ref]\n\n[ref]: /uri",
+    "html": "<p>[foo <em>bar <a href=\"/uri\">baz</a></em>]<a href=\"/uri\">ref</a></p>",
+    "example": 527,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*[foo*][ref]\n\n[ref]: /uri",
+    "html": "<p>*<a href=\"/uri\">foo*</a></p>",
+    "example": 528,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo *bar][ref]\n\n[ref]: /uri",
+    "html": "<p><a href=\"/uri\">foo *bar</a></p>",
+    "example": 529,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo <bar attr=\"][ref]\">\n\n[ref]: /uri",
+    "html": "<p>[foo <bar attr=\"][ref]\"></p>",
+    "example": 530,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo`][ref]`\n\n[ref]: /uri",
+    "html": "<p>[foo<code>][ref]</code></p>",
+    "example": 531,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo<http://example.com/?search=][ref]>\n\n[ref]: /uri",
+    "html": "<p>[foo<a href=\"http://example.com/?search=%5D%5Bref%5D\">http://example.com/?search=][ref]</a></p>",
+    "example": 532,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][BaR]\n\n[bar]: /url \"title\"",
+    "html": "<p><a href=\"/url\" title=\"title\">foo</a></p>",
+    "example": 533,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[Толпой][Толпой] is a Russian word.\n\n[ТОЛПОЙ]: /url",
+    "html": "<p><a href=\"/url\">Толпой</a> is a Russian word.</p>",
+    "example": 534,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[Foo\n  bar]: /url\n\n[Baz][Foo bar]",
+    "html": "<p><a href=\"/url\">Baz</a></p>",
+    "example": 535,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo] [bar]\n\n[bar]: /url \"title\"",
+    "html": "<p>[foo] <a href=\"/url\" title=\"title\">bar</a></p>",
+    "example": 536,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]\n[bar]\n\n[bar]: /url \"title\"",
+    "html": "<p>[foo]\n<a href=\"/url\" title=\"title\">bar</a></p>",
+    "example": 537,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]: /url1\n\n[foo]: /url2\n\n[bar][foo]",
+    "html": "<p><a href=\"/url1\">bar</a></p>",
+    "example": 538,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[bar][foo\\!]\n\n[foo!]: /url",
+    "html": "<p>[bar][foo!]</p>",
+    "example": 539,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][ref[]\n\n[ref[]: /uri",
+    "html": "<p>[foo][ref[]</p>\n<p>[ref[]: /uri</p>",
+    "example": 540,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][ref[bar]]\n\n[ref[bar]]: /uri",
+    "html": "<p>[foo][ref[bar]]</p>\n<p>[ref[bar]]: /uri</p>",
+    "example": 541,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[[[foo]]]\n\n[[[foo]]]: /url",
+    "html": "<p>[[[foo]]]</p>\n<p>[[[foo]]]: /url</p>",
+    "example": 542,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][ref\\[]\n\n[ref\\[]: /uri",
+    "html": "<p><a href=\"/uri\">foo</a></p>",
+    "example": 543,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[bar\\\\]: /uri\n\n[bar\\\\]",
+    "html": "<p><a href=\"/uri\">bar\\</a></p>",
+    "example": 544,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[]\n\n[]: /uri",
+    "html": "<p>[]</p>\n<p>[]: /uri</p>",
+    "example": 545,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[\n ]\n\n[\n ]: /uri",
+    "html": "<p>[\n]</p>\n<p>[\n]: /uri</p>",
+    "example": 546,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][]\n\n[foo]: /url \"title\"",
+    "html": "<p><a href=\"/url\" title=\"title\">foo</a></p>",
+    "example": 547,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[*foo* bar][]\n\n[*foo* bar]: /url \"title\"",
+    "html": "<p><a href=\"/url\" title=\"title\"><em>foo</em> bar</a></p>",
+    "example": 548,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[Foo][]\n\n[foo]: /url \"title\"",
+    "html": "<p><a href=\"/url\" title=\"title\">Foo</a></p>",
+    "example": 549,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo] \n[]\n\n[foo]: /url \"title\"",
+    "html": "<p><a href=\"/url\" title=\"title\">foo</a>\n[]</p>",
+    "example": 550,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]\n\n[foo]: /url \"title\"",
+    "html": "<p><a href=\"/url\" title=\"title\">foo</a></p>",
+    "example": 551,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[*foo* bar]\n\n[*foo* bar]: /url \"title\"",
+    "html": "<p><a href=\"/url\" title=\"title\"><em>foo</em> bar</a></p>",
+    "example": 552,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[[*foo* bar]]\n\n[*foo* bar]: /url \"title\"",
+    "html": "<p>[<a href=\"/url\" title=\"title\"><em>foo</em> bar</a>]</p>",
+    "example": 553,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[[bar [foo]\n\n[foo]: /url",
+    "html": "<p>[[bar <a href=\"/url\">foo</a></p>",
+    "example": 554,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[Foo]\n\n[foo]: /url \"title\"",
+    "html": "<p><a href=\"/url\" title=\"title\">Foo</a></p>",
+    "example": 555,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo] bar\n\n[foo]: /url",
+    "html": "<p><a href=\"/url\">foo</a> bar</p>",
+    "example": 556,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "\\[foo]\n\n[foo]: /url \"title\"",
+    "html": "<p>[foo]</p>",
+    "example": 557,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo*]: /url\n\n*[foo*]",
+    "html": "<p>*<a href=\"/url\">foo*</a></p>",
+    "example": 558,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][bar]\n\n[foo]: /url1\n[bar]: /url2",
+    "html": "<p><a href=\"/url2\">foo</a></p>",
+    "example": 559,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][]\n\n[foo]: /url1",
+    "html": "<p><a href=\"/url1\">foo</a></p>",
+    "example": 560,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo]()\n\n[foo]: /url1",
+    "html": "<p><a href=\"\">foo</a></p>",
+    "example": 561,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo](not a link)\n\n[foo]: /url1",
+    "html": "<p><a href=\"/url1\">foo</a>(not a link)</p>",
+    "example": 562,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][bar][baz]\n\n[baz]: /url",
+    "html": "<p>[foo]<a href=\"/url\">bar</a></p>",
+    "example": 563,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][bar][baz]\n\n[baz]: /url1\n[bar]: /url2",
+    "html": "<p><a href=\"/url2\">foo</a><a href=\"/url1\">baz</a></p>",
+    "example": 564,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "[foo][bar][baz]\n\n[baz]: /url1\n[foo]: /url2",
+    "html": "<p>[foo]<a href=\"/url1\">bar</a></p>",
+    "example": 565,
+    "section": "Links",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo](/url \"title\")",
+    "html": "<p><img src=\"/url\" alt=\"foo\" title=\"title\" /></p>",
+    "example": 566,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo *bar*]\n\n[foo *bar*]: train.jpg \"train & tracks\"",
+    "html": "<p><img src=\"train.jpg\" alt=\"foo bar\" title=\"train &amp; tracks\" /></p>",
+    "example": 567,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo ![bar](/url)](/url2)",
+    "html": "<p><img src=\"/url2\" alt=\"foo bar\" /></p>",
+    "example": 568,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo [bar](/url)](/url2)",
+    "html": "<p><img src=\"/url2\" alt=\"foo bar\" /></p>",
+    "example": 569,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo *bar*][]\n\n[foo *bar*]: train.jpg \"train & tracks\"",
+    "html": "<p><img src=\"train.jpg\" alt=\"foo bar\" title=\"train &amp; tracks\" /></p>",
+    "example": 570,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo *bar*][foobar]\n\n[FOOBAR]: train.jpg \"train & tracks\"",
+    "html": "<p><img src=\"train.jpg\" alt=\"foo bar\" title=\"train &amp; tracks\" /></p>",
+    "example": 571,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo](train.jpg)",
+    "html": "<p><img src=\"train.jpg\" alt=\"foo\" /></p>",
+    "example": 572,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "My ![foo bar](/path/to/train.jpg  \"title\"   )",
+    "html": "<p>My <img src=\"/path/to/train.jpg\" alt=\"foo bar\" title=\"title\" /></p>",
+    "example": 573,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo](<url>)",
+    "html": "<p><img src=\"url\" alt=\"foo\" /></p>",
+    "example": 574,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![](/url)",
+    "html": "<p><img src=\"/url\" alt=\"\" /></p>",
+    "example": 575,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo][bar]\n\n[bar]: /url",
+    "html": "<p><img src=\"/url\" alt=\"foo\" /></p>",
+    "example": 576,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo][bar]\n\n[BAR]: /url",
+    "html": "<p><img src=\"/url\" alt=\"foo\" /></p>",
+    "example": 577,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo][]\n\n[foo]: /url \"title\"",
+    "html": "<p><img src=\"/url\" alt=\"foo\" title=\"title\" /></p>",
+    "example": 578,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![*foo* bar][]\n\n[*foo* bar]: /url \"title\"",
+    "html": "<p><img src=\"/url\" alt=\"foo bar\" title=\"title\" /></p>",
+    "example": 579,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![Foo][]\n\n[foo]: /url \"title\"",
+    "html": "<p><img src=\"/url\" alt=\"Foo\" title=\"title\" /></p>",
+    "example": 580,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo] \n[]\n\n[foo]: /url \"title\"",
+    "html": "<p><img src=\"/url\" alt=\"foo\" title=\"title\" />\n[]</p>",
+    "example": 581,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![foo]\n\n[foo]: /url \"title\"",
+    "html": "<p><img src=\"/url\" alt=\"foo\" title=\"title\" /></p>",
+    "example": 582,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![*foo* bar]\n\n[*foo* bar]: /url \"title\"",
+    "html": "<p><img src=\"/url\" alt=\"foo bar\" title=\"title\" /></p>",
+    "example": 583,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![[foo]]\n\n[[foo]]: /url \"title\"",
+    "html": "<p>![[foo]]</p>\n<p>[[foo]]: /url &quot;title&quot;</p>",
+    "example": 584,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "![Foo]\n\n[foo]: /url \"title\"",
+    "html": "<p><img src=\"/url\" alt=\"Foo\" title=\"title\" /></p>",
+    "example": 585,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "!\\[foo]\n\n[foo]: /url \"title\"",
+    "html": "<p>![foo]</p>",
+    "example": 586,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "\\![foo]\n\n[foo]: /url \"title\"",
+    "html": "<p>!<a href=\"/url\" title=\"title\">foo</a></p>",
+    "example": 587,
+    "section": "Images",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<http://foo.bar.baz>",
+    "html": "<p><a href=\"http://foo.bar.baz\">http://foo.bar.baz</a></p>",
+    "example": 588,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<http://foo.bar.baz/test?q=hello&id=22&boolean>",
+    "html": "<p><a href=\"http://foo.bar.baz/test?q=hello&amp;id=22&amp;boolean\">http://foo.bar.baz/test?q=hello&amp;id=22&amp;boolean</a></p>",
+    "example": 589,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<irc://foo.bar:2233/baz>",
+    "html": "<p><a href=\"irc://foo.bar:2233/baz\">irc://foo.bar:2233/baz</a></p>",
+    "example": 590,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<MAILTO:FOO@BAR.BAZ>",
+    "html": "<p><a href=\"MAILTO:FOO@BAR.BAZ\">MAILTO:FOO@BAR.BAZ</a></p>",
+    "example": 591,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a+b+c:d>",
+    "html": "<p><a href=\"a+b+c:d\">a+b+c:d</a></p>",
+    "example": 592,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<made-up-scheme://foo,bar>",
+    "html": "<p><a href=\"made-up-scheme://foo,bar\">made-up-scheme://foo,bar</a></p>",
+    "example": 593,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<http://../>",
+    "html": "<p><a href=\"http://../\">http://../</a></p>",
+    "example": 594,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<localhost:5001/foo>",
+    "html": "<p><a href=\"localhost:5001/foo\">localhost:5001/foo</a></p>",
+    "example": 595,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<http://foo.bar/baz bim>",
+    "html": "<p>&lt;http://foo.bar/baz bim&gt;</p>",
+    "example": 596,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<http://example.com/\\[\\>",
+    "html": "<p><a href=\"http://example.com/%5C%5B%5C\">http://example.com/\\[\\</a></p>",
+    "example": 597,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<foo@bar.example.com>",
+    "html": "<p><a href=\"mailto:foo@bar.example.com\">foo@bar.example.com</a></p>",
+    "example": 598,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<foo+special@Bar.baz-bar0.com>",
+    "html": "<p><a href=\"mailto:foo+special@Bar.baz-bar0.com\">foo+special@Bar.baz-bar0.com</a></p>",
+    "example": 599,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<foo\\+@bar.example.com>",
+    "html": "<p>&lt;foo+@bar.example.com&gt;</p>",
+    "example": 600,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<>",
+    "html": "<p>&lt;&gt;</p>",
+    "example": 601,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "< http://foo.bar >",
+    "html": "<p>&lt; http://foo.bar &gt;</p>",
+    "example": 602,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<m:abc>",
+    "html": "<p>&lt;m:abc&gt;</p>",
+    "example": 603,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<foo.bar.baz>",
+    "html": "<p>&lt;foo.bar.baz&gt;</p>",
+    "example": 604,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "http://example.com",
+    "html": "<p>http://example.com</p>",
+    "example": 605,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo@bar.example.com",
+    "html": "<p>foo@bar.example.com</p>",
+    "example": 606,
+    "section": "Autolinks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a><bab><c2c>",
+    "html": "<p><a><bab><c2c></p>",
+    "example": 607,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a/><b2/>",
+    "html": "<p><a/><b2/></p>",
+    "example": 608,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a  /><b2\ndata=\"foo\" >",
+    "html": "<p><a  /><b2\ndata=\"foo\" ></p>",
+    "example": 609,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a foo=\"bar\" bam = 'baz <em>\"</em>'\n_boolean zoop:33=zoop:33 />",
+    "html": "<p><a foo=\"bar\" bam = 'baz <em>\"</em>'\n_boolean zoop:33=zoop:33 /></p>",
+    "example": 610,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo <responsive-image src=\"foo.jpg\" />",
+    "html": "<p>Foo <responsive-image src=\"foo.jpg\" /></p>",
+    "example": 611,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<33> <__>",
+    "html": "<p>&lt;33&gt; &lt;__&gt;</p>",
+    "example": 612,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a h*#ref=\"hi\">",
+    "html": "<p>&lt;a h*#ref=&quot;hi&quot;&gt;</p>",
+    "example": 613,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a href=\"hi'> <a href=hi'>",
+    "html": "<p>&lt;a href=&quot;hi'&gt; &lt;a href=hi'&gt;</p>",
+    "example": 614,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "< a><\nfoo><bar/ >\n<foo bar=baz\nbim!bop />",
+    "html": "<p>&lt; a&gt;&lt;\nfoo&gt;&lt;bar/ &gt;\n&lt;foo bar=baz\nbim!bop /&gt;</p>",
+    "example": 615,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a href='bar'title=title>",
+    "html": "<p>&lt;a href='bar'title=title&gt;</p>",
+    "example": 616,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "</a></foo >",
+    "html": "<p></a></foo ></p>",
+    "example": 617,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "</a href=\"foo\">",
+    "html": "<p>&lt;/a href=&quot;foo&quot;&gt;</p>",
+    "example": 618,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo <!-- this is a --\ncomment - with hyphens -->",
+    "html": "<p>foo <!-- this is a --\ncomment - with hyphens --></p>",
+    "example": 619,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo <!--> foo -->\n\nfoo <!---> foo -->",
+    "html": "<p>foo <!--> foo --&gt;</p>\n<p>foo <!---> foo --&gt;</p>",
+    "example": 620,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo <?php echo $a; ?>",
+    "html": "<p>foo <?php echo $a; ?></p>",
+    "example": 621,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo <!ELEMENT br EMPTY>",
+    "html": "<p>foo <!ELEMENT br EMPTY></p>",
+    "example": 622,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo <![CDATA[>&<]]>",
+    "html": "<p>foo <![CDATA[>&<]]></p>",
+    "example": 623,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo <a href=\"&ouml;\">",
+    "html": "<p>foo <a href=\"&ouml;\"></p>",
+    "example": 624,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo <a href=\"\\*\">",
+    "html": "<p>foo <a href=\"\\*\"></p>",
+    "example": 625,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a href=\"\\\"\">",
+    "html": "<p>&lt;a href=&quot;&quot;&quot;&gt;</p>",
+    "example": 626,
+    "section": "Raw HTML",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo  \nbaz",
+    "html": "<p>foo<br />\nbaz</p>",
+    "example": 627,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo\\\nbaz",
+    "html": "<p>foo<br />\nbaz</p>",
+    "example": 628,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo       \nbaz",
+    "html": "<p>foo<br />\nbaz</p>",
+    "example": 629,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo  \n     bar",
+    "html": "<p>foo<br />\nbar</p>",
+    "example": 630,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo\\\n     bar",
+    "html": "<p>foo<br />\nbar</p>",
+    "example": 631,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo  \nbar*",
+    "html": "<p><em>foo<br />\nbar</em></p>",
+    "example": 632,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "*foo\\\nbar*",
+    "html": "<p><em>foo<br />\nbar</em></p>",
+    "example": 633,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`code  \nspan`",
+    "html": "<p><code>code   span</code></p>",
+    "example": 634,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "`code\\\nspan`",
+    "html": "<p><code>code\\ span</code></p>",
+    "example": 635,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a href=\"foo  \nbar\">",
+    "html": "<p><a href=\"foo  \nbar\"></p>",
+    "example": 636,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "<a href=\"foo\\\nbar\">",
+    "html": "<p><a href=\"foo\\\nbar\"></p>",
+    "example": 637,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo\\",
+    "html": "<p>foo\\</p>",
+    "example": 638,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo  ",
+    "html": "<p>foo</p>",
+    "example": 639,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "### foo\\",
+    "html": "<h3>foo\\</h3>",
+    "example": 640,
+    "section": "Hard line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "### foo  ",
+    "html": "<h3>foo</h3>",
+    "example": 641,
+    "section": "foo\\",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo\nbaz",
+    "html": "<p>foo\nbaz</p>",
+    "example": 642,
+    "section": "Soft line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "foo \n baz",
+    "html": "<p>foo\nbaz</p>",
+    "example": 643,
+    "section": "Soft line breaks",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "hello $.;'there",
+    "html": "<p>hello $.;'there</p>",
+    "example": 644,
+    "section": "Textual content",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Foo χρῆν",
+    "html": "<p>Foo χρῆν</p>",
+    "example": 645,
+    "section": "Textual content",
+    "source": "gfm-spec"
+  },
+  {
+    "markdown": "Multiple     spaces",
+    "html": "<p>Multiple     spaces</p>",
+    "example": 646,
+    "section": "Textual content",
+    "source": "gfm-spec"
+  }
+]

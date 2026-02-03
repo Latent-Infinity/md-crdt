@@ -141,6 +141,28 @@ impl<T: Clone> Sequence<T> {
         self.insert(after, op.1, op.0);
     }
 
+    pub fn from_ordered(items: Vec<(OpId, T)>) -> Self {
+        let mut elements = Vec::with_capacity(items.len());
+        let mut index = BTreeMap::new();
+        let mut after = None;
+        for (idx, (id, value)) in items.into_iter().enumerate() {
+            elements.push(Element {
+                id,
+                value: Some(value),
+                after,
+                right_origin: None,
+            });
+            index.insert(id, idx);
+            after = Some(id);
+        }
+        Self {
+            elements,
+            index,
+            pending_inserts: BTreeMap::new(),
+            pending_deletes: BTreeMap::new(),
+        }
+    }
+
     pub fn element_ids(&self) -> Vec<OpId> {
         self.elements.iter().map(|elem| elem.id).collect()
     }
@@ -242,9 +264,10 @@ impl<T: Clone> Sequence<T> {
         let mut ordered_ids = Vec::with_capacity(element_map.len());
         Self::walk_children(None, &children, &mut ordered_ids);
 
+        // Use remove() instead of get().cloned() to move elements without cloning
         self.elements = ordered_ids
             .into_iter()
-            .filter_map(|id| element_map.get(&id).cloned())
+            .filter_map(|id| element_map.remove(&id))
             .collect();
         self.rebuild_index();
     }
@@ -381,8 +404,15 @@ impl<T: Clone> LwwRegister<T> {
         }
     }
 
+    /// Returns a clone of the current value. Consider using `get_ref()` to avoid allocation.
     pub fn get(&self) -> T {
         self.value.clone()
+    }
+
+    /// Returns a reference to the current value (zero-cost).
+    #[inline]
+    pub fn get_ref(&self) -> &T {
+        &self.value
     }
 
     pub fn op_id(&self) -> OpId {
@@ -409,7 +439,14 @@ impl<K: Ord + Clone, V: Clone> Map<K, V> {
             .or_insert_with(|| LwwRegister::new(value, op_id));
     }
 
-    pub fn get(&self, key: &K) -> Option<V> {
+    /// Returns a reference to the value (zero-cost). Use `get_cloned()` if you need ownership.
+    #[inline]
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.entries.get(key).map(|register| register.get_ref())
+    }
+
+    /// Returns a clone of the value. Prefer `get()` when a reference suffices.
+    pub fn get_cloned(&self, key: &K) -> Option<V> {
         self.entries.get(key).map(|register| register.get())
     }
 }
@@ -620,11 +657,21 @@ pub mod mark {
             }
         }
 
+        /// Returns a Vec of active intervals. Use `iter_active_intervals()` for lazy iteration.
         pub fn active_intervals(&self) -> Vec<&MarkInterval> {
             self.intervals
                 .values()
                 .filter(|interval| self.is_active(&interval.id))
                 .collect()
+        }
+
+        /// Returns an iterator over active intervals (lazy, no allocation).
+        /// Prefer this over `active_intervals()` when you don't need indexing.
+        #[inline]
+        pub fn iter_active_intervals(&self) -> impl Iterator<Item = &MarkInterval> {
+            self.intervals
+                .values()
+                .filter(|interval| self.is_active(&interval.id))
         }
 
         pub fn render_spans(&self, element_order: &[OpId], visible_len: usize) -> Vec<Span> {
@@ -654,10 +701,12 @@ pub mod mark {
                 marks.dedup();
             }
 
-            let mut spans = Vec::new();
+            // Pre-allocate spans - worst case is one span per position
+            let mut spans = Vec::with_capacity(visible_len.min(64));
             let mut start = 0usize;
             while start < visible_len {
-                let current = marks_at[start].clone();
+                // Use std::mem::take to move instead of clone where possible
+                let current = std::mem::take(&mut marks_at[start]);
                 let mut end = start + 1;
                 while end < visible_len && marks_at[end] == current {
                     end += 1;

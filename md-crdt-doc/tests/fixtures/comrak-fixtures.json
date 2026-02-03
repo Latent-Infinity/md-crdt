@@ -1,0 +1,646 @@
+[
+  {
+    "markdown": "> [!NOTE]\n> Highlights information that users should take into account, even when skimming.",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>Highlights information that users should take into account, even when skimming.</p>\n</div>",
+    "example": 1,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "> [!NOTE]  \n> Highlights information that users should take into account, even when skimming.",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>Highlights information that users should take into account, even when skimming.</p>\n</div>",
+    "example": 2,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "> [!note]\n> Highlights information that users should take into account, even when skimming.",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>Highlights information that users should take into account, even when skimming.</p>\n</div>",
+    "example": 3,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "> [!NOTE]\n> Highlights information that users should take into account, even when skimming.\n>\n> Paragraph two.",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>Highlights information that users should take into account, even when skimming.</p>\n<p>Paragraph two.</p>\n</div>",
+    "example": 4,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "> [!TIP]\n> Optional information to help a user be more successful.",
+    "html": "<div class=\"markdown-alert markdown-alert-tip\">\n<p class=\"markdown-alert-title\">Tip</p>\n<p>Optional information to help a user be more successful.</p>\n</div>",
+    "example": 5,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "> [!IMPORTANT]\n> Crucial information necessary for users to succeed.",
+    "html": "<div class=\"markdown-alert markdown-alert-important\">\n<p class=\"markdown-alert-title\">Important</p>\n<p>Crucial information necessary for users to succeed.</p>\n</div>",
+    "example": 6,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "> [!WARNING]\n> Critical content demanding immediate user attention due to potential risks.",
+    "html": "<div class=\"markdown-alert markdown-alert-warning\">\n<p class=\"markdown-alert-title\">Warning</p>\n<p>Critical content demanding immediate user attention due to potential risks.</p>\n</div>",
+    "example": 7,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "> [!CAUTION]\n> Negative potential consequences of an action.",
+    "html": "<div class=\"markdown-alert markdown-alert-caution\">\n<p class=\"markdown-alert-title\">Caution</p>\n<p>Negative potential consequences of an action.</p>\n</div>",
+    "example": 8,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "> [!NOTE] Pay attention\n> Highlights information that users should take into account, even when skimming.",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Pay attention</p>\n<p>Highlights information that users should take into account, even when skimming.</p>\n</div>",
+    "example": 9,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "> [!NOTE] **Pay** attention <script>\n> Highlights information that users should take into account, even when skimming.",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">**Pay** attention &lt;script&gt;</p>\n<p>Highlights information that users should take into account, even when skimming.</p>\n</div>",
+    "example": 10,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "- Item one\n\n  > [!NOTE]\n  > Highlights information that users should take into account, even when skimming.",
+    "html": "<ul>\n<li>\n<p>Item one</p>\n<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>Highlights information that users should take into account, even when skimming.</p>\n</div>\n</li>\n</ul>",
+    "example": 11,
+    "section": "Alerts",
+    "source": "comrak/alerts.md"
+  },
+  {
+    "markdown": "apple\n:   red fruit\n\norange\n:   orange fruit",
+    "html": "<dl>\n<dt>apple</dt>\n<dd>red fruit</dd>\n<dt>orange</dt>\n<dd>orange fruit</dd>\n</dl>",
+    "example": 1,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "apple\n\n:   red fruit\n\norange\n\n:   orange fruit",
+    "html": "<dl>\n<dt>apple</dt>\n<dd>\n<p>red fruit</p>\n</dd>\n<dt>orange</dt>\n<dd>\n<p>orange fruit</p>\n</dd>\n</dl>",
+    "example": 2,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "apple\n  : red fruit\n\norange\n  : orange fruit",
+    "html": "<dl>\n<dt>apple</dt>\n<dd>red fruit</dd>\n<dt>orange</dt>\n<dd>orange fruit</dd>\n</dl>",
+    "example": 3,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "apple\n\n : red fruit\n\norange\n\n : orange fruit",
+    "html": "<dl>\n<dt>apple</dt>\n<dd>\n<p>red fruit</p>\n</dd>\n<dt>orange</dt>\n<dd>\n<p>orange fruit</p>\n</dd>\n</dl>",
+    "example": 4,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "*apple*\n\n:   red fruit\n\n    contains seeds,\n    crisp, pleasant to taste\n\n*orange*\n\n:   orange fruit\n\n        { orange code block }\n\n    > orange block quote",
+    "html": "<dl>\n<dt><em>apple</em></dt>\n<dd>\n<p>red fruit</p>\n<p>contains seeds,\ncrisp, pleasant to taste</p>\n</dd>\n<dt><em>orange</em></dt>\n<dd>\n<p>orange fruit</p>\n<pre><code>{ orange code block }\n</code></pre>\n<blockquote>\n<p>orange block quote</p>\n</blockquote>\n</dd>\n</dl>",
+    "example": 5,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "term\n\n:   1. Para one\n\n       Para two",
+    "html": "<dl>\n<dt>term</dt>\n<dd>\n<ol>\n<li>\n<p>Para one</p>\n<p>Para two</p>\n</li>\n</ol>\n</dd>\n</dl>",
+    "example": 6,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "apple\n:   red fruit\n:   computer company\n\norange\n:   orange fruit\n:   telecom company",
+    "html": "<dl>\n<dt>apple</dt>\n<dd>red fruit</dd>\n<dd>computer company</dd>\n<dt>orange</dt>\n<dd>orange fruit</dd>\n<dd>telecom company</dd>\n</dl>",
+    "example": 7,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "apple\n\n:   red fruit\n\n:   computer company\n\norange\n\n:   orange fruit\n:   telecom company",
+    "html": "<dl>\n<dt>apple</dt>\n<dd>\n<p>red fruit</p>\n</dd>\n<dd>\n<p>computer company</p>\n</dd>\n<dt>orange</dt>\n<dd>\n<p>orange fruit</p>\n</dd>\n<dd>\n<p>telecom company</p>\n</dd>\n</dl>",
+    "example": 8,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "apple\n\n:   red fruit\n\n:   computer\ncompany\n\norange\n\n:   orange\nfruit\n:   telecom company",
+    "html": "<dl>\n<dt>apple</dt>\n<dd>\n<p>red fruit</p>\n</dd>\n<dd>\n<p>computer\ncompany</p>\n</dd>\n<dt>orange</dt>\n<dd>\n<p>orange\nfruit</p>\n</dd>\n<dd>\n<p>telecom company</p>\n</dd>\n</dl>",
+    "example": 9,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "apple\n  ~ red fruit\n\norange\n  ~ orange fruit",
+    "html": "<dl>\n<dt>apple</dt>\n<dd>red fruit</dd>\n<dt>orange</dt>\n<dd>orange fruit</dd>\n</dl>",
+    "example": 10,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "a\nb\\\nc\n\n:   foo",
+    "html": "<dl>\n<dt>a\nb<br />\nc</dt>\n<dd>\n<p>foo</p>\n</dd>\n</dl>",
+    "example": 11,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "Foo\n\nbar\n:   baz\n\nbim\n:   bor",
+    "html": "<p>Foo</p>\n<dl>\n<dt>bar</dt>\n<dd>baz</dd>\n<dt>bim</dt>\n<dd>bor</dd>\n</dl>",
+    "example": 12,
+    "section": "Description / definition lists",
+    "source": "comrak/description_lists.md"
+  },
+  {
+    "markdown": "Let $`x`$ and $`y`$ be integers such that\n\n```math\nx=y + 2\n```",
+    "html": "<p>Let <code data-math-style=\"inline\">x</code> and <code data-math-style=\"inline\">y</code> be integers such that</p>\n<pre><code class=\"language-math\" data-math-style=\"display\">x=y + 2\n</code></pre>",
+    "example": 1,
+    "section": "Code Math",
+    "source": "comrak/math_code.md"
+  },
+  {
+    "markdown": "This is math:$`2000`$.",
+    "html": "<p>This is math:<code data-math-style=\"inline\">2000</code>.</p>",
+    "example": 2,
+    "section": "Code Math",
+    "source": "comrak/math_code.md"
+  },
+  {
+    "markdown": "This is display math:\n\n```math\n\\text{Hello $x^2$}\n```\nAnd this is inline math:\n$`\\text{Hello $x$ there!}`$",
+    "html": "<p>This is display math:</p>\n<pre><code class=\"language-math\" data-math-style=\"display\">\\text{Hello $x^2$}\n</code></pre>\n<p>And this is inline math:\n<code data-math-style=\"inline\">\\text{Hello $x$ there!}</code></p>",
+    "example": 3,
+    "section": "Code Math",
+    "source": "comrak/math_code.md"
+  },
+  {
+    "markdown": "$`\\text{$}`$",
+    "html": "<p><code data-math-style=\"inline\">\\text{$}</code></p>",
+    "example": 4,
+    "section": "Code Math",
+    "source": "comrak/math_code.md"
+  },
+  {
+    "markdown": "$`b<a>c`$",
+    "html": "<p><code data-math-style=\"inline\">b&lt;a&gt;c</code></p>",
+    "example": 5,
+    "section": "Code Math",
+    "source": "comrak/math_code.md"
+  },
+  {
+    "markdown": "$$`1 + 2`$$",
+    "html": "<p>$$<code>1 + 2</code>$$</p>",
+    "example": 6,
+    "section": "Code Math",
+    "source": "comrak/math_code.md"
+  },
+  {
+    "markdown": "Let $x$ and $y$ be integers such that\n$$x=y + 2$$",
+    "html": "<p>Let <span data-math-style=\"inline\">x</span> and <span data-math-style=\"inline\">y</span> be integers such that\n<span data-math-style=\"display\">x=y + 2</span></p>",
+    "example": 1,
+    "section": "Dollar Math",
+    "source": "comrak/math_dollars.md"
+  },
+  {
+    "markdown": "This is not math: 2000$.\nAnd neither is this $ 4 $.\nOr this $4\n$.",
+    "html": "<p>This is not math: 2000$.\nAnd neither is this $ 4 $.\nOr this $4\n$.</p>",
+    "example": 2,
+    "section": "Dollar Math",
+    "source": "comrak/math_dollars.md"
+  },
+  {
+    "markdown": "This is display math:\n$$\ne=mc^2\n$$",
+    "html": "<p>This is display math:\n<span data-math-style=\"display\">\ne=mc^2\n</span></p>",
+    "example": 3,
+    "section": "Dollar Math",
+    "source": "comrak/math_dollars.md"
+  },
+  {
+    "markdown": "The cost is between \\$10 and 30$.",
+    "html": "<p>The cost is between $10 and 30$.</p>",
+    "example": 4,
+    "section": "Dollar Math",
+    "source": "comrak/math_dollars.md"
+  },
+  {
+    "markdown": "$\\text{\\$}$",
+    "html": "<p><span data-math-style=\"inline\">\\text{\\$}</span></p>",
+    "example": 5,
+    "section": "Dollar Math",
+    "source": "comrak/math_dollars.md"
+  },
+  {
+    "markdown": "$b<a>c$",
+    "html": "<p><span data-math-style=\"inline\">b&lt;a&gt;c</span></p>",
+    "example": 6,
+    "section": "Dollar Math",
+    "source": "comrak/math_dollars.md"
+  },
+  {
+    "markdown": "This is inline display math\n$$1+2$$\n\nThis is block math\n$$\n1+2\n$$",
+    "html": "<p>This is inline display math\n<span data-math-style=\"display\">1+2</span></p>\n<p>This is block math\n<span data-math-style=\"display\">\n1+2\n</span></p>",
+    "example": 7,
+    "section": "Dollar Math",
+    "source": "comrak/math_dollars.md"
+  },
+  {
+    "markdown": ">>> [!NOTE]\n*content*\n>>>",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p><em>content</em></p>\n</div>",
+    "example": 1,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>> [!TIP]\nOptional information to help a user be more successful.\n>>>",
+    "html": "<div class=\"markdown-alert markdown-alert-tip\">\n<p class=\"markdown-alert-title\">Tip</p>\n<p>Optional information to help a user be more successful.</p>\n</div>",
+    "example": 2,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>> [!IMPORTANT]\nCrucial information necessary for users to succeed.\n>>>",
+    "html": "<div class=\"markdown-alert markdown-alert-important\">\n<p class=\"markdown-alert-title\">Important</p>\n<p>Crucial information necessary for users to succeed.</p>\n</div>",
+    "example": 3,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>> [!WARNING]\nCritical content demanding immediate user attention due to potential risks.\n>>>",
+    "html": "<div class=\"markdown-alert markdown-alert-warning\">\n<p class=\"markdown-alert-title\">Warning</p>\n<p>Critical content demanding immediate user attention due to potential risks.</p>\n</div>",
+    "example": 4,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>> [!CAUTION]\nNegative potential consequences of an action.\n>>>",
+    "html": "<div class=\"markdown-alert markdown-alert-caution\">\n<p class=\"markdown-alert-title\">Caution</p>\n<p>Negative potential consequences of an action.</p>\n</div>",
+    "example": 5,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>> [!NOTE] Pay attention\nHighlights information that users should take into account, even when skimming.\n>>>",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Pay attention</p>\n<p>Highlights information that users should take into account, even when skimming.</p>\n</div>",
+    "example": 6,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>> [!NOTE]\n### heading\n\n-----------\n>>>",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<h3>heading</h3>\n<hr />\n</div>",
+    "example": 7,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>>>>> [!NOTE]\n  hello world\n>>>>>>>>>>>\nnormal",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>hello world</p>\n</div>\n<p>normal</p>",
+    "example": 8,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>>>> [!NOTE]\n>>>> [!CAUTION]\nfoo\n>>>>\n>>>>>",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<div class=\"markdown-alert markdown-alert-caution\">\n<p class=\"markdown-alert-title\">Caution</p>\n<p>foo</p>\n</div>\n</div>",
+    "example": 9,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>>> [!NOTE]\nthis block is closed with 5 markers below\n\n>>>>>\n\nauto-closed blocks\n>>>>>\n>>>>",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>this block is closed with 5 markers below</p>\n</div>\n<p>auto-closed blocks</p>\n<blockquote>\n<blockquote>\n</blockquote>\n</blockquote>",
+    "example": 10,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": "   >>>> [!NOTE]\n   first-level blockquote\n    >>> [!CAUTION]\n    second-level blockquote\n    >>>\n   >>>>\n   regular paragraph",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>first-level blockquote</p>\n<div class=\"markdown-alert markdown-alert-caution\">\n<p class=\"markdown-alert-title\">Caution</p>\n<p>second-level blockquote</p>\n</div>\n</div>\n<p>regular paragraph</p>",
+    "example": 11,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": "    >>>\n    content\n    >>>",
+    "html": "<pre><code>&gt;&gt;&gt;\ncontent\n&gt;&gt;&gt;\n</code></pre>",
+    "example": 12,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": "  >>> [!NOTE]\n      code block\n  >>>",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<pre><code>code block\n</code></pre>\n</div>",
+    "example": 13,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": "   >>>> [!NOTE]\n   content\n    >>> [!CAUTION]\n        code block\n    >>>\n   >>>>",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>content</p>\n<div class=\"markdown-alert markdown-alert-caution\">\n<p class=\"markdown-alert-title\">Caution</p>\n<pre><code>code block\n</code></pre>\n</div>\n</div>",
+    "example": 14,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>> [!NOTE]\nfoo\n>>> arg=123",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>foo</p>\n<blockquote>\n<blockquote>\n<blockquote>\n<p>arg=123</p>\n</blockquote>\n</blockquote>\n</blockquote>\n</div>",
+    "example": 15,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>> [!NOTE]\nfoo",
+    "html": "<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>foo</p>\n</div>",
+    "example": 16,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": "blah blah\n>>> [!NOTE]\ncontent\n>>>",
+    "html": "<p>blah blah</p>\n<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>content</p>\n</div>",
+    "example": 17,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": " -  >>> [!NOTE]\n    - foo\n    >>>",
+    "html": "<ul>\n<li>\n<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<ul>\n<li>foo</li>\n</ul>\n</div>\n</li>\n</ul>",
+    "example": 18,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": "> >>> [!NOTE]\n> foo\n>> bar\n> baz\n> >>>",
+    "html": "<blockquote>\n<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>foo</p>\n<blockquote>\n<p>bar\nbaz</p>\n</blockquote>\n</div>\n</blockquote>",
+    "example": 19,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": " -  >>> [!NOTE]\n    foo\n    bar\n    >>>\n\n -  >>> [!NOTE]\n    foo\n    bar\n    >>>",
+    "html": "<ul>\n<li>\n<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>foo\nbar</p>\n</div>\n</li>\n<li>\n<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>foo\nbar</p>\n</div>\n</li>\n</ul>",
+    "example": 20,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": "```txt\n# Code\n>>> [!NOTE]\n# Code\n>>>\n# Code\n```",
+    "html": "<pre><code class=\"language-txt\"># Code\n&gt;&gt;&gt; [!NOTE]\n# Code\n&gt;&gt;&gt;\n# Code\n</code></pre>",
+    "example": 21,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": "Some text\n>>> [!NOTE]\nA quote\n>>>\nSome other text",
+    "html": "<p>Some text</p>\n<div class=\"markdown-alert markdown-alert-note\">\n<p class=\"markdown-alert-title\">Note</p>\n<p>A quote</p>\n</div>\n<p>Some other text</p>",
+    "example": 22,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_alerts.md"
+  },
+  {
+    "markdown": ">>>\n*content*\n>>>",
+    "html": "<blockquote>\n<p><em>content</em></p>\n</blockquote>",
+    "example": 1,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": ">>>\n### heading\n\n-----------\n>>>",
+    "html": "<blockquote>\n<h3>heading</h3>\n<hr />\n</blockquote>",
+    "example": 2,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": ">>>>>>\n  hello world\n>>>>>>>>>>>\nnormal",
+    "html": "<blockquote>\n<p>hello world</p>\n</blockquote>\n<p>normal</p>",
+    "example": 3,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": ">>>>>\n>>>>\nfoo\n>>>>\n>>>>>",
+    "html": "<blockquote>\n<blockquote>\n<p>foo</p>\n</blockquote>\n</blockquote>",
+    "example": 4,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": ">>>>\nthis block is closed with 5 markers below\n\n>>>>>\n\nauto-closed blocks\n>>>>>\n>>>>",
+    "html": "<blockquote>\n<p>this block is closed with 5 markers below</p>\n</blockquote>\n<p>auto-closed blocks</p>\n<blockquote>\n<blockquote>\n</blockquote>\n</blockquote>",
+    "example": 5,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": "   >>>>\n   first-level blockquote\n    >>>\n    second-level blockquote\n    >>>\n   >>>>\n   regular paragraph",
+    "html": "<blockquote>\n<p>first-level blockquote</p>\n<blockquote>\n<p>second-level blockquote</p>\n</blockquote>\n</blockquote>\n<p>regular paragraph</p>",
+    "example": 6,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": "    >>>\n    content\n    >>>",
+    "html": "<pre><code>&gt;&gt;&gt;\ncontent\n&gt;&gt;&gt;\n</code></pre>",
+    "example": 7,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": "  >>>\n      code block\n  >>>",
+    "html": "<blockquote>\n<pre><code>code block\n</code></pre>\n</blockquote>",
+    "example": 8,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": "   >>>>\n   content\n    >>>\n        code block\n    >>>\n   >>>>",
+    "html": "<blockquote>\n<p>content</p>\n<blockquote>\n<pre><code>code block\n</code></pre>\n</blockquote>\n</blockquote>",
+    "example": 9,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": ">>>\nfoo\n>>> arg=123",
+    "html": "<blockquote>\n<p>foo</p>\n<blockquote>\n<blockquote>\n<blockquote>\n<p>arg=123</p>\n</blockquote>\n</blockquote>\n</blockquote>\n</blockquote>",
+    "example": 10,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": ">>>\nfoo",
+    "html": "<blockquote>\n<p>foo</p>\n</blockquote>",
+    "example": 11,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": "blah blah\n>>>\ncontent\n>>>",
+    "html": "<p>blah blah</p>\n<blockquote>\n<p>content</p>\n</blockquote>",
+    "example": 12,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": " -  >>>\n    - foo\n    >>>",
+    "html": "<ul>\n<li>\n<blockquote>\n<ul>\n<li>foo</li>\n</ul>\n</blockquote>\n</li>\n</ul>",
+    "example": 13,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": "> >>>\n> foo\n>> bar\n> baz\n> >>>",
+    "html": "<blockquote>\n<blockquote>\n<p>foo</p>\n<blockquote>\n<p>bar\nbaz</p>\n</blockquote>\n</blockquote>\n</blockquote>",
+    "example": 14,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": " -  >>>\n    foo\n    bar\n    >>>\n\n -  >>>\n    foo\n    bar\n    >>>",
+    "html": "<ul>\n<li>\n<blockquote>\n<p>foo\nbar</p>\n</blockquote>\n</li>\n<li>\n<blockquote>\n<p>foo\nbar</p>\n</blockquote>\n</li>\n</ul>",
+    "example": 15,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": "```txt\n# Code\n>>>\n# Code\n>>>\n# Code\n```",
+    "html": "<pre><code class=\"language-txt\"># Code\n&gt;&gt;&gt;\n# Code\n&gt;&gt;&gt;\n# Code\n</code></pre>",
+    "example": 16,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": "Some text\n>>>\nA quote\n>>>\nSome other text",
+    "html": "<p>Some text</p>\n<blockquote>\n<p>A quote</p>\n</blockquote>\n<p>Some other text</p>",
+    "example": 17,
+    "section": "GitLab Flavored Markdown Spec",
+    "source": "comrak/multiline_blockquote.md"
+  },
+  {
+    "markdown": "[[https://example.org]]",
+    "html": "<p><a href=\"https://example.org\" data-wikilink=\"true\">https://example.org</a></p>",
+    "example": 1,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_after_pipe.md"
+  },
+  {
+    "markdown": "[[https://example.org|title]]",
+    "html": "<p><a href=\"https://example.org\" data-wikilink=\"true\">title</a></p>",
+    "example": 2,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_after_pipe.md"
+  },
+  {
+    "markdown": "[[Name of page]]",
+    "html": "<p><a href=\"Name%20of%20page\" data-wikilink=\"true\">Name of page</a></p>",
+    "example": 3,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_after_pipe.md"
+  },
+  {
+    "markdown": "[[Name of page|Title]]",
+    "html": "<p><a href=\"Name%20of%20page\" data-wikilink=\"true\">Title</a></p>",
+    "example": 4,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_after_pipe.md"
+  },
+  {
+    "markdown": "[[Gesch&uuml;tztes Leerzeichen|&#xDC;ber &amp;nbsp;]]",
+    "html": "<p><a href=\"Gesch%C3%BCtztes%20Leerzeichen\" data-wikilink=\"true\">Über &amp;nbsp;</a></p>",
+    "example": 5,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_after_pipe.md"
+  },
+  {
+    "markdown": "[[https://example.org|foo\\[\\]bar]]",
+    "html": "<p><a href=\"https://example.org\" data-wikilink=\"true\">foo[]bar</a></p>",
+    "example": 6,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_after_pipe.md"
+  },
+  {
+    "markdown": "[[Name \\[of\\] page]]",
+    "html": "<p><a href=\"Name%20%5Bof%5D%20page\" data-wikilink=\"true\">Name [of] page</a></p>",
+    "example": 7,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_after_pipe.md"
+  },
+  {
+    "markdown": "[[Name _of_ page]]",
+    "html": "<p><a href=\"Name%20_of_%20page\" data-wikilink=\"true\">Name _of_ page</a></p>",
+    "example": 8,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_after_pipe.md"
+  },
+  {
+    "markdown": "[[https://example.org]]",
+    "html": "<p><a href=\"https://example.org\" data-wikilink=\"true\">https://example.org</a></p>",
+    "example": 1,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_before_pipe.md"
+  },
+  {
+    "markdown": "[[title|https://example.org]]",
+    "html": "<p><a href=\"https://example.org\" data-wikilink=\"true\">title</a></p>",
+    "example": 2,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_before_pipe.md"
+  },
+  {
+    "markdown": "[[Name of page]]",
+    "html": "<p><a href=\"Name%20of%20page\" data-wikilink=\"true\">Name of page</a></p>",
+    "example": 3,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_before_pipe.md"
+  },
+  {
+    "markdown": "[[Title|Name of page]]",
+    "html": "<p><a href=\"Name%20of%20page\" data-wikilink=\"true\">Title</a></p>",
+    "example": 4,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_before_pipe.md"
+  },
+  {
+    "markdown": "[Title](Name%20of%20page)",
+    "html": "<p><a href=\"Name%20of%20page\">Title</a></p>",
+    "example": 5,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_before_pipe.md"
+  },
+  {
+    "markdown": "[[&#xDC;ber &amp;nbsp;|Gesch&uuml;tztes Leerzeichen]]",
+    "html": "<p><a href=\"Gesch%C3%BCtztes%20Leerzeichen\" data-wikilink=\"true\">Über &amp;nbsp;</a></p>",
+    "example": 6,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_before_pipe.md"
+  },
+  {
+    "markdown": "[[foo\\[\\]bar|https://example.org]]",
+    "html": "<p><a href=\"https://example.org\" data-wikilink=\"true\">foo[]bar</a></p>",
+    "example": 7,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_before_pipe.md"
+  },
+  {
+    "markdown": "[[Name \\[of\\] page]]",
+    "html": "<p><a href=\"Name%20%5Bof%5D%20page\" data-wikilink=\"true\">Name [of] page</a></p>",
+    "example": 8,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_before_pipe.md"
+  },
+  {
+    "markdown": "[[Name _of_ page]]",
+    "html": "<p><a href=\"Name%20_of_%20page\" data-wikilink=\"true\">Name _of_ page</a></p>",
+    "example": 9,
+    "section": "Wikilinks",
+    "source": "comrak/wikilinks_title_before_pipe.md"
+  }
+]

@@ -1,7 +1,7 @@
 //! Tests for INV-6 (Mark Interval Invariants) and INV-2 (Span Rendering Invariants)
 
-use md_crdt_core::mark::{Anchor, AnchorBias, MarkKind, MarkSet};
 use md_crdt_core::OpId;
+use md_crdt_core::mark::{Anchor, AnchorBias, MarkKind, MarkSet};
 use std::collections::{BTreeMap, HashSet};
 
 fn op(peer: u64, counter: u64) -> OpId {
@@ -75,7 +75,10 @@ fn inv6_empty_intervals_valid() {
 
     set.set_mark(id, MarkKind::Bold, anchor, anchor, BTreeMap::new(), id);
 
-    assert!(set.is_active(&id), "Empty interval should be valid and active");
+    assert!(
+        set.is_active(&id),
+        "Empty interval should be valid and active"
+    );
     let interval = set.active_intervals()[0];
     assert_eq!(interval.start, interval.end);
 }
@@ -185,7 +188,10 @@ fn dc3_overlapping_same_kind_deterministic() {
     let spans1 = set1.render_spans(&order, 4);
     let spans2 = set2.render_spans(&order, 4);
 
-    assert_eq!(spans1, spans2, "Overlapping marks should render deterministically");
+    assert_eq!(
+        spans1, spans2,
+        "Overlapping marks should render deterministically"
+    );
 }
 
 // DC-3: Nested marks of different kinds rendered in consistent order
@@ -216,7 +222,14 @@ fn dc3_nested_different_kinds_consistent() {
     };
 
     // Apply in different orders
-    set1.set_mark(bold_id, MarkKind::Bold, bold_start, bold_end, BTreeMap::new(), bold_id);
+    set1.set_mark(
+        bold_id,
+        MarkKind::Bold,
+        bold_start,
+        bold_end,
+        BTreeMap::new(),
+        bold_id,
+    );
     set1.set_mark(
         italic_id,
         MarkKind::Italic,
@@ -234,13 +247,23 @@ fn dc3_nested_different_kinds_consistent() {
         BTreeMap::new(),
         italic_id,
     );
-    set2.set_mark(bold_id, MarkKind::Bold, bold_start, bold_end, BTreeMap::new(), bold_id);
+    set2.set_mark(
+        bold_id,
+        MarkKind::Bold,
+        bold_start,
+        bold_end,
+        BTreeMap::new(),
+        bold_id,
+    );
 
     let order = vec![op(1, 1), op(1, 2), op(1, 3), op(1, 4)];
     let spans1 = set1.render_spans(&order, 4);
     let spans2 = set2.render_spans(&order, 4);
 
-    assert_eq!(spans1, spans2, "Nested marks should render in consistent order");
+    assert_eq!(
+        spans1, spans2,
+        "Nested marks should render in consistent order"
+    );
 
     // Verify the middle span has both marks
     let middle_span = spans1.iter().find(|s| s.start == 1 && s.end == 3);

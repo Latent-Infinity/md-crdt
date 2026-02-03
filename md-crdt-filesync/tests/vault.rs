@@ -17,7 +17,7 @@ fn test_vault_open_finds_markdown_files() {
     create_mock_vault(dir.path());
 
     let vault = Vault::open(dir.path()).unwrap();
-    let mut files = vault.files();
+    let mut files: Vec<_> = vault.files().collect();
     files.sort();
 
     let mut expected: Vec<_> = ["file1.md", "file2.md", "subdir/file3.md"]

@@ -7,6 +7,7 @@ use md_crdt_core::OpId;
 use md_crdt_naive_oracle::SyncOracle;
 use md_crdt_sync::{ChangeMessage, Document, Operation};
 use proptest::prelude::*;
+mod proptest_config;
 
 /// Generate a valid sequence of operations for a single peer
 fn gen_peer_ops(peer: u64, count: usize) -> Vec<Operation> {
@@ -19,7 +20,7 @@ fn gen_peer_ops(peer: u64, count: usize) -> Vec<Operation> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
 
     /// Test that two documents converge to the same state when they
     /// receive the same operations in different orders

@@ -1,13 +1,14 @@
 use md_crdt_core::{OpId, Sequence, SequenceOp};
 use proptest::collection::vec;
 use proptest::prelude::*;
+mod proptest_config;
 
 fn op_id(peer: u64, counter: u64) -> OpId {
     OpId { counter, peer }
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
     #[test]
     fn test_convergence(ops_values in vec(any::<u8>(), 0..10)) {
         let ops: Vec<_> = ops_values

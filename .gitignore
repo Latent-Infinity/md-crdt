@@ -31,6 +31,13 @@ grcov.*
 # Contains mutation testing data
 **/mutants.out*/
 
+# Fuzzing artifacts
+fuzz-*.log
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/target/
+fuzz/*.log
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

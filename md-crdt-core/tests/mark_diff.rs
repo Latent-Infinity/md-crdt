@@ -4,6 +4,7 @@ use md_crdt_naive_oracle::mark::NaiveMarkSet;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use std::collections::BTreeMap;
+mod proptest_config;
 
 #[derive(Clone, Debug)]
 enum MarkOp {
@@ -50,7 +51,7 @@ fn ops() -> impl Strategy<Value = Vec<MarkOp>> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
     #[test]
     fn mark_differential(ops in ops()) {
         let mut real = MarkSet::new();

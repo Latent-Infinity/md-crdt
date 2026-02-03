@@ -1,6 +1,7 @@
 use md_crdt_core::{OpId, Sequence, SequenceOp};
 use proptest::collection::vec;
 use proptest::prelude::*;
+mod proptest_config;
 
 #[derive(Clone, Debug)]
 enum OpSpec {
@@ -98,7 +99,7 @@ fn realize_ops(specs: &[OpSpec]) -> Vec<SequenceOp<u8>> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
     #[test]
     fn prop_convergence_n_peers(specs in op_specs()) {
         let ops = realize_ops(&specs);

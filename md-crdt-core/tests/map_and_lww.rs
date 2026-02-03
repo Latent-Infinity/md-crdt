@@ -1,5 +1,6 @@
 use md_crdt_core::{LwwRegister, OpId};
 use proptest::prelude::*;
+mod proptest_config;
 
 // Strategy for generating OpId
 fn op_id_strategy() -> impl Strategy<Value = OpId> {
@@ -7,7 +8,7 @@ fn op_id_strategy() -> impl Strategy<Value = OpId> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
     #[test]
     fn test_lww_register_conflict_resolution(
         (val1, id1) in (any::<u8>(), op_id_strategy()),
@@ -36,7 +37,7 @@ proptest! {
 use md_crdt_core::Map;
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
     #[test]
     fn test_map_conflict_resolution(
         key in any::<u8>(),
@@ -57,7 +58,7 @@ proptest! {
 
         let expected_val = if id1 > id2 { val1 } else { val2 };
 
-        prop_assert_eq!(map1.get(&key).unwrap(), expected_val, "Map 1 should have the value of the op with the highest OpId");
-        prop_assert_eq!(map2.get(&key).unwrap(), expected_val, "Map 2 should have the value of the op with the highest OpId");
+        prop_assert_eq!(*map1.get(&key).unwrap(), expected_val, "Map 1 should have the value of the op with the highest OpId");
+        prop_assert_eq!(*map2.get(&key).unwrap(), expected_val, "Map 2 should have the value of the op with the highest OpId");
     }
 }
