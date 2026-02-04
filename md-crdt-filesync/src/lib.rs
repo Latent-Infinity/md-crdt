@@ -140,7 +140,11 @@ impl LastFlushedState {
     fn to_serializable(&self) -> SerializableState {
         SerializableState {
             content_hash: self.content_hash,
-            blocks: self.blocks.iter().map(ArchivedBlockFingerprint::from).collect(),
+            blocks: self
+                .blocks
+                .iter()
+                .map(ArchivedBlockFingerprint::from)
+                .collect(),
         }
     }
 
@@ -156,7 +160,11 @@ impl LastFlushedState {
                         tokens: b.fingerprint.tokens.iter().map(|&v| v.into()).collect(),
                         len: b.fingerprint.len.to_native() as usize,
                     },
-                    container_path: b.container_path.iter().map(|&v| v.to_native() as usize).collect(),
+                    container_path: b
+                        .container_path
+                        .iter()
+                        .map(|&v| v.to_native() as usize)
+                        .collect(),
                     position: b.position.to_native() as usize,
                 })
                 .collect(),

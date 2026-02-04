@@ -17,14 +17,8 @@ use uuid::Uuid;
 /// Pre-computed operation with fixed targets
 #[derive(Clone)]
 enum FixedOp {
-    Insert {
-        block: Block,
-        after: Option<OpId>,
-    },
-    Delete {
-        target: OpId,
-        delete_id: OpId,
-    },
+    Insert { block: Block, after: Option<OpId> },
+    Delete { target: OpId, delete_id: OpId },
 }
 
 impl FixedOp {
@@ -131,7 +125,8 @@ fuzz_target!(|data: &[u8]| {
 
     // CRDT invariant: must converge
     assert_eq!(
-        output1, output2,
+        output1,
+        output2,
         "CRDT convergence violation!\nForward: {:?}\nReverse: {:?}\nOps: {} operations",
         output1,
         output2,

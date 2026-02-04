@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use md_crdt_sync::{validate_changes, ChangeMessage, Document, ValidationLimits};
+use md_crdt_sync::{ChangeMessage, Document, ValidationLimits, validate_changes};
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(message) = postcard::from_bytes::<ChangeMessage>(data) {

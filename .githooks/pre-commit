@@ -1,0 +1,18 @@
+#!/bin/sh
+# Pre-commit hook - runs same checks as CI
+
+# Check if just is installed
+if ! command -v just >/dev/null 2>&1; then
+    echo "Error: 'just' command runner is required but not installed."
+    echo "Install it: cargo install just"
+    echo "  or: brew install just"
+    echo "  or: https://github.com/casey/just#installation"
+    exit 1
+fi
+
+if ! just check; then
+    echo ""
+    echo "Pre-commit checks failed. Fix issues before committing."
+    echo "To bypass (not recommended): git commit --no-verify"
+    exit 1
+fi

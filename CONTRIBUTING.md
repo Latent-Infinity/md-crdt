@@ -32,11 +32,14 @@ cargo test --workspace
 If you have `just` installed, you can use these convenient commands:
 
 ```bash
-just fmt      # Format code
+just setup    # Set up git hooks (run once after cloning)
+just fmt      # Check code formatting
 just lint     # Run clippy
 just test     # Run all tests
 just check    # Run fmt + lint + test
 ```
+
+**Important**: Run `just setup` after cloning to enable pre-commit hooks that enforce formatting.
 
 ## Development Guidelines
 

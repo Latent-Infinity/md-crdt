@@ -1,5 +1,10 @@
 # Justfile for md-crdt
 
+# Set up development environment (run once after cloning)
+setup:
+    git config core.hooksPath .githooks
+    @echo "Git hooks configured. Pre-commit hook will enforce formatting."
+
 # Run all tests
 test:
     cargo test --workspace
