@@ -192,14 +192,14 @@ mod tables {
 
     #[test]
     fn table_with_alignment() {
-        assert_structural_round_trip("| Left | Center | Right |\n|:-----|:------:|------:|\n| L | C | R |");
+        assert_structural_round_trip(
+            "| Left | Center | Right |\n|:-----|:------:|------:|\n| L | C | R |",
+        );
     }
 
     #[test]
     fn table_multiple_rows() {
-        assert_structural_round_trip(
-            "| H1 | H2 |\n|---|---|\n| A | B |\n| C | D |\n| E | F |",
-        );
+        assert_structural_round_trip("| H1 | H2 |\n|---|---|\n| A | B |\n| C | D |\n| E | F |");
     }
 
     #[test]
@@ -331,7 +331,10 @@ mod edge_cases {
 
     #[test]
     fn deeply_nested_quotes() {
-        let nested = (0..10).map(|i| ">".repeat(i + 1) + " Level").collect::<Vec<_>>().join("\n");
+        let nested = (0..10)
+            .map(|i| ">".repeat(i + 1) + " Level")
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_structural_round_trip(&nested);
     }
 

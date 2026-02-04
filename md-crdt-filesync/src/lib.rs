@@ -1,6 +1,6 @@
 use md_crdt_doc::{Block, BlockId, BlockKind, Document, Parser};
 use md_crdt_storage::Storage;
-use serde::{Deserialize, Serialize};
+use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::io;
@@ -20,22 +20,53 @@ pub enum VaultError {
     Io(#[from] io::Error),
     #[error("Storage error: {0}")]
     Storage(#[from] md_crdt_storage::StorageError),
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] bincode::Error),
+    #[error("Serialization error")]
+    Serialization,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
 pub struct Fingerprint {
     pub tokens: Vec<u64>,
     pub len: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Archived version of BlockFingerprint that stores BlockId as bytes
+#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+pub struct ArchivedBlockFingerprint {
+    pub block_id_bytes: [u8; 16],
+    pub fingerprint: Fingerprint,
+    pub container_path: Vec<usize>,
+    pub position: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockFingerprint {
     pub block_id: BlockId,
     pub fingerprint: Fingerprint,
     pub container_path: Vec<usize>,
     pub position: usize,
+}
+
+impl From<&BlockFingerprint> for ArchivedBlockFingerprint {
+    fn from(bf: &BlockFingerprint) -> Self {
+        Self {
+            block_id_bytes: *bf.block_id.as_bytes(),
+            fingerprint: bf.fingerprint.clone(),
+            container_path: bf.container_path.clone(),
+            position: bf.position,
+        }
+    }
+}
+
+impl ArchivedBlockFingerprint {
+    pub fn to_block_fingerprint(&self) -> BlockFingerprint {
+        BlockFingerprint {
+            block_id: BlockId::from_bytes(self.block_id_bytes),
+            fingerprint: self.fingerprint.clone(),
+            container_path: self.container_path.clone(),
+            position: self.position,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,10 +123,45 @@ impl Default for MatchConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Serializable version of LastFlushedState for rkyv
+#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
+struct SerializableState {
+    pub content_hash: u64,
+    pub blocks: Vec<ArchivedBlockFingerprint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastFlushedState {
     pub content_hash: u64,
     pub blocks: Vec<BlockFingerprint>,
+}
+
+impl LastFlushedState {
+    fn to_serializable(&self) -> SerializableState {
+        SerializableState {
+            content_hash: self.content_hash,
+            blocks: self.blocks.iter().map(ArchivedBlockFingerprint::from).collect(),
+        }
+    }
+
+    fn from_archived(archived: &ArchivedSerializableState) -> Self {
+        Self {
+            content_hash: archived.content_hash.into(),
+            blocks: archived
+                .blocks
+                .iter()
+                .map(|b| BlockFingerprint {
+                    block_id: BlockId::from_bytes(b.block_id_bytes),
+                    fingerprint: Fingerprint {
+                        tokens: b.fingerprint.tokens.iter().map(|&v| v.into()).collect(),
+                        len: b.fingerprint.len.to_native() as usize,
+                    },
+                    container_path: b.container_path.iter().map(|&v| v.to_native() as usize).collect(),
+                    position: b.position.to_native() as usize,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,7 +204,9 @@ impl Vault {
                 content_hash: hash_string(&content),
                 blocks: fingerprint_document(&doc),
             };
-            let encoded = bincode::serialize(&state)?;
+            let serializable = state.to_serializable();
+            let encoded = rkyv::to_bytes::<rkyv::rancor::Error>(&serializable)
+                .map_err(|_| VaultError::Serialization)?;
             let storage = Storage::open(self.state_path_for(&file))?;
             storage.write_snapshot(&encoded, &[], false)?;
         }
@@ -154,7 +222,10 @@ impl Vault {
             let storage = Storage::open(self.state_path_for(&file))?;
             match storage.read_snapshot() {
                 Ok((bytes, _, _)) => {
-                    let previous: LastFlushedState = bincode::deserialize(&bytes)?;
+                    let archived =
+                        rkyv::access::<ArchivedSerializableState, rkyv::rancor::Error>(&bytes)
+                            .map_err(|_| VaultError::Serialization)?;
+                    let previous = LastFlushedState::from_archived(archived);
                     if previous.content_hash != content_hash {
                         changed = true;
                     }
@@ -559,7 +630,9 @@ mod tests {
         )
         .unwrap();
         let (bytes, _, _) = storage.read_snapshot().unwrap();
-        let state: LastFlushedState = bincode::deserialize(&bytes).unwrap();
+        let archived =
+            rkyv::access::<ArchivedSerializableState, rkyv::rancor::Error>(&bytes).unwrap();
+        let state = LastFlushedState::from_archived(archived);
         assert_eq!(state.content_hash, hash_string("hello"));
         assert!(!state.blocks.is_empty());
     }
@@ -700,7 +773,9 @@ mod tests {
         )
         .unwrap();
         let (bytes, _, _) = storage.read_snapshot().unwrap();
-        let state: LastFlushedState = bincode::deserialize(&bytes).unwrap();
+        let archived =
+            rkyv::access::<ArchivedSerializableState, rkyv::rancor::Error>(&bytes).unwrap();
+        let state = LastFlushedState::from_archived(archived);
 
         // Should have fingerprints for blockquote content
         assert!(!state.blocks.is_empty());
@@ -723,7 +798,9 @@ mod tests {
         )
         .unwrap();
         let (bytes, _, _) = storage.read_snapshot().unwrap();
-        let state: LastFlushedState = bincode::deserialize(&bytes).unwrap();
+        let archived =
+            rkyv::access::<ArchivedSerializableState, rkyv::rancor::Error>(&bytes).unwrap();
+        let state = LastFlushedState::from_archived(archived);
 
         assert!(!state.blocks.is_empty());
     }
@@ -743,7 +820,9 @@ mod tests {
         )
         .unwrap();
         let (bytes, _, _) = storage.read_snapshot().unwrap();
-        let state: LastFlushedState = bincode::deserialize(&bytes).unwrap();
+        let archived =
+            rkyv::access::<ArchivedSerializableState, rkyv::rancor::Error>(&bytes).unwrap();
+        let state = LastFlushedState::from_archived(archived);
 
         assert!(!state.blocks.is_empty());
     }

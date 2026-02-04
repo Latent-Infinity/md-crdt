@@ -1,5 +1,5 @@
 use crc32fast::Hasher;
-use serde::{Deserialize, Serialize};
+use rkyv::{Archive, Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ const ARCHIVE_DIR: &str = "archive";
 const TOMBSTONES_FILE: &str = "tombstones.bin";
 const VERSION: u32 = 1;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Archive, Serialize, Deserialize, Clone)]
 struct Superblock {
     version: u32,
     seq_ref_index_flag: bool,
@@ -77,8 +77,8 @@ impl Storage {
             segment_len: payload.len() as u64,
         };
 
-        let encoded =
-            bincode::serialize(&superblock).map_err(|_| StorageError::Corrupt("encode"))?;
+        let encoded = rkyv::to_bytes::<rkyv::rancor::Error>(&superblock)
+            .map_err(|_| StorageError::Corrupt("encode"))?;
         fs::write(self.root.join(SUPERBLOCK_A), &encoded)?;
         fs::write(self.root.join(SUPERBLOCK_B), &encoded)?;
 
@@ -92,23 +92,23 @@ impl Storage {
         for path in superblocks {
             match fs::read(&path) {
                 Ok(bytes) => {
-                    let superblock: Superblock = bincode::deserialize(&bytes)
+                    let archived = rkyv::access::<ArchivedSuperblock, rkyv::rancor::Error>(&bytes)
                         .map_err(|_| StorageError::Corrupt("decode"))?;
-                    if superblock.version != VERSION {
+                    if archived.version != VERSION {
                         return Err(StorageError::Corrupt("version"));
                     }
                     let segment_path = self.root.join(SEGMENT_FILE);
                     let segment = fs::read(&segment_path)?;
-                    if segment.len() as u64 != superblock.segment_len {
+                    if segment.len() as u64 != archived.segment_len {
                         return Err(StorageError::Corrupt("length mismatch"));
                     }
-                    if checksum_bytes(&segment) != superblock.segment_checksum {
+                    if checksum_bytes(&segment) != archived.segment_checksum {
                         return Err(StorageError::Corrupt("checksum mismatch"));
                     }
                     return Ok((
                         segment,
-                        superblock.pending_ops,
-                        superblock.seq_ref_index_flag,
+                        archived.pending_ops.to_vec(),
+                        archived.seq_ref_index_flag,
                     ));
                 }
                 Err(err) => last_error = Some(err),
@@ -174,7 +174,8 @@ impl Storage {
         let (kept, pruned) = prune_tombstones(all_tombstones, retention);
         let kept_tombstones = kept.len();
         let pruned_tombstones = pruned;
-        let encoded = bincode::serialize(&kept).map_err(|_| StorageError::Corrupt("encode"))?;
+        let encoded = rkyv::to_bytes::<rkyv::rancor::Error>(&kept)
+            .map_err(|_| StorageError::Corrupt("encode"))?;
         fs::write(self.root.join(TOMBSTONES_FILE), &encoded)?;
 
         self.write_snapshot(payload, pending_ops, seq_ref_index_flag)?;
@@ -193,9 +194,9 @@ impl Storage {
             return Ok(Vec::new());
         }
         let bytes = fs::read(path)?;
-        let decoded: Vec<u64> =
-            bincode::deserialize(&bytes).map_err(|_| StorageError::Corrupt("decode"))?;
-        Ok(decoded)
+        let archived = rkyv::access::<rkyv::Archived<Vec<u64>>, rkyv::rancor::Error>(&bytes)
+            .map_err(|_| StorageError::Corrupt("decode"))?;
+        Ok(archived.iter().map(|v| (*v).into()).collect())
     }
 }
 
@@ -299,7 +300,7 @@ mod tests {
             segment_checksum: checksum_bytes(b"payload"),
             segment_len: 7,
         };
-        let encoded = bincode::serialize(&bad_superblock).unwrap();
+        let encoded = rkyv::to_bytes::<rkyv::rancor::Error>(&bad_superblock).unwrap();
         fs::write(dir.path().join(SUPERBLOCK_A), &encoded).unwrap();
         fs::write(dir.path().join(SUPERBLOCK_B), &encoded).unwrap();
 

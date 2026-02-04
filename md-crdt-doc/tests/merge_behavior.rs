@@ -208,7 +208,10 @@ mod idempotency {
         doc.blocks.apply(op.clone());
         let output2 = serialize_structural(&doc);
 
-        assert_eq!(output1, output2, "Applying same op twice should be idempotent");
+        assert_eq!(
+            output1, output2,
+            "Applying same op twice should be idempotent"
+        );
     }
 
     #[test]
@@ -263,7 +266,10 @@ mod delete_behavior {
         };
         let op_delete = SequenceOp::Delete {
             target: block.elem_id,
-            id: OpId { counter: 1, peer: 2 },
+            id: OpId {
+                counter: 1,
+                peer: 2,
+            },
         };
         let op_insert_new = SequenceOp::Insert {
             after: None,
@@ -303,11 +309,17 @@ mod delete_behavior {
         };
         let op_delete_a = SequenceOp::Delete {
             target: block.elem_id,
-            id: OpId { counter: 1, peer: 2 },
+            id: OpId {
+                counter: 1,
+                peer: 2,
+            },
         };
         let op_delete_b = SequenceOp::Delete {
             target: block.elem_id,
-            id: OpId { counter: 1, peer: 3 },
+            id: OpId {
+                counter: 1,
+                peer: 3,
+            },
         };
 
         // Both peers delete the same block
@@ -335,7 +347,10 @@ mod delete_behavior {
                 counter: 999,
                 peer: 999,
             },
-            id: OpId { counter: 1, peer: 1 },
+            id: OpId {
+                counter: 1,
+                peer: 1,
+            },
         };
 
         let mut doc = Document::new();
@@ -364,7 +379,10 @@ mod parse_and_merge {
         let output1 = serialize_structural(&doc1);
         let output2 = serialize_structural(&doc2);
 
-        assert_eq!(output1, output2, "Parsing same input should produce consistent output");
+        assert_eq!(
+            output1, output2,
+            "Parsing same input should produce consistent output"
+        );
     }
 
     #[test]
@@ -397,8 +415,14 @@ mod edge_cases {
 
         // Delete from empty should not panic
         let op_delete = SequenceOp::<Block>::Delete {
-            target: OpId { counter: 1, peer: 1 },
-            id: OpId { counter: 2, peer: 1 },
+            target: OpId {
+                counter: 1,
+                peer: 1,
+            },
+            id: OpId {
+                counter: 2,
+                peer: 1,
+            },
         };
         doc.blocks.apply(op_delete);
 

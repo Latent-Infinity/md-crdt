@@ -2,9 +2,16 @@
 name = "md-crdt-sync"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/latenty-infinity/md-crdt"
+description = "Synchronization protocol for CRDT-based document collaboration"
+readme = "../README.md"
+keywords = ["sync", "crdt", "protocol", "collaborative", "replication"]
+categories = ["network-programming", "algorithms"]
 
 [dependencies]
-md-crdt-core = { path = "../md-crdt-core" }
+md-crdt-core = { version = "0.1.0", path = "../md-crdt-core" }
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0"
 

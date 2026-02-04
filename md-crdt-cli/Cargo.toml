@@ -2,6 +2,13 @@
 name = "md-crdt-cli"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/latenty-infinity/md-crdt"
+description = "Command-line interface for md-crdt markdown synchronization"
+readme = "../README.md"
+keywords = ["cli", "markdown", "sync", "vault", "offline-first"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "md-crdt"

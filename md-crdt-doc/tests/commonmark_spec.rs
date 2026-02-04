@@ -114,7 +114,10 @@ fn commonmark_spec_by_section() {
     section_list.sort_by_key(|(name, _)| name.clone());
 
     println!("\nCommonMark spec coverage by section:");
-    println!("{:<40} {:>6} {:>6} {:>6}", "Section", "Total", "Pass", "Rate");
+    println!(
+        "{:<40} {:>6} {:>6} {:>6}",
+        "Section", "Total", "Pass", "Rate"
+    );
     println!("{}", "-".repeat(60));
 
     for (section, (total, passed)) in &section_list {
@@ -132,10 +135,8 @@ mod sections {
             #[test]
             fn $name() {
                 let examples = load_spec();
-                let section_examples: Vec<_> = examples
-                    .iter()
-                    .filter(|e| e.section == $section)
-                    .collect();
+                let section_examples: Vec<_> =
+                    examples.iter().filter(|e| e.section == $section).collect();
 
                 for example in section_examples {
                     let doc = Parser::parse(&example.markdown);

@@ -2,7 +2,7 @@
 
 # Run all tests
 test:
-    cargo test
+    cargo test --workspace
 
 # Check formatting
 fmt:

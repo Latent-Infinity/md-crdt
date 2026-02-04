@@ -26,10 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("usage: parser_perf <file-or-dir> [repeat]");
         std::process::exit(2);
     });
-    let repeat: usize = args
-        .next()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
+    let repeat: usize = args.next().and_then(|v| v.parse().ok()).unwrap_or(1);
 
     let mut files = Vec::new();
     collect_files(Path::new(&target), &mut files)?;

@@ -2,5 +2,9 @@
 name = "md-crdt-ci"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/latenty-infinity/md-crdt"
+description = "CI utilities and integration tests"
+publish = false
 
 [dependencies]

@@ -2,5 +2,12 @@
 name = "md-crdt-ffi"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/latenty-infinity/md-crdt"
+description = "Foreign function interface bindings for md-crdt"
+readme = "../README.md"
+keywords = ["ffi", "bindings", "crdt", "c-api", "interop"]
+categories = ["api-bindings", "development-tools::ffi"]
 
 [dependencies]

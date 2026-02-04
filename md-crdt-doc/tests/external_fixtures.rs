@@ -171,7 +171,10 @@ fn external_fixtures_coverage_report() {
     }
 
     println!("\nExternal fixtures coverage by source:");
-    println!("{:<50} {:>6} {:>6} {:>6}", "Source", "Total", "Pass", "Rate");
+    println!(
+        "{:<50} {:>6} {:>6} {:>6}",
+        "Source", "Total", "Pass", "Rate"
+    );
     println!("{}", "-".repeat(70));
 
     let mut sources: Vec<_> = by_source.into_iter().collect();

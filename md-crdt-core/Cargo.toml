@@ -2,6 +2,13 @@
 name = "md-crdt-core"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/latenty-infinity/md-crdt"
+description = "Core CRDT algorithms for conflict-free replicated data types"
+readme = "../README.md"
+keywords = ["crdt", "collaborative", "sync", "data-structures", "offline-first"]
+categories = ["data-structures", "algorithms"]
 
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
