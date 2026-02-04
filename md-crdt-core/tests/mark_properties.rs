@@ -11,6 +11,23 @@ fn op_id_strategy() -> impl Strategy<Value = OpId> {
     (1u64..10, 1u64..4).prop_map(|(counter, peer)| OpId { counter, peer })
 }
 
+fn distinct_op_id_pair_strategy() -> impl Strategy<Value = (OpId, OpId)> {
+    (1u64..10, 1u64..4, 1u64..10, 1u64..4).prop_map(|(c1, p1, c2, p2)| {
+        let op_id1 = OpId {
+            counter: c1,
+            peer: p1,
+        };
+        let mut op_id2 = OpId {
+            counter: c2,
+            peer: p2,
+        };
+        if op_id1 == op_id2 {
+            op_id2.counter = if c2 < 10 { c2 + 1 } else { c2 - 1 };
+        }
+        (op_id1, op_id2)
+    })
+}
+
 fn anchor_strategy() -> impl Strategy<Value = Anchor> {
     (op_id_strategy(), prop::bool::ANY).prop_map(|(elem_id, before)| Anchor {
         elem_id,
@@ -290,10 +307,9 @@ proptest! {
         kind in mark_kind_strategy(),
         start in anchor_strategy(),
         end in anchor_strategy(),
-        op_id1 in op_id_strategy(),
-        op_id2 in op_id_strategy(),
+        op_ids in distinct_op_id_pair_strategy(),
     ) {
-        prop_assume!(op_id1 != op_id2);
+        let (op_id1, op_id2) = op_ids;
 
         let mut set1 = MarkSet::new();
         let mut set2 = MarkSet::new();
