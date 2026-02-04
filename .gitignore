@@ -37,6 +37,7 @@ fuzz/artifacts/
 fuzz/corpus/
 fuzz/target/
 fuzz/*.log
+fuzz/.tmp*/
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
