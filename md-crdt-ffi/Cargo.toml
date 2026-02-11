@@ -9,5 +9,6 @@ description = "Foreign function interface bindings for md-crdt"
 readme = "../README.md"
 keywords = ["ffi", "bindings", "crdt", "c-api", "interop"]
 categories = ["api-bindings", "development-tools::ffi"]
+publish = false
 
 [dependencies]
