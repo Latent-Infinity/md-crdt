@@ -10,8 +10,8 @@
 //! all operations with their targets, then apply in different orders.
 
 use libfuzzer_sys::fuzz_target;
-use md_crdt_core::{MarkSet, OpId, SequenceOp};
-use md_crdt_doc::{Block, BlockKind, Document, SerializeConfig};
+use md_crdt::core::{MarkSet, OpId, SequenceOp};
+use md_crdt::doc::{Block, BlockKind, Document, SerializeConfig};
 use uuid::Uuid;
 
 /// Pre-computed operation with fixed targets

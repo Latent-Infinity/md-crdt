@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-#### Core CRDT Algorithms (`md-crdt-core`)
+#### Core CRDT Algorithms (`md-crdt::core`)
 - Sequence CRDT with RGA (Replicated Growable Array) algorithm
 - LWW (Last-Writer-Wins) Register for conflict resolution
 - Map CRDT with LWW semantics for key-value pairs
@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - StateVector for version tracking and causality
 - OpId-based operation ordering with lexicographic tie-breaking
 
-#### Markdown Document Model (`md-crdt-doc`)
+#### Markdown Document Model (`md-crdt::doc`)
 - Full CommonMark-compatible markdown parser
 - Block types: Paragraph, CodeFence, BlockQuote, RawBlock, Table
 - Inline formatting preservation (bold, italic, code, links)
@@ -28,19 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unicode and grapheme cluster handling
 - Round-trip serialization (parse -> edit -> serialize)
 
-#### Synchronization Protocol (`md-crdt-sync`)
+#### Synchronization Protocol (`md-crdt::sync`)
 - Delta-based change encoding
 - Causal ordering with out-of-order buffering
 - Validation with configurable resource limits
 - Semantic conflict detection and auto-resolution
 
-#### Persistent Storage (`md-crdt-storage`)
+#### Persistent Storage (`md-crdt` `storage` feature)
 - Crash-safe dual-superblock design
 - CRC32 checksums for integrity verification
 - Incremental operation segments
 - Compaction with tombstone retention policies
 
-#### File System Sync (`md-crdt-filesync`)
+#### File System Sync (`md-crdt` `filesync` feature)
 - Vault-based markdown file management
 - Block-level fingerprinting for change detection
 - Fuzzy content matching for moved/edited blocks

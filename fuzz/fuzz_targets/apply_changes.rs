@@ -1,8 +1,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use md_crdt_core::OpId;
-use md_crdt_sync::{ChangeMessage, Document, Operation};
+use md_crdt::core::{OpId, StateVector};
+use md_crdt::sync::{ChangeMessage, Operation, SyncState};
 
 fuzz_target!(|data: &[u8]| {
     let mut ops = Vec::new();
@@ -21,9 +21,9 @@ fuzz_target!(|data: &[u8]| {
         ops.push(op);
     }
     let message = ChangeMessage {
-        since: md_crdt_core::StateVector::new(),
+        since: StateVector::new(),
         ops,
     };
-    let mut doc = Document::new();
+    let mut doc = SyncState::new();
     let _ = doc.apply_changes(message);
 });

@@ -8,4 +8,4 @@ description = "Naive reference implementation for differential testing"
 publish = false
 
 [dependencies]
-md-crdt-core = { version = "0.1.0", path = "../md-crdt-core" }
+md-crdt = { version = "0.1.0", path = "..", default-features = false }

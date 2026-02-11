@@ -1,5 +1,5 @@
 //! A naive, simple oracle implementation for differential testing.
-use md_crdt_core::{OpId, SequenceOp, StateVector};
+use md_crdt::core::{OpId, SequenceOp, StateVector};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,8 +161,8 @@ impl SyncOracle {
 }
 
 pub mod mark {
-    use md_crdt_core::mark::{Anchor, MarkKind, MarkValue, Span};
-    use md_crdt_core::{OpId, StateVector, mark::MarkIntervalId};
+    use md_crdt::core::mark::{Anchor, AnchorBias, MarkIntervalId, MarkKind, MarkValue, Span};
+    use md_crdt::core::{OpId, StateVector};
     use std::collections::BTreeMap;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,8 +307,8 @@ pub mod mark {
     fn resolve_anchor(anchor: &Anchor, index_map: &BTreeMap<OpId, usize>, len: usize) -> usize {
         let base = index_map.get(&anchor.elem_id).copied().unwrap_or(0);
         match anchor.bias {
-            md_crdt_core::mark::AnchorBias::Before => base,
-            md_crdt_core::mark::AnchorBias::After => (base + 1).min(len),
+            AnchorBias::Before => base,
+            AnchorBias::After => (base + 1).min(len),
         }
     }
 }

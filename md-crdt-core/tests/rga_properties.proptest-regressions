@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 987837849bd78878b3b1f1e72eca8b448577d626f9d36dce9f29d426d984cafa # shrinks to specs = [Insert { after: None, value: 0, peer: 1 }, Insert { after: None, value: 0, peer: 1 }, Insert { after: Some(35), value: 1, peer: 1 }]

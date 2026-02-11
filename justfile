@@ -22,7 +22,7 @@ check: fmt lint test
 
 # Differential testing against the naive oracle
 differential-test:
-    PROPTEST_CASES=${PROPTEST_CASES:-100000} cargo test -p md-crdt-core differential_test_sequence
+    PROPTEST_CASES=${PROPTEST_CASES:-100000} cargo test --test core_differential differential_test_sequence
 
 # Run benchmarks
 bench:

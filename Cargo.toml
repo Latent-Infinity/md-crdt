@@ -1,16 +1,67 @@
+[package]
+name = "md-crdt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/latenty-infinity/md-crdt"
+description = "Conflict-free replicated data types for collaborative markdown editing"
+readme = "README.md"
+keywords = ["crdt", "collaborative", "markdown", "sync", "offline-first"]
+categories = ["data-structures", "text-processing", "algorithms"]
+
 [workspace]
 members = [
     "md-crdt-ci",
-    "md-crdt-core",
-    "md-crdt-doc",
-    "md-crdt-sync",
-    "md-crdt-storage",
-    "md-crdt-filesync",
     "md-crdt-ffi",
     "md-crdt-cli",
     "md-crdt-naive-oracle",
 ]
 resolver = "2"
+
+[dependencies]
+# Core dependencies
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0"
+unicode-segmentation = "1.12.0"
+uuid = { version = "1.17.0", features = ["serde", "v4"] }
+
+# Optional dependencies for storage feature
+rkyv = { version = "0.8", optional = true }
+crc32fast = { version = "1.5.0", optional = true }
+
+# Optional dependencies for filesync feature
+walkdir = { version = "2.5.0", optional = true }
+tracing = { version = "0.1", optional = true }
+
+# Optional dependency for heap profiling
+dhat = { version = "0.3.3", optional = true }
+
+[dev-dependencies]
+md-crdt-naive-oracle = { path = "md-crdt-naive-oracle" }
+proptest = "1.9.0"
+criterion = "0.5.1"
+serde_json = "1.0"
+tempfile = "3.24.0"
+
+[features]
+default = ["storage", "filesync"]
+storage = ["dep:rkyv", "dep:crc32fast"]
+filesync = ["storage", "dep:walkdir", "dep:tracing"]
+dhat-heap = ["dhat"]
+
+# Benchmarks will be migrated separately
+# [[bench]]
+# name = "sequence"
+# harness = false
+#
+# [[bench]]
+# name = "keystroke"
+# harness = false
+#
+# [[bench]]
+# name = "nfr"
+# harness = false
 
 [profile.release]
 opt-level = 3              # Maximum optimizations

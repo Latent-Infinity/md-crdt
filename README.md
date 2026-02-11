@@ -10,19 +10,17 @@ md-crdt is a Rust library and CLI for offline-first, deterministic collaboration
 - Block- and mark-level operations for precise edits.
 - File sync that ingests and flushes against a local vault.
 
-**Crates**
-- `md-crdt-core`: Core CRDT types (`OpId`, `Sequence`, `MarkSet`, `LWW` registers).
-- `md-crdt-doc`: Markdown document model, parser, serializer, and edit ops.
-- `md-crdt-sync`: Change batching, validation, and sync bookkeeping.
-- `md-crdt-filesync`: Vault ingestion and flush against `.md` files.
-- `md-crdt-cli`: CLI for vault workflows.
+**Workspace Layout**
+- `md-crdt`: Primary library crate (modules: `core`, `doc`, `sync`; features: `storage`, `filesync`).
+- `md-crdt-cli`: CLI workspace crate for vault workflows.
+- `md-crdt-ffi`: FFI workspace crate (currently minimal placeholder surface).
+- `md-crdt-naive-oracle`: Unpublished reference implementation used for differential testing.
 
 **Library Quickstart**
 Parse Markdown, edit a block, serialize back:
 
 ```rust
-use md_crdt_core::OpId;
-use md_crdt_doc::{Document, Parser, EquivalenceMode};
+use md_crdt::{Document, EquivalenceMode, OpId, Parser};
 
 let input = "# Title\n\nHello world.";
 let mut doc = Parser::parse(input);
@@ -40,13 +38,12 @@ println!("{output}");
 Apply edit operations directly:
 
 ```rust
-use md_crdt_core::OpId;
-use md_crdt_doc::{EditOp, Parser};
+use md_crdt::{EditOp, InsertTextRun, OpId, Parser};
 
 let mut doc = Parser::parse("Hello");
 let block_id = doc.blocks_in_order()[0].id;
 
-let op = EditOp::InsertText(md_crdt_doc::InsertTextRun {
+let op = EditOp::InsertText(InsertTextRun {
     block_id,
     grapheme_offset: 5,
     byte_offset: 5,
@@ -54,17 +51,16 @@ let op = EditOp::InsertText(md_crdt_doc::InsertTextRun {
     op_id: OpId { counter: 1, peer: 42 },
 });
 
-doc.raw_apply_op(op, true).unwrap();
+doc.raw_apply_op(op, false).unwrap();
 ```
 
-Sync changes with `md-crdt-sync`:
+Sync changes with `md-crdt` sync APIs:
 
 ```rust
-use md_crdt_core::{OpId, StateVector};
-use md_crdt_sync::{ChangeMessage, Document, Operation};
+use md_crdt::{OpId, Operation, StateVector, SyncState};
 
-let mut doc_a = Document::new();
-let mut doc_b = Document::new();
+let mut doc_a = SyncState::new();
+let mut doc_b = SyncState::new();
 
 doc_a.apply_op(Operation {
     id: OpId { counter: 1, peer: 1 },
@@ -76,10 +72,10 @@ let change = doc_a.encode_changes_since(&since);
 let _result = doc_b.apply_changes(change);
 ```
 
-Work with a vault using `md-crdt-filesync`:
+Work with a vault using `md-crdt` filesync APIs:
 
 ```rust
-use md_crdt_filesync::Vault;
+use md_crdt::Vault;
 
 let vault = Vault::open(".")?;
 vault.init()?;

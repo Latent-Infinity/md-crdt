@@ -58,7 +58,7 @@ We maintain high test coverage standards:
 - **Unit tests**: Required for all new functionality
 - **Property-based tests**: Use `proptest` for testing invariants
 - **Differential tests**: Compare against the naive oracle for CRDT operations
-- **Integration tests**: Required for cross-crate functionality
+- **Integration tests**: Required for cross-module functionality
 
 Run the full test suite before submitting:
 
@@ -75,7 +75,7 @@ cargo test --workspace
 - Run benchmarks for performance-critical changes:
 
 ```bash
-cargo bench -p md-crdt-doc --bench nfr
+cargo bench
 ```
 
 ### Commit Messages
@@ -123,16 +123,13 @@ Fixes #42
 
 ## Project Structure
 
-```
+```text
 md-crdt/
-├── md-crdt-core/       # Core CRDT algorithms (Sequence, LwwRegister, Map, MarkSet)
-├── md-crdt-doc/        # Markdown document model and parser
-├── md-crdt-sync/       # Synchronization protocol
-├── md-crdt-storage/    # Persistent storage layer
-├── md-crdt-filesync/   # File system synchronization
-├── md-crdt-cli/        # Command-line interface
-├── md-crdt-ffi/        # Foreign function interface
-├── md-crdt-naive-oracle/ # Reference implementation for testing
+├── src/                # md-crdt library modules: core, doc, sync, storage, filesync
+├── tests/              # Integration, property, differential, and fixture-based tests
+├── md-crdt-cli/        # Command-line interface workspace crate
+├── md-crdt-ffi/        # Foreign function interface workspace crate
+├── md-crdt-naive-oracle/ # Reference implementation for differential testing
 ├── md-crdt-ci/         # CI utilities
 └── fuzz/               # Fuzz testing targets
 ```
@@ -145,14 +142,14 @@ md-crdt/
 # All tests
 cargo test --workspace
 
-# Specific crate
-cargo test -p md-crdt-core
+# Library crate only
+cargo test -p md-crdt
 
 # Property tests with more cases
 PROPTEST_CASES=10000 cargo test --workspace
 
 # Differential tests
-cargo test --test differential_tests
+cargo test --test core_differential differential_test_sequence
 ```
 
 ### Fuzzing

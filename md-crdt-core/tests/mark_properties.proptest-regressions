@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 4485a159afc1956afd1405f4b8af4b02390bd739a63e1989ef68ad3a14b6a82f # shrinks to ops = [Remove { interval_id: OpId { counter: 2, peer: 1 }, observed: StateVector { peers: {1: 0} }, op_id: OpId { counter: 1, peer: 3 } }, Set { interval_id: OpId { counter: 2, peer: 1 }, kind: Bold, start: Anchor { elem_id: OpId { counter: 1, peer: 1 }, bias: Before }, end: Anchor { elem_id: OpId { counter: 1, peer: 1 }, bias: After }, op_id: OpId { counter: 1, peer: 1 } }, Remove { interval_id: OpId { counter: 2, peer: 1 }, observed: StateVector { peers: {1: 2} }, op_id: OpId { counter: 1, peer: 3 } }]

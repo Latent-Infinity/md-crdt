@@ -538,6 +538,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-crdt"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "criterion",
+ "dhat",
+ "md-crdt-naive-oracle",
+ "proptest",
+ "rkyv",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "unicode-segmentation",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "md-crdt-ci"
 version = "0.1.0"
 
@@ -547,7 +567,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
- "md-crdt-filesync",
+ "md-crdt",
  "predicates",
  "serde",
  "serde_json",
@@ -555,75 +575,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "md-crdt-core"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "md-crdt-naive-oracle",
- "proptest",
- "serde",
-]
-
-[[package]]
-name = "md-crdt-doc"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "dhat",
- "md-crdt-core",
- "serde",
- "serde_json",
- "thiserror",
- "unicode-segmentation",
- "uuid",
-]
-
-[[package]]
 name = "md-crdt-ffi"
 version = "0.1.0"
-
-[[package]]
-name = "md-crdt-filesync"
-version = "0.1.0"
-dependencies = [
- "md-crdt-doc",
- "md-crdt-storage",
- "rkyv",
- "serde",
- "tempfile",
- "thiserror",
- "tracing",
- "walkdir",
-]
 
 [[package]]
 name = "md-crdt-naive-oracle"
 version = "0.1.0"
 dependencies = [
- "md-crdt-core",
-]
-
-[[package]]
-name = "md-crdt-storage"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "rkyv",
- "serde",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "md-crdt-sync"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "md-crdt-core",
- "md-crdt-naive-oracle",
- "proptest",
- "serde",
- "thiserror",
+ "md-crdt",
 ]
 
 [[package]]

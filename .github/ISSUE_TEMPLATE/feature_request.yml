@@ -33,15 +33,15 @@ body:
   - type: dropdown
     id: scope
     attributes:
-      label: Affected Crate(s)
-      description: Which crate(s) would this affect?
+      label: Affected Area(s)
+      description: Which module(s) or workspace crate(s) would this affect?
       multiple: true
       options:
-        - md-crdt-core
-        - md-crdt-doc
-        - md-crdt-sync
-        - md-crdt-storage
-        - md-crdt-filesync
+        - md-crdt::core
+        - md-crdt::doc
+        - md-crdt::sync
+        - md-crdt::storage (feature)
+        - md-crdt::filesync (feature)
         - md-crdt-cli
         - md-crdt-ffi
         - Other/Unknown

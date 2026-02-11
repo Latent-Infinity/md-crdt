@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5.56", features = ["derive"] }
-md-crdt-filesync = { version = "0.1.0", path = "../md-crdt-filesync" }
+md-crdt = { version = "0.1.0", path = ".." }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 

@@ -10,9 +10,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-md-crdt-doc = { path = "../md-crdt-doc" }
-md-crdt-sync = { path = "../md-crdt-sync" }
-md-crdt-core = { path = "../md-crdt-core" }
+md-crdt = { path = ".." }
 postcard = { version = "1", features = ["alloc"] }
 uuid = { version = "1", features = ["v4"] }
 

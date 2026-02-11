@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use md_crdt_filesync::{IngestResult, Vault};
+use md_crdt::filesync::{IngestResult, Vault};
 use serde::Serialize;
 use std::env;
 
