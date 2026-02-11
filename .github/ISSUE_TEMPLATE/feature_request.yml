@@ -42,7 +42,7 @@ body:
         - md-crdt::sync
         - md-crdt::storage (feature)
         - md-crdt::filesync (feature)
-        - md-crdt-cli
+        - md-crdt::cli (bin)
         - md-crdt-ffi
         - Other/Unknown
 

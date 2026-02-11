@@ -541,10 +541,13 @@ dependencies = [
 name = "md-crdt"
 version = "0.1.0"
 dependencies = [
+ "assert_cmd",
+ "clap",
  "crc32fast",
  "criterion",
  "dhat",
  "md-crdt-naive-oracle",
+ "predicates",
  "proptest",
  "rkyv",
  "serde",
@@ -560,19 +563,6 @@ dependencies = [
 [[package]]
 name = "md-crdt-ci"
 version = "0.1.0"
-
-[[package]]
-name = "md-crdt-cli"
-version = "0.1.0"
-dependencies = [
- "assert_cmd",
- "clap",
- "md-crdt",
- "predicates",
- "serde",
- "serde_json",
- "tempfile",
-]
 
 [[package]]
 name = "md-crdt-ffi"

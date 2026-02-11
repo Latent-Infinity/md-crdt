@@ -46,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fuzzy content matching for moved/edited blocks
 - Copy detection across files
 
-#### Command-Line Interface (`md-crdt-cli`)
+#### Command-Line Interface (`md-crdt` bundled binary)
 - `init` - Initialize a vault
 - `status` - Show file tracking status (with JSON output)
 - `ingest` - Import external file changes

@@ -11,8 +11,7 @@ md-crdt is a Rust library and CLI for offline-first, deterministic collaboration
 - File sync that ingests and flushes against a local vault.
 
 **Workspace Layout**
-- `md-crdt`: Primary library crate (modules: `core`, `doc`, `sync`; features: `storage`, `filesync`).
-- `md-crdt-cli`: CLI workspace crate for vault workflows.
+- `md-crdt`: Primary library crate (modules: `core`, `doc`, `sync`; features: `storage`, `filesync`) and bundled CLI binary (`src/bin/md-crdt.rs`).
 - `md-crdt-ffi`: FFI workspace crate (currently minimal placeholder surface).
 - `md-crdt-naive-oracle`: Unpublished reference implementation used for differential testing.
 
@@ -87,21 +86,21 @@ vault.flush()?;
 Run the CLI from the repo root:
 
 ```sh
-cargo run -p md-crdt-cli -- status
+cargo run --bin md-crdt -- status
 ```
 
 Initialize a vault and ingest changes:
 
 ```sh
-cargo run -p md-crdt-cli -- init
-cargo run -p md-crdt-cli -- ingest
-cargo run -p md-crdt-cli -- flush
+cargo run --bin md-crdt -- init
+cargo run --bin md-crdt -- ingest
+cargo run --bin md-crdt -- flush
 ```
 
 Sync (ingest + dirty status):
 
 ```sh
-cargo run -p md-crdt-cli -- sync
+cargo run --bin md-crdt -- sync
 ```
 
 **Development**
