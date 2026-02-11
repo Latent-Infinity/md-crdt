@@ -258,8 +258,12 @@ impl<T: Clone> Sequence<T> {
 
         for ids in children.values_mut() {
             ids.sort_by(|a, b| {
-                let elem_a = element_map.get(a).unwrap();
-                let elem_b = element_map.get(b).unwrap();
+                let elem_a = element_map
+                    .get(a)
+                    .expect("child id must exist in element map during rebuild");
+                let elem_b = element_map
+                    .get(b)
+                    .expect("child id must exist in element map during rebuild");
                 match (elem_a.right_origin, elem_b.right_origin) {
                     (Some(ra), Some(rb)) => {
                         if ra == rb {

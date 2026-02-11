@@ -3,7 +3,7 @@
 #
 # Note: Lint levels (warn/allow) are configured via:
 # - #![warn(...)] / #![allow(...)] in lib.rs files
-# - Command-line flags in CI: cargo clippy -- -W clippy::perf -W clippy::nursery
+# - Command-line flags in CI/justfile (see `just lint`)
 #
 # This file configures Clippy thresholds and settings.
 

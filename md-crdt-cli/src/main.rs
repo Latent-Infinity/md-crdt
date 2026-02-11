@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use md_crdt::filesync::{IngestResult, Vault};
 use serde::Serialize;
 use std::env;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -46,7 +47,7 @@ fn main() {
 }
 
 fn status_command(json: bool) {
-    let current_dir = env::current_dir().expect("Failed to get current directory");
+    let current_dir = current_dir_or_exit();
     let vault = match Vault::open(&current_dir) {
         Ok(vault) => vault,
         Err(err) => {
@@ -85,11 +86,13 @@ fn status_command(json: bool) {
         });
         // serde_json::to_string_pretty only fails for non-serializable types,
         // which is impossible for json! macro output
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output)
-                .expect("json! macro output is always serializable")
-        );
+        match serde_json::to_string_pretty(&output) {
+            Ok(pretty) => println!("{pretty}"),
+            Err(err) => {
+                eprintln!("Error: {err}");
+                std::process::exit(1);
+            }
+        }
         if is_dirty {
             std::process::exit(1);
         }
@@ -108,7 +111,7 @@ fn status_command(json: bool) {
 }
 
 fn init_command() {
-    let current_dir = env::current_dir().expect("Failed to get current directory");
+    let current_dir = current_dir_or_exit();
     let vault = match Vault::open(&current_dir) {
         Ok(vault) => vault,
         Err(err) => {
@@ -124,7 +127,7 @@ fn init_command() {
 }
 
 fn flush_command() {
-    let current_dir = env::current_dir().expect("Failed to get current directory");
+    let current_dir = current_dir_or_exit();
     let vault = match Vault::open(&current_dir) {
         Ok(vault) => vault,
         Err(err) => {
@@ -140,7 +143,7 @@ fn flush_command() {
 }
 
 fn ingest_command() {
-    let current_dir = env::current_dir().expect("Failed to get current directory");
+    let current_dir = current_dir_or_exit();
     let vault = match Vault::open(&current_dir) {
         Ok(vault) => vault,
         Err(err) => {
@@ -162,7 +165,7 @@ fn ingest_command() {
 }
 
 fn sync_command() {
-    let current_dir = env::current_dir().expect("Failed to get current directory");
+    let current_dir = current_dir_or_exit();
     let vault = match Vault::open(&current_dir) {
         Ok(vault) => vault,
         Err(err) => {
@@ -186,6 +189,16 @@ fn sync_command() {
         IngestResult::Changed => {
             println!("Sync complete: changes detected");
             std::process::exit(2);
+        }
+    }
+}
+
+fn current_dir_or_exit() -> PathBuf {
+    match env::current_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("Error: failed to get current directory: {err}");
+            std::process::exit(1);
         }
     }
 }

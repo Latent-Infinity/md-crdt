@@ -235,10 +235,9 @@ impl SyncState {
 
             if op.id.counter > current_applied + 1 {
                 // Missing prior operations - buffer this one
+                let buffered_id = op.id;
                 self.pending.insert(op.id, op);
-                result
-                    .buffered
-                    .push(self.pending.keys().last().copied().unwrap());
+                result.buffered.push(buffered_id);
             } else {
                 // Ready to apply
                 let op_id = op.id;

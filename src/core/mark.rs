@@ -81,14 +81,17 @@ impl MarkSet {
         attrs: BTreeMap<String, MarkValue>,
         op_id: OpId,
     ) {
-        let entry = self.intervals.entry(interval_id).or_insert(MarkInterval {
-            id: interval_id,
-            kind: kind.clone(),
-            start,
-            end,
-            attrs: BTreeMap::new(),
-            op_id,
-        });
+        let entry = self
+            .intervals
+            .entry(interval_id)
+            .or_insert_with(|| MarkInterval {
+                id: interval_id,
+                kind: kind.clone(),
+                start,
+                end,
+                attrs: BTreeMap::new(),
+                op_id,
+            });
 
         if op_id >= entry.op_id {
             entry.kind = kind;
@@ -120,13 +123,10 @@ impl MarkSet {
         let Some(interval) = self.intervals.get(interval_id) else {
             return false;
         };
-        match self.removes.get(interval_id) {
-            None => true,
-            Some(remove) => {
-                let seen = remove.observed.get(interval.id.peer).unwrap_or(0);
-                seen < interval.id.counter
-            }
-        }
+        self.removes.get(interval_id).is_none_or(|remove| {
+            let seen = remove.observed.get(interval.id.peer).unwrap_or(0);
+            seen < interval.id.counter
+        })
     }
 
     /// Returns a Vec of active intervals. Use `iter_active_intervals()` for lazy iteration.
@@ -153,7 +153,7 @@ impl MarkSet {
         }
 
         let mut marks_at: Vec<Vec<MarkIntervalId>> = vec![Vec::new(); visible_len + 1];
-        for interval in self.active_intervals() {
+        for interval in self.iter_active_intervals() {
             let start = resolve_anchor(&interval.start, &index_map, visible_len);
             let end = resolve_anchor(&interval.end, &index_map, visible_len);
             let (from, to) = if start <= end {

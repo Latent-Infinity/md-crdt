@@ -15,7 +15,7 @@ fmt:
 
 # Lint with clippy
 lint:
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::perf -W clippy::needless_collect -W clippy::map_flatten -W clippy::or_fun_call -W clippy::inefficient_to_string -W clippy::unnecessary_wraps -W clippy::useless_conversion
 
 # Run all quality checks
 check: fmt lint test

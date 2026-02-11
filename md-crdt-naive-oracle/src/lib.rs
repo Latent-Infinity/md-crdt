@@ -77,8 +77,12 @@ impl<T: Clone> Sequence<T> {
 
         for ids in children.values_mut() {
             ids.sort_by(|a, b| {
-                let elem_a = element_map.get(a).unwrap();
-                let elem_b = element_map.get(b).unwrap();
+                let elem_a = element_map
+                    .get(a)
+                    .expect("child id must exist in element map during rebuild");
+                let elem_b = element_map
+                    .get(b)
+                    .expect("child id must exist in element map during rebuild");
                 match (elem_a.right_origin, elem_b.right_origin) {
                     (Some(ra), Some(rb)) => {
                         if ra == rb {
@@ -99,7 +103,7 @@ impl<T: Clone> Sequence<T> {
 
         self.elements = ordered_ids
             .into_iter()
-            .filter_map(|id| element_map.get(&id).cloned())
+            .filter_map(|id| element_map.remove(&id))
             .collect();
     }
 
@@ -207,7 +211,7 @@ pub mod mark {
             let entry = self
                 .intervals
                 .entry(interval_id)
-                .or_insert(NaiveMarkInterval {
+                .or_insert_with(|| NaiveMarkInterval {
                     id: interval_id,
                     kind: kind.clone(),
                     start,

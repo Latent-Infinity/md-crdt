@@ -390,9 +390,8 @@ mod parse_and_merge {
         let input = "Hello world";
         let doc = Parser::parse(input);
 
-        // Get the first block
-        let blocks: Vec<_> = doc.blocks.iter_asc().collect();
-        assert!(!blocks.is_empty());
+        // Ensure parse produced content
+        assert!(doc.blocks.iter_asc().next().is_some());
 
         // Serialize twice
         let output1 = serialize_structural(&doc);
