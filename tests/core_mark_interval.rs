@@ -10,16 +10,19 @@ fn text_anchor_strategy() -> impl Strategy<Value = TextAnchor> {
     op_id_strategy().prop_map(|op_id| TextAnchor { op_id })
 }
 
+// Strategy for generating two distinct OpIds (avoids global rejects at high case counts)
+fn distinct_op_id_pair() -> impl Strategy<Value = (OpId, OpId)> {
+    (op_id_strategy(), op_id_strategy()).prop_filter("id1 != id2", |(a, b)| a != b)
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(proptest_config::cases()))]
     #[test]
     fn test_causal_add_wins(
-        add_id in op_id_strategy(),
-        remove_id in op_id_strategy(),
+        (add_id, remove_id) in distinct_op_id_pair(),
         start in text_anchor_strategy(),
         end in text_anchor_strategy(),
     ) {
-        prop_assume!(add_id != remove_id);
 
         let interval = MarkInterval::<String, String>::new(add_id, start, end);
 
@@ -48,10 +51,11 @@ proptest! {
         add_id in op_id_strategy(),
         start in text_anchor_strategy(),
         end in text_anchor_strategy(),
-        (attr_key, attr_val1, attr_id1) in (any::<String>(), any::<u8>(), op_id_strategy()),
-        (attr_val2, attr_id2) in (any::<u8>(), op_id_strategy()),
+        attr_key in any::<String>(),
+        attr_val1 in any::<u8>(),
+        attr_val2 in any::<u8>(),
+        (attr_id1, attr_id2) in distinct_op_id_pair(),
     ) {
-        prop_assume!(attr_id1 != attr_id2);
 
         let mut interval1 = MarkInterval::new(add_id, start, end);
         let mut interval2 = MarkInterval::new(add_id, start, end);
