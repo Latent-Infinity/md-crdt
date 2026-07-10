@@ -36,6 +36,9 @@ pub mod doc;
 // Synchronization protocol
 pub mod sync;
 
+// Versioned wire codec for collaborative ops
+pub mod codec;
+
 // Optional: Persistent storage layer
 #[cfg(feature = "storage")]
 pub mod storage;
@@ -69,6 +72,13 @@ pub use doc::mark_ops;
 pub use sync::{
     ApplyResult, ChangeMessage, MalformedKind, Operation, SemanticConflict, SyncState,
     ValidationError, ValidationLimits, validate_changes,
+};
+
+// Re-export codec types
+pub use codec::{
+    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, CodecError, DocOp, Envelope,
+    JsonOpCodec, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, WIRE_VERSION,
+    insert_block_paragraph_is_empty,
 };
 
 // Re-export storage types (feature-gated)

@@ -524,11 +524,10 @@ fn fingerprint_similarity_int(a: &Fingerprint, b: &Fingerprint) -> u32 {
         }
     }
     union += (a.tokens.len() - i + b.tokens.len() - j) as u32;
-    if union == 0 {
-        0
-    } else {
-        (intersection * 10000) / union
-    }
+    intersection
+        .checked_mul(10000)
+        .and_then(|n| n.checked_div(union))
+        .unwrap_or(0)
 }
 
 impl Fingerprint {

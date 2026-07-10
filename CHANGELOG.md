@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### Wire Codec (`md-crdt::codec`)
+- Versioned `Envelope` / `DocOp` DTOs for collaborative ops (`InsertBlock`, `DeleteBlock`)
+- `JsonOpCodec` encode/decode with nest-depth limits and unknown-version rejection
+- `insert_block_paragraph_is_empty` helper for unit-mode session validation (not an unconditional decode ban)
+- Wire kinds: Paragraph, CodeFence, BlockQuote (nested), RawBlock — no live `Sequence` serialization
+
 ## [0.1.0] - 2025-02-04
 
 ### Added
