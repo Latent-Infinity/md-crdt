@@ -3,13 +3,22 @@
 //! Owns encode-before-apply local commits and pre-decode remote apply.
 //! Payload-opaque [`crate::sync::SyncState`] never sees codec types.
 
+pub mod snapshot;
+
+pub use snapshot::{
+    DocumentDto, SNAPSHOT_FORMAT_VERSION, SessionSnapshot, SnapshotError, max_counter_for_peer,
+};
+
 use crate::codec::{
     BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, DocOp, Envelope, JsonOpCodec, OpBody,
     OpCodec, WIRE_VERSION, insert_block_paragraph_is_empty,
 };
 use crate::core::MarkSet;
 use crate::core::{OpId, PeerId, Sequence, SequenceOp, StateVector};
-use crate::doc::{Block, BlockKind, Document, block_id_from_op};
+use crate::doc::{
+    Block, BlockKind, Document, block_id_from_op, grapheme_count, paragraph_visible_string,
+    units_from_str,
+};
 use crate::sync::{
     ChangeMessage, IntegrateResult, Operation, SyncState, ValidationError, ValidationLimits,
     validate_changes,
@@ -161,14 +170,15 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             return Err(SessionError::NonEmptyParagraphOnInsertBlock);
         }
 
+        // Operation.id is the max embedded id (N1); a paragraph body expands into text
+        // units at b+1..b+G, so the op covers a counter range and its id is b+G.
+        let (op_id, _span) = operation_extent(&envelope);
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
         // Apply to document before advancing clock / logging (N3).
         apply_envelope_to_document(&mut self.document, &envelope);
-        self.sync.add_local_op(Operation {
-            id: block_elem,
-            payload,
-        });
-        self.next_counter = b + 1;
+        self.sync.add_local_op(Operation { id: op_id, payload });
+        // Advance past the whole reserved range so later ids never collide with the units.
+        self.next_counter = op_id.counter + 1;
         Ok(block_elem)
     }
 
@@ -225,18 +235,21 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             if env.version != WIRE_VERSION {
                 return Err(SessionError::UnknownWireVersion(env.version));
             }
-            check_operation_id_is_max(&op, &env)?;
-            check_peer_consistency(&op, &env)?;
+            // Reject a unit-mode non-empty paragraph before computing the expansion-based
+            // max id (in unit-mode a paragraph must not expand at all).
             if self.unit_mode && !insert_block_paragraph_is_empty(&env) {
                 return Err(SessionError::NonEmptyParagraphOnInsertBlock);
             }
+            check_operation_id_is_max(&op, &env)?;
+            check_peer_consistency(&op, &env)?;
             prepared.push((op, env));
         }
 
         let mut result = SessionApplyResult::default();
         for (op, env) in prepared {
             let id = op.id;
-            match self.sync.apply_one(op) {
+            let (_, span) = operation_extent(&env);
+            match self.sync.apply_one(op, span) {
                 IntegrateResult::AlreadyPresent => {}
                 IntegrateResult::Buffered => {
                     self.pending_envelopes.insert(id, env);
@@ -265,46 +278,202 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         }
         Ok(())
     }
+
+    /// Serialize current session state (document + op log + clock).
+    ///
+    /// Includes the full applied op log for retransmission; growth without
+    /// compaction is accepted for 0.1.
+    pub fn save_snapshot(&self) -> Result<SessionSnapshot, SnapshotError> {
+        let ops = self.sync.applied_ops();
+        let pending: Vec<(OpId, Vec<u8>)> = self
+            .sync
+            .pending()
+            .into_iter()
+            .map(|op| (op.id, op.payload))
+            .collect();
+        Ok(SessionSnapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION,
+            peer: self.peer,
+            next_counter: self.next_counter,
+            unit_mode: self.unit_mode,
+            document: DocumentDto::from_document(&self.document),
+            ops,
+            pending,
+        })
+    }
+
+    /// Switch peer identity after restore (late join without reloading bytes).
+    pub fn rebind_peer(&mut self, local_peer: PeerId) {
+        self.peer = local_peer;
+        let ops = self.sync.applied_ops();
+        let mut max = max_counter_for_peer(local_peer, &ops, &self.document);
+        for op in self.sync.pending() {
+            if op.id.peer == local_peer {
+                max = max.max(op.id.counter);
+            }
+        }
+        self.next_counter = max.saturating_add(1).max(1);
+        self.pending_envelopes.clear();
+    }
+
+    #[cfg(feature = "storage")]
+    pub fn write_to_storage(&self, storage: &crate::storage::Storage) -> Result<(), SnapshotError> {
+        let snap = self.save_snapshot()?;
+        let bytes = snap.to_bytes()?;
+        storage.write_snapshot(&bytes, &[], false)?;
+        Ok(())
+    }
+}
+
+impl CollaborativeDocument<JsonOpCodec> {
+    /// Crash recovery for the **same** peer: restore peer id and `next_counter`.
+    pub fn restore_from_snapshot(snap: SessionSnapshot) -> Result<Self, SnapshotError> {
+        if snap.format_version != SNAPSHOT_FORMAT_VERSION
+            && snap.format_version != snapshot::SNAPSHOT_FORMAT_VERSION_V1
+        {
+            return Err(SnapshotError::UnsupportedVersion(snap.format_version));
+        }
+        let doc = snap.document.clone().into_document();
+        let mut max = max_counter_for_peer(snap.peer, &snap.ops, &doc);
+        for (id, _) in &snap.pending {
+            if id.peer == snap.peer {
+                max = max.max(id.counter);
+            }
+        }
+        if snap.next_counter <= max {
+            return Err(SnapshotError::ClockBehind {
+                peer: snap.peer,
+                next: snap.next_counter,
+                max,
+            });
+        }
+
+        let mut sync = SyncState::new();
+        sync.restore_applied(snap.ops);
+        let pending_ops: Vec<(Operation, u64)> = snap
+            .pending
+            .into_iter()
+            .map(|(id, payload)| {
+                let span = span_of_payload(&payload);
+                (Operation { id, payload }, span)
+            })
+            .collect();
+        sync.restore_pending(pending_ops);
+
+        Ok(Self {
+            peer: snap.peer,
+            next_counter: snap.next_counter,
+            document: doc,
+            sync,
+            codec: JsonOpCodec,
+            unit_mode: snap.unit_mode,
+            pending_envelopes: BTreeMap::new(),
+        })
+    }
+
+    /// Late join: load compact state as `local_peer` (does not adopt snapshot peer).
+    pub fn import_state(
+        document: DocumentDto,
+        ops: Vec<(OpId, Vec<u8>)>,
+        pending: Vec<(OpId, Vec<u8>)>,
+        local_peer: PeerId,
+        unit_mode: bool,
+    ) -> Self {
+        let doc = document.into_document();
+        let mut max = max_counter_for_peer(local_peer, &ops, &doc);
+        for (id, _) in &pending {
+            if id.peer == local_peer {
+                max = max.max(id.counter);
+            }
+        }
+        let next_counter = max.saturating_add(1).max(1);
+
+        let mut sync = SyncState::new();
+        sync.restore_applied(ops);
+        let pending_ops: Vec<(Operation, u64)> = pending
+            .into_iter()
+            .map(|(id, payload)| {
+                let span = span_of_payload(&payload);
+                (Operation { id, payload }, span)
+            })
+            .collect();
+        sync.restore_pending(pending_ops);
+
+        Self {
+            peer: local_peer,
+            next_counter,
+            document: doc,
+            sync,
+            codec: JsonOpCodec,
+            unit_mode,
+            pending_envelopes: BTreeMap::new(),
+        }
+    }
+
+    #[cfg(feature = "storage")]
+    pub fn read_from_storage(storage: &crate::storage::Storage) -> Result<Self, SnapshotError> {
+        let (bytes, _, _) = storage.read_snapshot()?;
+        let snap = SessionSnapshot::from_bytes(&bytes)?;
+        Self::restore_from_snapshot(snap)
+    }
+}
+
+/// Counter span an op payload covers, for restoring pending ops. Falls back to 1 if the
+/// payload cannot be decoded (trusted local disk, N5).
+fn span_of_payload(payload: &[u8]) -> u64 {
+    JsonOpCodec
+        .decode(payload)
+        .map(|env| operation_extent(&env).1)
+        .unwrap_or(1)
 }
 
 fn check_operation_id_is_max(op: &Operation, env: &Envelope) -> Result<(), SessionError> {
-    let max = max_opid_in_envelope(env);
+    let (max, _span) = operation_extent(env);
     if op.id != max {
         return Err(SessionError::OperationIdMismatch);
     }
     Ok(())
 }
 
-fn max_opid_in_envelope(env: &Envelope) -> OpId {
+/// The `(max embedded OpId, counter span)` for an operation, accounting for paragraph
+/// unit expansion on apply. `span` is the number of contiguous counters the operation
+/// allocates, so it covers `[max.counter - span + 1, max.counter]`. For a well-formed
+/// op all embedded ids share the op's peer; foreign-peer ids are rejected separately by
+/// [`check_peer_consistency`].
+fn operation_extent(env: &Envelope) -> (OpId, u64) {
     match &env.body {
         OpBody::Doc(DocOp::InsertBlock { id, block, .. }) => {
-            max_opid(*id, max_opid_in_kind(&block.kind))
+            let hi = max_counter_in_kind(&block.kind, *id);
+            let span = hi.saturating_sub(id.counter).saturating_add(1);
+            (
+                OpId {
+                    counter: hi,
+                    peer: id.peer,
+                },
+                span,
+            )
         }
-        OpBody::Doc(DocOp::DeleteBlock { id, .. }) => *id,
+        OpBody::Doc(DocOp::DeleteBlock { id, .. }) => (*id, 1),
     }
 }
 
-fn max_opid(a: OpId, b: Option<OpId>) -> OpId {
-    match b {
-        Some(other) if other > a => other,
-        _ => a,
-    }
-}
-
-fn max_opid_in_kind(kind: &BlockKindSkeleton) -> Option<OpId> {
+/// Highest counter that `kind_from_skeleton` assigns when expanding `kind` under
+/// `parent`. A paragraph seeds units at `parent.counter + 1 ..= parent.counter + G`.
+fn max_counter_in_kind(kind: &BlockKindSkeleton, parent: OpId) -> u64 {
     match kind {
-        BlockKindSkeleton::BlockQuote { children } => {
-            let mut max: Option<OpId> = None;
-            for child in children {
-                let candidate = max_opid(child.id, max_opid_in_kind(&child.block.kind));
-                max = Some(match max {
-                    Some(m) if m >= candidate => m,
-                    _ => candidate,
-                });
-            }
-            max
+        BlockKindSkeleton::Paragraph { text } => {
+            parent.counter.saturating_add(grapheme_count(text) as u64)
         }
-        _ => None,
+        BlockKindSkeleton::BlockQuote { children } => {
+            let mut hi = parent.counter;
+            for child in children {
+                hi = hi
+                    .max(child.id.counter)
+                    .max(max_counter_in_kind(&child.block.kind, child.id));
+            }
+            hi
+        }
+        BlockKindSkeleton::CodeFence { .. } | BlockKindSkeleton::RawBlock { .. } => parent.counter,
     }
 }
 
@@ -347,7 +516,7 @@ fn block_kind_to_skeleton(
             text: if unit_mode {
                 String::new()
             } else {
-                text.clone()
+                paragraph_visible_string(text)
             },
         }),
         BlockKind::CodeFence { info, text } => Ok(BlockKindSkeleton::CodeFence {
@@ -410,14 +579,20 @@ fn block_from_skeleton(skel: &BlockSkeleton, elem_id: OpId) -> Block {
     Block {
         id: skel.block_id,
         elem_id,
-        kind: kind_from_skeleton(&skel.kind),
+        kind: kind_from_skeleton(&skel.kind, elem_id),
         marks: MarkSet::new(),
     }
 }
 
-fn kind_from_skeleton(kind: &BlockKindSkeleton) -> BlockKind {
+fn kind_from_skeleton(kind: &BlockKindSkeleton, parent_elem: OpId) -> BlockKind {
     match kind {
-        BlockKindSkeleton::Paragraph { text } => BlockKind::Paragraph { text: text.clone() },
+        BlockKindSkeleton::Paragraph { text } => {
+            // Deterministic unit ids after the block elem (same on every peer).
+            let mut counter = parent_elem.counter.saturating_add(1);
+            BlockKind::Paragraph {
+                text: units_from_str(text, &mut counter, parent_elem.peer),
+            }
+        }
         BlockKindSkeleton::CodeFence { info, text } => BlockKind::CodeFence {
             info: info.clone(),
             text: text.clone(),
@@ -429,7 +604,7 @@ fn kind_from_skeleton(kind: &BlockKindSkeleton) -> BlockKind {
                 let block = Block {
                     id: child.block.block_id,
                     elem_id: child.id,
-                    kind: kind_from_skeleton(&child.block.kind),
+                    kind: kind_from_skeleton(&child.block.kind, child.id),
                     marks: MarkSet::new(),
                 };
                 seq.apply(SequenceOp::Insert {

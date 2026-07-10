@@ -11,7 +11,13 @@ fn build_large_doc(blocks: usize, text_len: usize) -> Document {
     for i in 0..blocks {
         let block = Block::new(
             BlockKind::Paragraph {
-                text: "a".repeat(text_len),
+                text: md_crdt::doc::units_from_str_at(
+                    &"a".repeat(text_len),
+                    md_crdt::core::OpId {
+                        counter: 1,
+                        peer: 0,
+                    },
+                ),
             },
             OpId {
                 counter: i as u64 + 1,
@@ -58,7 +64,13 @@ fn nfr2_no_unbounded_growth_on_repeated_operations() {
     for i in 0..100 {
         let block = Block::new(
             BlockKind::Paragraph {
-                text: format!("Repeated block {i}"),
+                text: md_crdt::doc::units_from_str_at(
+                    &format!("Repeated block {i}"),
+                    md_crdt::core::OpId {
+                        counter: (i as u64) * 1000 + 1,
+                        peer: 0,
+                    },
+                ),
             },
             OpId {
                 counter: i as u64 + 1,

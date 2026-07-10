@@ -25,8 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CollaborativeDocument` with local `insert_block` / `delete_block` (encode-before-apply)
 - `apply_remote` pre-decodes envelopes, integrates via `SyncState::apply_one`, applies document effects
 - `SyncState::{contains, get, apply_one, promote_ready_pending, IntegrateResult}` for interleaved log/document apply
+- Span-aware causal readiness: an operation may cover a contiguous counter range (a block plus its expanded text units), with `Operation.id` as the max embedded id; prevents OpId collisions between blocks and paragraph units
 - Public `Sequence::compute_right_origin` for wire N4 stamps
 - Multi-peer concurrent block insert convergence tests (`tests/session_collab.rs`)
+- `SessionSnapshot` / `DocumentDto` save-restore, `import_state`, `rebind_peer`
+- Storage helpers `write_to_storage` / `read_from_storage` (feature `storage`)
+- `Sequence::from_elements` for full snapshot restore including tombstones
+
+#### Paragraph text units (`md-crdt::doc::text`)
+- `TextUnit` + `BlockKind::Paragraph { text: Sequence<TextUnit> }` (one grapheme per element)
+- Parse/serialize/insert_text operate on unit sequences; wire `Paragraph { text: String }` unchanged
+- Snapshot format v2 stores unit lists; v1 `text` string still loads via peer-0 synthetic unit ids
 
 ## [0.1.0] - 2025-02-04
 

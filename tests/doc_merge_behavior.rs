@@ -14,9 +14,7 @@ fn para_block(text: &str, peer: u64, counter: u64) -> Block {
     Block {
         id: Uuid::new_v4(),
         elem_id,
-        kind: BlockKind::Paragraph {
-            text: text.to_string(),
-        },
+        kind: BlockKind::paragraph(text, elem_id),
         marks: MarkSet::new(),
     }
 }
@@ -27,9 +25,7 @@ fn para_block_fixed(text: &str, peer: u64, counter: u64, uuid_seed: u128) -> Blo
     Block {
         id: Uuid::from_u128(uuid_seed),
         elem_id,
-        kind: BlockKind::Paragraph {
-            text: text.to_string(),
-        },
+        kind: BlockKind::paragraph(text, elem_id),
         marks: MarkSet::new(),
     }
 }

@@ -177,6 +177,23 @@ impl<T: Clone> Sequence<T> {
         }
     }
 
+    /// Rebuild a sequence from a full element list (including tombstones).
+    ///
+    /// Used for session snapshot restore. Pending buffers are empty; callers must
+    /// ensure `after` / `right_origin` edges are consistent with the stored order.
+    pub fn from_elements(elements: Vec<Element<T>>) -> Self {
+        let mut index = BTreeMap::new();
+        for (idx, elem) in elements.iter().enumerate() {
+            index.insert(elem.id, idx);
+        }
+        Self {
+            elements,
+            index,
+            pending_inserts: BTreeMap::new(),
+            pending_deletes: BTreeMap::new(),
+        }
+    }
+
     pub fn element_ids(&self) -> Vec<OpId> {
         self.elements.iter().map(|elem| elem.id).collect()
     }

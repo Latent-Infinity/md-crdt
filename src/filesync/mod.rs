@@ -3,7 +3,7 @@
 //! This module provides vault-based file synchronization, enabling sync between
 //! local markdown files and CRDT state using fingerprinting and block matching.
 
-use crate::doc::{Block, BlockId, BlockKind, Document, Parser};
+use crate::doc::{Block, BlockId, BlockKind, Document, Parser, paragraph_visible_string};
 use crate::storage::Storage;
 use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashSet;
@@ -348,7 +348,7 @@ fn collect_parsed_blocks(
 
 fn block_content(kind: &BlockKind) -> String {
     match kind {
-        BlockKind::Paragraph { text } => format!("p:{}", text),
+        BlockKind::Paragraph { text } => format!("p:{}", paragraph_visible_string(text)),
         BlockKind::CodeFence { info, text } => format!("code:{:?}:{}", info, text),
         BlockKind::RawBlock { raw } => format!("raw:{}", raw),
         BlockKind::BlockQuote { children } => {

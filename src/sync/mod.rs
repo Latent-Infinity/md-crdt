@@ -176,8 +176,9 @@ pub enum IntegrateResult {
 #[derive(Debug, Clone)]
 pub struct SyncState {
     ops: BTreeMap<OpId, Vec<u8>>,
-    /// Operations waiting for causal dependencies
-    pending: BTreeMap<OpId, Operation>,
+    /// Operations waiting for causal dependencies, with the counter span each covers.
+    /// An op with id counter `e` and span `n` covers `[e - n + 1, e]`.
+    pending: BTreeMap<OpId, (Operation, u64)>,
     /// Operations that have been generated locally but not yet sent
     outbox: BTreeSet<OpId>,
     /// Operations that have been sent but not confirmed
@@ -209,6 +210,21 @@ impl SyncState {
         self.ops.get(&id).map(|p| p.as_slice())
     }
 
+    /// Snapshot of all applied (id, payload) pairs for persistence.
+    pub fn applied_ops(&self) -> Vec<(OpId, Vec<u8>)> {
+        self.ops
+            .iter()
+            .map(|(id, payload)| (*id, payload.clone()))
+            .collect()
+    }
+
+    /// Restore applied ops from a snapshot (does not touch pending/outbox).
+    pub fn restore_applied(&mut self, ops: Vec<(OpId, Vec<u8>)>) {
+        for (id, payload) in ops {
+            self.ops.insert(id, payload);
+        }
+    }
+
     fn max_applied_counter(&self, peer: crate::core::PeerId) -> u64 {
         self.ops
             .keys()
@@ -218,8 +234,15 @@ impl SyncState {
             .unwrap_or(0)
     }
 
-    /// Integrate one operation into the op log without promoting other pending ops.
-    pub fn apply_one(&mut self, op: Operation) -> IntegrateResult {
+    /// First counter covered by an operation whose id counter is `e` and span is `n`.
+    fn span_start(id_counter: u64, span: u64) -> u64 {
+        id_counter.saturating_sub(span.saturating_sub(1))
+    }
+
+    /// Integrate one operation covering `span` contiguous counters, without promoting
+    /// other pending ops. `span` is 1 for a single-counter op; larger when one operation
+    /// allocates a contiguous range of ids (e.g. a block plus its expanded text units).
+    pub fn apply_one(&mut self, op: Operation, span: u64) -> IntegrateResult {
         if self.ops.contains_key(&op.id) {
             return IntegrateResult::AlreadyPresent;
         }
@@ -228,9 +251,10 @@ impl SyncState {
             return IntegrateResult::Buffered;
         }
 
-        let current_applied = self.max_applied_counter(op.id.peer);
-        if op.id.counter > current_applied + 1 {
-            self.pending.insert(op.id, op);
+        let frontier = self.max_applied_counter(op.id.peer);
+        let start = Self::span_start(op.id.counter, span);
+        if start > frontier + 1 {
+            self.pending.insert(op.id, (op, span));
             IntegrateResult::Buffered
         } else {
             self.ops.insert(op.id, op.payload);
@@ -249,9 +273,10 @@ impl SyncState {
             made_progress = false;
             let pending_ids: Vec<OpId> = self.pending.keys().copied().collect();
             for op_id in pending_ids {
-                let current_applied = self.max_applied_counter(op_id.peer);
-                if op_id.counter == current_applied + 1
-                    && let Some(op) = self.pending.remove(&op_id)
+                let frontier = self.max_applied_counter(op_id.peer);
+                let span = self.pending.get(&op_id).map(|(_, s)| *s).unwrap_or(1);
+                if Self::span_start(op_id.counter, span) <= frontier + 1
+                    && let Some((op, _)) = self.pending.remove(&op_id)
                 {
                     self.ops.insert(op.id, op.payload.clone());
                     promoted.push(op);
@@ -301,7 +326,8 @@ impl SyncState {
 
         for op in message.ops {
             let op_id = op.id;
-            match self.apply_one(op) {
+            // Legacy batch path: each operation covers a single counter.
+            match self.apply_one(op, 1) {
                 IntegrateResult::AlreadyPresent => {}
                 IntegrateResult::Buffered => {
                     result.buffered.push(op_id);
@@ -324,11 +350,11 @@ impl SyncState {
         self.pending.len()
     }
 
-    /// Get pending operations (for persistence)
+    /// Get pending operations (for persistence). Spans are recomputed on restore.
     pub fn pending(&self) -> Vec<Operation> {
         self.pending
             .iter()
-            .map(|(id, op)| Operation {
+            .map(|(id, (op, _span))| Operation {
                 id: *id,
                 payload: op.payload.clone(),
             })
@@ -371,11 +397,11 @@ impl SyncState {
         }
     }
 
-    /// Restore pending operations (for crash recovery)
-    pub fn restore_pending(&mut self, ops: Vec<Operation>) {
-        for op in ops {
+    /// Restore pending operations (for crash recovery), each with its counter span.
+    pub fn restore_pending(&mut self, ops: Vec<(Operation, u64)>) {
+        for (op, span) in ops {
             if !self.ops.contains_key(&op.id) {
-                self.pending.insert(op.id, op);
+                self.pending.insert(op.id, (op, span));
             }
         }
     }
@@ -808,7 +834,7 @@ mod tests {
             },
             payload: vec![1],
         });
-        doc2.restore_pending(pending_ops);
+        doc2.restore_pending(pending_ops.into_iter().map(|op| (op, 1)).collect());
         assert_eq!(doc2.pending_count(), 1);
 
         // Now apply counter=2
@@ -833,23 +859,29 @@ mod tests {
     fn apply_one_does_not_auto_promote_pending() {
         let mut state = SyncState::new();
         assert_eq!(
-            state.apply_one(Operation {
-                id: OpId {
-                    counter: 1,
-                    peer: 1,
+            state.apply_one(
+                Operation {
+                    id: OpId {
+                        counter: 1,
+                        peer: 1,
+                    },
+                    payload: vec![1],
                 },
-                payload: vec![1],
-            }),
+                1
+            ),
             IntegrateResult::Applied
         );
         assert_eq!(
-            state.apply_one(Operation {
-                id: OpId {
-                    counter: 3,
-                    peer: 1,
+            state.apply_one(
+                Operation {
+                    id: OpId {
+                        counter: 3,
+                        peer: 1,
+                    },
+                    payload: vec![3],
                 },
-                payload: vec![3],
-            }),
+                1
+            ),
             IntegrateResult::Buffered
         );
         assert_eq!(state.pending_count(), 1);
@@ -859,13 +891,16 @@ mod tests {
         }));
 
         assert_eq!(
-            state.apply_one(Operation {
-                id: OpId {
-                    counter: 2,
-                    peer: 1,
+            state.apply_one(
+                Operation {
+                    id: OpId {
+                        counter: 2,
+                        peer: 1,
+                    },
+                    payload: vec![2],
                 },
-                payload: vec![2],
-            }),
+                1
+            ),
             IntegrateResult::Applied
         );
         // Still pending until promote is called.

@@ -86,7 +86,10 @@ pub use codec::{
 };
 
 // Re-export session types
-pub use session::{CollaborativeDocument, SessionApplyResult, SessionError};
+pub use session::{
+    CollaborativeDocument, DocumentDto, SNAPSHOT_FORMAT_VERSION, SessionApplyResult, SessionError,
+    SessionSnapshot, SnapshotError,
+};
 
 // Re-export sync integrate types used with session
 pub use sync::IntegrateResult;

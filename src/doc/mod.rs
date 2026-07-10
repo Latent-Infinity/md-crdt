@@ -8,6 +8,12 @@ use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
 pub mod mark_ops;
+pub mod text;
+
+pub use text::{
+    TextUnit, after_for_grapheme_offset, grapheme_count, insert_graphemes, paragraph_visible_ids,
+    paragraph_visible_string, units_from_str, units_from_str_at,
+};
 
 pub type BlockId = Uuid;
 
@@ -36,11 +42,32 @@ pub struct Block {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockKind {
-    Paragraph { text: String },
-    CodeFence { info: Option<String>, text: String },
-    BlockQuote { children: Sequence<Block> },
-    RawBlock { raw: String },
-    Table { table: Table },
+    /// Paragraph body as a CRDT sequence of grapheme clusters.
+    Paragraph {
+        text: Sequence<TextUnit>,
+    },
+    CodeFence {
+        info: Option<String>,
+        text: String,
+    },
+    BlockQuote {
+        children: Sequence<Block>,
+    },
+    RawBlock {
+        raw: String,
+    },
+    Table {
+        table: Table,
+    },
+}
+
+impl BlockKind {
+    /// Paragraph from a string; unit OpIds start at `start` (peer + counter chain).
+    pub fn paragraph(s: &str, start: OpId) -> Self {
+        BlockKind::Paragraph {
+            text: units_from_str_at(s, start),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,11 +281,11 @@ impl Document {
             return Err(EditError::InvalidOffset);
         };
 
+        let visible = paragraph_visible_string(body);
         let byte_offset =
-            grapheme_offset_to_byte(body, grapheme_offset).ok_or(EditError::InvalidOffset)?;
-        body.insert_str(byte_offset, text);
+            grapheme_offset_to_byte(&visible, grapheme_offset).ok_or(EditError::InvalidOffset)?;
+        insert_graphemes(body, grapheme_offset, text, op_id).ok_or(EditError::InvalidOffset)?;
 
-        // O(1) update instead of O(n) sequence rebuild
         self.blocks.update_value(elem_id, updated);
         self.clear_raw_source();
 
@@ -299,19 +326,22 @@ impl Document {
                     return Err(EditError::InvalidOffset);
                 };
 
+                let visible = paragraph_visible_string(body);
                 let byte_offset = run.byte_offset;
-                if byte_offset > body.len() {
+                if byte_offset > visible.len() {
                     return Err(EditError::InvalidOffset);
                 }
-                if !body.is_char_boundary(byte_offset) {
+                if !visible.is_char_boundary(byte_offset) {
                     return Err(EditError::InvalidOffset);
                 }
-                if validate_grapheme_boundaries && !is_grapheme_boundary(body, byte_offset) {
+                if validate_grapheme_boundaries && !is_grapheme_boundary(&visible, byte_offset) {
                     return Err(EditError::InvalidGraphemeBoundary);
                 }
-                body.insert_str(byte_offset, &run.text);
+                // Prefer grapheme_offset on the run; fall back to byte→grapheme map.
+                let g_off = run.grapheme_offset;
+                insert_graphemes(body, g_off, &run.text, run.op_id)
+                    .ok_or(EditError::InvalidOffset)?;
 
-                // O(1) update instead of O(n) sequence rebuild
                 self.blocks.update_value(elem_id, updated);
                 self.clear_raw_source();
                 Ok(())
@@ -620,13 +650,9 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
             paragraph_lines.push(current);
             end_index += 1;
         }
-        let block = Block::new(
-            BlockKind::Paragraph {
-                text: paragraph_lines.join("\n"),
-            },
-            next_op_id(counter),
-        );
-        out.push(block);
+        let elem_id = next_op_id(counter);
+        let text = units_from_str(&paragraph_lines.join("\n"), counter, 0);
+        out.push(Block::new(BlockKind::Paragraph { text }, elem_id));
         index = end_index;
     }
 }
@@ -642,7 +668,7 @@ fn next_op_id(counter: &mut u64) -> OpId {
 
 fn serialize_block(block: &Block) -> String {
     match &block.kind {
-        BlockKind::Paragraph { text } => text.clone(),
+        BlockKind::Paragraph { text } => paragraph_visible_string(text),
         BlockKind::CodeFence { info, text } => {
             let mut output = String::from("```");
             if let Some(info) = info {
@@ -803,9 +829,9 @@ mod tests {
             counter: 2,
             peer: 1,
         };
-        let block_a = Block::new(BlockKind::Paragraph { text: "A".into() }, id);
-        let block_b = Block::new(BlockKind::Paragraph { text: "B".into() }, id);
-        let block_c = Block::new(BlockKind::Paragraph { text: "C".into() }, other);
+        let block_a = Block::new(BlockKind::paragraph("A", id), id);
+        let block_b = Block::new(BlockKind::paragraph("B", id), id);
+        let block_c = Block::new(BlockKind::paragraph("C", other), other);
         // Same create OpId → same BlockId (deterministic).
         assert_eq!(block_a.id, block_b.id);
         assert_eq!(block_a.id, block_id_from_op(id));
@@ -817,9 +843,13 @@ mod tests {
     #[test]
     fn test_blockquote_hierarchy() {
         let child = Block::new(
-            BlockKind::Paragraph {
-                text: "Nested".into(),
-            },
+            BlockKind::paragraph(
+                "Nested",
+                OpId {
+                    counter: 1,
+                    peer: 0,
+                },
+            ),
             OpId {
                 counter: 1,
                 peer: 0,
@@ -874,9 +904,13 @@ mod tests {
     fn test_insert_text_grapheme_offsets() {
         let mut doc = Document::new();
         let block = Block::new(
-            BlockKind::Paragraph {
-                text: "a🇺🇸b".into(),
-            },
+            BlockKind::paragraph(
+                "a🇺🇸b",
+                OpId {
+                    counter: 1,
+                    peer: 0,
+                },
+            ),
             OpId {
                 counter: 1,
                 peer: 0,
@@ -891,7 +925,7 @@ mod tests {
                 1,
                 "X",
                 OpId {
-                    counter: 2,
+                    counter: 100, // must not collide with parse unit ids (1..)
                     peer: 0,
                 },
             )
@@ -907,7 +941,7 @@ mod tests {
 
         let updated = doc.blocks.iter().next().unwrap();
         if let BlockKind::Paragraph { text } = &updated.kind {
-            assert_eq!(text, "aX🇺🇸b");
+            assert_eq!(paragraph_visible_string(text), "aX🇺🇸b");
         } else {
             panic!("Expected paragraph block");
         }
@@ -917,9 +951,13 @@ mod tests {
     fn test_remove_mark_split() {
         let mut doc = Document::new();
         let mut block = Block::new(
-            BlockKind::Paragraph {
-                text: "Hello".into(),
-            },
+            BlockKind::paragraph(
+                "Hello",
+                OpId {
+                    counter: 1,
+                    peer: 0,
+                },
+            ),
             OpId {
                 counter: 1,
                 peer: 0,
@@ -981,9 +1019,13 @@ mod tests {
     fn test_raw_apply_op_grapheme_validation() {
         let mut doc = Document::new();
         let block = Block::new(
-            BlockKind::Paragraph {
-                text: "a🇺🇸b".into(),
-            },
+            BlockKind::paragraph(
+                "a🇺🇸b",
+                OpId {
+                    counter: 1,
+                    peer: 0,
+                },
+            ),
             OpId {
                 counter: 1,
                 peer: 0,

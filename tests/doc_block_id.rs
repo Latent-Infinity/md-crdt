@@ -24,7 +24,7 @@ fn block_id_from_op_differs_when_counter_or_peer_differs() {
 #[test]
 fn block_new_uses_block_id_from_op() {
     let insert = op(7, 3);
-    let block = Block::new(BlockKind::Paragraph { text: "hi".into() }, insert);
+    let block = Block::new(BlockKind::paragraph("hi", insert), insert);
     assert_eq!(block.elem_id, insert);
     assert_eq!(block.id, block_id_from_op(insert));
 }

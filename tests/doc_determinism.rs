@@ -6,20 +6,21 @@ fn fixed_block(id: Uuid, elem_id: OpId, text: &str) -> Block {
     Block {
         id,
         elem_id,
-        kind: BlockKind::Paragraph {
-            text: text.to_string(),
-        },
+        kind: BlockKind::paragraph(text, elem_id),
         marks: MarkSet::new(),
     }
 }
-
 #[test]
 fn dc1_same_state_same_config_is_identical() {
     let mut doc = Document::new();
     let block = Block::new(
-        BlockKind::Paragraph {
-            text: "Hello".to_string(),
-        },
+        BlockKind::paragraph(
+            "Hello",
+            OpId {
+                counter: 1,
+                peer: 1,
+            },
+        ),
         OpId {
             counter: 1,
             peer: 1,
