@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `insert_block_paragraph_is_empty` helper for unit-mode session validation (not an unconditional decode ban)
 - Wire kinds: Paragraph, CodeFence, BlockQuote (nested), RawBlock — no live `Sequence` serialization
 
+#### Document identity (`md-crdt::doc`)
+- `block_id_from_op` — deterministic `BlockId` / row id from create `OpId` (peer×counter packing)
+- `Block::new` and table `insert_row` no longer use random UUIDs
+- Parser-produced block ids are stable for the same markdown input
+- Vault `match_blocks` unmatched adds use content/position-derived ids (not `Uuid::new_v4`)
+
 ## [0.1.0] - 2025-02-04
 
 ### Added

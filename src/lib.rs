@@ -63,6 +63,7 @@ pub use core::mark::{
 pub use doc::{
     Block, BlockId, BlockKind, CellContent, ColumnAlignment, ColumnDef, Document, EditError,
     EditOp, EquivalenceMode, InsertTextRun, Parser, RowId, SerializeConfig, Table, TableRow,
+    block_id_from_op,
 };
 
 // Re-export doc mark operations

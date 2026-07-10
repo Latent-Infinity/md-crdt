@@ -448,12 +448,46 @@ pub fn match_blocks(
             }
         });
         result.added.push(AddedBlock {
-            id: BlockId::new_v4(),
+            id: block_id_for_unmatched_parsed(new_block, new_idx),
             probable_copy_of: copy_source,
         });
     }
 
     result
+}
+
+/// Deterministic id for a newly observed parsed block (no create OpId yet).
+///
+/// A domain constant seeds an FNV-style 128-bit mix over the block's fingerprint,
+/// container path, position, and ordinal. The domain is a **hash seed**, not a
+/// preserved high-bit tag — the first mix step spreads it across all bits — so the
+/// separation from the peer/counter-packed create ids of
+/// [`crate::doc::block_id_from_op`] is *statistical*, which is sufficient under the
+/// trusted-peer / local-disk model (no adversarial collision resistance required).
+fn block_id_for_unmatched_parsed(block: &ParsedBlock, ordinal: usize) -> BlockId {
+    // Seed the mix with a domain constant, then fold in fingerprint + place.
+    const DOMAIN: u64 = 0x6d64_6372_6474_6164; // "mdcrtad"
+    let mut h: u128 = (DOMAIN as u128) << 64;
+    for token in &block.fingerprint.tokens {
+        h = h
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(u128::from(*token));
+    }
+    h = h
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(block.fingerprint.len as u128);
+    h = h
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(block.position as u128);
+    for part in &block.container_path {
+        h = h
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(*part as u128);
+    }
+    h = h
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(ordinal as u128);
+    BlockId::from_u128(h)
 }
 
 fn compatible_containers(old: &[usize], new: &[usize]) -> bool {
@@ -698,6 +732,52 @@ mod tests {
         assert_eq!(mapping.matched.len(), 2);
         assert!(mapping.matched.iter().any(|m| m.old_id == block_a));
         assert!(mapping.matched.iter().any(|m| m.old_id == block_b));
+    }
+
+    #[test]
+    fn unmatched_parsed_block_id_is_deterministic_and_distinct() {
+        let a = ParsedBlock {
+            fingerprint: Fingerprint::from_content("new block"),
+            container_path: vec![0],
+            position: 3,
+        };
+        // Same block + ordinal → same id (no Uuid::new_v4 randomness).
+        assert_eq!(
+            block_id_for_unmatched_parsed(&a, 1),
+            block_id_for_unmatched_parsed(&a, 1),
+        );
+        // Ordinal, content, or position changes → different id.
+        assert_ne!(
+            block_id_for_unmatched_parsed(&a, 1),
+            block_id_for_unmatched_parsed(&a, 2),
+        );
+        let b = ParsedBlock {
+            fingerprint: Fingerprint::from_content("other block"),
+            container_path: vec![0],
+            position: 3,
+        };
+        assert_ne!(
+            block_id_for_unmatched_parsed(&a, 1),
+            block_id_for_unmatched_parsed(&b, 1),
+        );
+    }
+
+    #[test]
+    fn match_blocks_added_ids_are_deterministic() {
+        // Empty prior state → every parsed block is an add with a deterministic id.
+        let old_state = LastFlushedState {
+            content_hash: 0,
+            blocks: vec![],
+        };
+        let new_blocks = vec![ParsedBlock {
+            fingerprint: Fingerprint::from_content("brand new"),
+            container_path: vec![],
+            position: 0,
+        }];
+        let m1 = match_blocks(&old_state, &new_blocks, &MatchConfig::default());
+        let m2 = match_blocks(&old_state, &new_blocks, &MatchConfig::default());
+        assert_eq!(m1.added.len(), 1);
+        assert_eq!(m1.added[0].id, m2.added[0].id);
     }
 
     #[test]

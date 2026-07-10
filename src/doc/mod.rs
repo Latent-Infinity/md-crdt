@@ -11,6 +11,14 @@ pub mod mark_ops;
 
 pub type BlockId = Uuid;
 
+/// Derive a stable [`BlockId`] (and table [`RowId`]) from the create [`OpId`].
+///
+/// Layout: high 64 bits = peer, low 64 bits = counter. Same create op always
+/// yields the same id; no random UUIDs on collab create paths.
+pub fn block_id_from_op(op: OpId) -> BlockId {
+    Uuid::from_u128(((op.peer as u128) << 64) | (op.counter as u128))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Document {
     pub frontmatter: Option<String>,
@@ -122,7 +130,7 @@ impl Table {
 
     pub fn insert_row(&mut self, after: Option<OpId>, cells: Vec<CellContent>, op_id: OpId) {
         let row = TableRow {
-            id: Uuid::new_v4(),
+            id: block_id_from_op(op_id),
             elem_id: op_id,
             deleted: crate::core::LwwRegister::new(false, op_id),
             cells: crate::core::LwwRegister::new(cells, op_id),
@@ -458,7 +466,7 @@ impl Default for Document {
 impl Block {
     pub fn new(kind: BlockKind, insert_id: OpId) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: block_id_from_op(insert_id),
             elem_id: insert_id,
             kind,
             marks: MarkSet::new(),
@@ -791,10 +799,19 @@ mod tests {
             counter: 1,
             peer: 1,
         };
+        let other = OpId {
+            counter: 2,
+            peer: 1,
+        };
         let block_a = Block::new(BlockKind::Paragraph { text: "A".into() }, id);
         let block_b = Block::new(BlockKind::Paragraph { text: "B".into() }, id);
-        assert_ne!(block_a.id, block_b.id);
+        let block_c = Block::new(BlockKind::Paragraph { text: "C".into() }, other);
+        // Same create OpId → same BlockId (deterministic).
+        assert_eq!(block_a.id, block_b.id);
+        assert_eq!(block_a.id, block_id_from_op(id));
+        assert_ne!(block_a.id, block_c.id);
         assert_eq!(block_a.elem_id, id);
+        assert_eq!(block_c.elem_id, other);
     }
 
     #[test]

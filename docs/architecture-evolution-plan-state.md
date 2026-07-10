@@ -13,7 +13,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Unit | Status | Notes |
 | --- | --- | --- |
 | **PR-01** Codec + Envelope + DocOp DTOs + JsonOpCodec | **done** | `src/codec/`, `tests/codec_roundtrip.rs` (9 tests), CHANGELOG Unreleased |
-| PR-02 Deterministic BlockId | pending | Parallel-safe with PR-01 |
+| **PR-02** Deterministic BlockId | **done** | `block_id_from_op`, Block/table create paths, vault match adds; `tests/doc_block_id.rs` (5 tests) |
 | PR-03 CollaborativeDocument + apply_remote | pending | Depends PR-01, PR-02 |
 | PR-04 SessionSnapshot | pending | Depends PR-03 |
 | PR-05 SemanticConflict (optional) | pending | Not MVP gate |
@@ -31,6 +31,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Unknown wire version rejected without mutation
 - [x] Fuzz-ready envelope decode fail closed (malformed JSON / depth / version)
 - [ ] SemanticConflict optional (PR-05)
+- [x] Deterministic BlockId from create OpId (PR-02)
 
 ## Decisions log (implementation)
 
@@ -41,9 +42,11 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | `DocOp` variants in PR-01 | InsertBlock + DeleteBlock only | InsertText/DeleteText deferred to text CRDT work; KISS |
 | `BlockKindSkeleton` variants in PR-01 | Paragraph, CodeFence, BlockQuote, RawBlock | `Table` deferred to Phase E / PR-12 (rows likely separate ops); plan sketch updated to match |
 | Empty-paragraph error type | `SessionError::NonEmptyParagraphOnInsertBlock` (not `CodecError`) | Codec-agnostic rule kept out of per-codec `Error` types (Decision D pluggability); codec exposes only the `insert_block_paragraph_is_empty` predicate |
+| `block_id_from_op` layout | `(peer << 64) \| counter` as `Uuid::from_u128` | KISS, reversible, no uuid v5 feature; domain-separated vault-added mix for unmatched parse blocks |
 
 ## Gate
 
-- `just check` — **passed** (fmt, clippy, workspace tests)
+- `just check` — **passed** after PR-02
 - Codec integration tests: **9 passed**
-- Incidental fix: `filesync` jaccard score uses `checked_div` (clippy `manual_checked_ops` on current toolchain)
+- BlockId tests: **5 passed**
+- Audit follow-up: added 2 `filesync` tests for vault-added id determinism (`block_id_for_unmatched_parsed`); corrected its domain-separation doc comment (statistical, not structural)
