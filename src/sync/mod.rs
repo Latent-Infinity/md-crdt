@@ -154,6 +154,21 @@ pub struct ApplyResult {
     pub conflicts: Vec<SemanticConflict>,
 }
 
+/// Outcome of integrating a single remote operation into the op log.
+///
+/// Does **not** promote other pending ops; callers that need document apply
+/// interleaved with pending drain should call [`SyncState::promote_ready_pending`]
+/// after each [`IntegrateResult::Applied`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrateResult {
+    /// Op id already present in the applied log.
+    AlreadyPresent,
+    /// Missing prior peer counters; stored in pending.
+    Buffered,
+    /// Causally ready and moved into the applied log.
+    Applied,
+}
+
 /// Sync state for managing operations and their synchronization.
 ///
 /// Note: This was previously named `Document` in md-crdt-sync but renamed to
@@ -182,6 +197,69 @@ impl SyncState {
     /// Apply a single operation (internal use)
     pub fn apply_op(&mut self, op: Operation) {
         self.ops.entry(op.id).or_insert(op.payload);
+    }
+
+    /// Whether this op id is already in the applied log.
+    pub fn contains(&self, id: OpId) -> bool {
+        self.ops.contains_key(&id)
+    }
+
+    /// Payload for an applied op, if present.
+    pub fn get(&self, id: OpId) -> Option<&[u8]> {
+        self.ops.get(&id).map(|p| p.as_slice())
+    }
+
+    fn max_applied_counter(&self, peer: crate::core::PeerId) -> u64 {
+        self.ops
+            .keys()
+            .filter(|id| id.peer == peer)
+            .map(|id| id.counter)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Integrate one operation into the op log without promoting other pending ops.
+    pub fn apply_one(&mut self, op: Operation) -> IntegrateResult {
+        if self.ops.contains_key(&op.id) {
+            return IntegrateResult::AlreadyPresent;
+        }
+        // If already buffered, do not duplicate.
+        if self.pending.contains_key(&op.id) {
+            return IntegrateResult::Buffered;
+        }
+
+        let current_applied = self.max_applied_counter(op.id.peer);
+        if op.id.counter > current_applied + 1 {
+            self.pending.insert(op.id, op);
+            IntegrateResult::Buffered
+        } else {
+            self.ops.insert(op.id, op.payload);
+            IntegrateResult::Applied
+        }
+    }
+
+    /// Move causally ready pending ops into the applied log.
+    ///
+    /// Returns payloads in promotion order so a session can apply document effects
+    /// for each without re-decoding from a side map when payloads are still available.
+    pub fn promote_ready_pending(&mut self) -> Vec<Operation> {
+        let mut promoted = Vec::new();
+        let mut made_progress = true;
+        while made_progress {
+            made_progress = false;
+            let pending_ids: Vec<OpId> = self.pending.keys().copied().collect();
+            for op_id in pending_ids {
+                let current_applied = self.max_applied_counter(op_id.peer);
+                if op_id.counter == current_applied + 1
+                    && let Some(op) = self.pending.remove(&op_id)
+                {
+                    self.ops.insert(op.id, op.payload.clone());
+                    promoted.push(op);
+                    made_progress = true;
+                }
+            }
+        }
+        promoted
     }
 
     /// Get the state vector representing all applied operations
@@ -214,71 +292,31 @@ impl SyncState {
         }
     }
 
-    /// Apply a batch of changes with validation and conflict detection
+    /// Apply a batch of changes (log only). Promotes ready pending after each apply.
+    ///
+    /// For document-aware apply with per-op interleaving, use [`Self::apply_one`] and
+    /// [`Self::promote_ready_pending`] from the session layer.
     pub fn apply_changes(&mut self, message: ChangeMessage) -> ApplyResult {
         let mut result = ApplyResult::default();
 
         for op in message.ops {
-            // Check if we already have this operation
-            if self.ops.contains_key(&op.id) {
-                continue;
-            }
-
-            // Check causal readiness: all prior ops from this peer must be applied
-            let current_applied = self
-                .ops
-                .keys()
-                .filter(|id| id.peer == op.id.peer)
-                .map(|id| id.counter)
-                .max()
-                .unwrap_or(0);
-
-            if op.id.counter > current_applied + 1 {
-                // Missing prior operations - buffer this one
-                let buffered_id = op.id;
-                self.pending.insert(op.id, op);
-                result.buffered.push(buffered_id);
-            } else {
-                // Ready to apply
-                let op_id = op.id;
-                self.ops.insert(op.id, op.payload);
-                result.applied.push(op_id);
-
-                // Try to apply any buffered operations that are now ready
-                self.try_apply_pending(&mut result);
+            let op_id = op.id;
+            match self.apply_one(op) {
+                IntegrateResult::AlreadyPresent => {}
+                IntegrateResult::Buffered => {
+                    result.buffered.push(op_id);
+                }
+                IntegrateResult::Applied => {
+                    result.applied.push(op_id);
+                    for promoted in self.promote_ready_pending() {
+                        result.buffered.retain(|id| *id != promoted.id);
+                        result.applied.push(promoted.id);
+                    }
+                }
             }
         }
 
         result
-    }
-
-    /// Try to apply pending operations that are now causally ready
-    fn try_apply_pending(&mut self, result: &mut ApplyResult) {
-        let mut made_progress = true;
-        while made_progress {
-            made_progress = false;
-            let pending_ids: Vec<OpId> = self.pending.keys().copied().collect();
-
-            for op_id in pending_ids {
-                let current_applied = self
-                    .ops
-                    .keys()
-                    .filter(|id| id.peer == op_id.peer)
-                    .map(|id| id.counter)
-                    .max()
-                    .unwrap_or(0);
-
-                // Split the condition to avoid overlapping borrows
-                let is_ready = op_id.counter == current_applied + 1;
-                if is_ready && let Some(op) = self.pending.remove(&op_id) {
-                    self.ops.insert(op.id, op.payload);
-                    result.applied.push(op_id);
-                    // Remove from buffered if it was there
-                    result.buffered.retain(|id| *id != op_id);
-                    made_progress = true;
-                }
-            }
-        }
     }
 
     /// Get the number of pending (causally unready) operations
@@ -789,5 +827,80 @@ mod tests {
         // Both counter=2 and counter=3 should be applied
         assert_eq!(result.applied.len(), 2);
         assert_eq!(doc2.state_vector().get(1), Some(3));
+    }
+
+    #[test]
+    fn apply_one_does_not_auto_promote_pending() {
+        let mut state = SyncState::new();
+        assert_eq!(
+            state.apply_one(Operation {
+                id: OpId {
+                    counter: 1,
+                    peer: 1,
+                },
+                payload: vec![1],
+            }),
+            IntegrateResult::Applied
+        );
+        assert_eq!(
+            state.apply_one(Operation {
+                id: OpId {
+                    counter: 3,
+                    peer: 1,
+                },
+                payload: vec![3],
+            }),
+            IntegrateResult::Buffered
+        );
+        assert_eq!(state.pending_count(), 1);
+        assert!(!state.contains(OpId {
+            counter: 3,
+            peer: 1
+        }));
+
+        assert_eq!(
+            state.apply_one(Operation {
+                id: OpId {
+                    counter: 2,
+                    peer: 1,
+                },
+                payload: vec![2],
+            }),
+            IntegrateResult::Applied
+        );
+        // Still pending until promote is called.
+        assert_eq!(state.pending_count(), 1);
+        let promoted = state.promote_ready_pending();
+        assert_eq!(promoted.len(), 1);
+        assert_eq!(promoted[0].id.counter, 3);
+        assert_eq!(promoted[0].payload, vec![3]);
+        assert!(state.contains(OpId {
+            counter: 3,
+            peer: 1
+        }));
+        assert_eq!(
+            state.get(OpId {
+                counter: 3,
+                peer: 1
+            }),
+            Some(&[3][..])
+        );
+    }
+
+    #[test]
+    fn contains_and_get_payload() {
+        let mut state = SyncState::new();
+        let id = OpId {
+            counter: 1,
+            peer: 9,
+        };
+        assert!(!state.contains(id));
+        assert!(state.get(id).is_none());
+        state.apply_op(Operation {
+            id,
+            payload: vec![9, 9],
+        });
+        assert!(state.contains(id));
+        assert_eq!(state.get(id), Some(&[9, 9][..]));
     }
 }

@@ -235,7 +235,11 @@ impl<T: Clone> Sequence<T> {
         true
     }
 
-    fn compute_right_origin(&self, after: Option<OpId>) -> Option<OpId> {
+    /// Right-neighbor id used for RGA concurrent-insert ordering at `after`.
+    ///
+    /// Exposed so the session layer can stamp wire `right_origin` (N4) without
+    /// reimplementing sequence layout.
+    pub fn compute_right_origin(&self, after: Option<OpId>) -> Option<OpId> {
         let position = match after {
             None => 0,
             Some(anchor) => self.index.get(&anchor).copied().unwrap_or(0) + 1,

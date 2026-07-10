@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parser-produced block ids are stable for the same markdown input
 - Vault `match_blocks` unmatched adds use content/position-derived ids (not `Uuid::new_v4`)
 
+#### Collaborative session (`md-crdt::session`)
+- `CollaborativeDocument` with local `insert_block` / `delete_block` (encode-before-apply)
+- `apply_remote` pre-decodes envelopes, integrates via `SyncState::apply_one`, applies document effects
+- `SyncState::{contains, get, apply_one, promote_ready_pending, IntegrateResult}` for interleaved log/document apply
+- Public `Sequence::compute_right_origin` for wire N4 stamps
+- Multi-peer concurrent block insert convergence tests (`tests/session_collab.rs`)
+
 ## [0.1.0] - 2025-02-04
 
 ### Added

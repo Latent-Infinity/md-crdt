@@ -39,6 +39,9 @@ pub mod sync;
 // Versioned wire codec for collaborative ops
 pub mod codec;
 
+// Collaborative session (document + sync + peer clock)
+pub mod session;
+
 // Optional: Persistent storage layer
 #[cfg(feature = "storage")]
 pub mod storage;
@@ -81,6 +84,12 @@ pub use codec::{
     JsonOpCodec, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, WIRE_VERSION,
     insert_block_paragraph_is_empty,
 };
+
+// Re-export session types
+pub use session::{CollaborativeDocument, SessionApplyResult, SessionError};
+
+// Re-export sync integrate types used with session
+pub use sync::IntegrateResult;
 
 // Re-export storage types (feature-gated)
 #[cfg(feature = "storage")]
