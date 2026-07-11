@@ -3,9 +3,12 @@
 //! This module provides vault-based file synchronization, enabling sync between
 //! local markdown files and CRDT state using fingerprinting and block matching.
 
+mod diff;
 mod session;
 
 pub use session::VaultSession;
+
+pub use diff::{GraphemeStep, graphemes_of, lcs_steps};
 // IngestReport is defined in this module.
 
 use crate::doc::{Block, BlockId, BlockKind, Document, Parser, paragraph_visible_string};
@@ -130,8 +133,8 @@ pub struct AddedBlock {
 pub struct IngestReport {
     pub files_noop: usize,
     pub files_changed: usize,
-    /// Files skipped because they contain not-yet-ingestable blocks (e.g. tables, or a
-    /// blockquote on re-ingest). Left untouched on disk; no ops emitted.
+    /// Files skipped because they contain not-yet-ingestable blocks (e.g. tables).
+    /// Left untouched on disk; no ops emitted.
     pub files_skipped: usize,
     pub ops_emitted: usize,
 }
@@ -420,7 +423,7 @@ fn collect_parsed_blocks(
     }
 }
 
-fn block_content(kind: &BlockKind) -> String {
+pub(crate) fn block_content(kind: &BlockKind) -> String {
     match kind {
         BlockKind::Paragraph { text } => format!("p:{}", paragraph_visible_string(text)),
         BlockKind::CodeFence { info, text } => format!("code:{:?}:{}", info, text),

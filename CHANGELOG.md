@@ -65,6 +65,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `IngestReport { files_noop, files_changed, ops_emitted }`; CLI `ingest`/`sync` use `VaultSession`
 - Matched-block text diffs deferred (no grapheme LCS yet)
 
+#### Nested re-ingest matching (`md-crdt::filesync`)
+- Recursive structure sync for blockquotes (no skip on re-ingest)
+- Quote containers match content-agnostically; children reconciled with structure ops
+- Stricter re-ingest match floor so position alone cannot force zero-content matches
+
+#### Text LCS ingest (`md-crdt::filesync`)
+- Grapheme LCS over visible paragraph units → `InsertText` / `DeleteText`
+- Preserves `BlockId` and LCS-equal unit OpIds across external paragraph edits
+- Position-pairs unmatched paragraphs before falling back to block insert/delete
+
 ## [0.1.0] - 2025-02-04
 
 ### Added

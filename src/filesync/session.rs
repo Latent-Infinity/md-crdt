@@ -1,8 +1,9 @@
 //! Multi-document vault session: shared peer identity + lazy CollaborativeDocuments.
 
+use super::diff::{delete_indices_high_to_low, graphemes_of, insert_new_indices, lcs_steps};
 use super::{
-    IngestReport, LastFlushedState, MatchConfig, Vault, VaultError, fingerprint_document,
-    hash_string, match_blocks, parsed_blocks_from_doc,
+    BlockFingerprint, Fingerprint, IngestReport, LastFlushedState, MatchConfig, ParsedBlock, Score,
+    Vault, VaultError, block_content, fingerprint_document, hash_string, match_blocks,
 };
 use crate::codec::JsonOpCodec;
 use crate::core::{OpId, PeerId, Sequence};
@@ -160,31 +161,16 @@ impl VaultSession {
 
         // Ensure session is loaded before matching against its CRDT state.
         self.session_mut(&rel)?;
-        let empty = self
-            .docs
-            .get(&rel)
-            .expect("session opened above")
-            .document()
-            .blocks_in_order()
-            .is_empty();
-
-        // Nested re-ingest matching (blockquote edits preserving identity) is a follow-up;
-        // skip a blockquote file when the session already has content.
-        if !empty && document_contains_blockquote(&parsed) {
-            return Ok(IngestOutcome::Skipped);
-        }
-
         let ops = {
             let session = self.docs.get_mut(&rel).expect("session opened above");
+            let empty = session.document().blocks_in_order().is_empty();
             if empty {
                 // First ingest: insert the parsed tree recursively (blockquotes preserved).
                 let blocks = parsed.blocks_in_order();
                 insert_tree(session, None, &blocks)?
             } else {
-                // Re-ingest of a flat document: structure match against CRDT state.
-                let leaves = leaf_blocks_in_order(&parsed);
-                let new_parsed = parsed_blocks_from_doc(&parsed);
-                apply_structure_ingest(session, &leaves, &new_parsed)?
+                // Re-ingest: recursive structure match (including nested blockquotes).
+                apply_structure_ingest(session, &parsed)?
             }
         };
 
@@ -297,34 +283,6 @@ fn write_session_snapshot(
     Ok(())
 }
 
-/// Leaf blocks in the same traversal order as [`parsed_blocks_from_doc`].
-fn leaf_blocks_in_order(doc: &Document) -> Vec<Block> {
-    let mut out = Vec::new();
-    collect_leaf_blocks(&doc.blocks_in_order(), &mut out);
-    out
-}
-
-fn collect_leaf_blocks(blocks: &[&Block], out: &mut Vec<Block>) {
-    for block in blocks {
-        match &block.kind {
-            BlockKind::BlockQuote { children } => {
-                let kids: Vec<_> = children.iter_asc().collect();
-                collect_leaf_blocks(&kids, out);
-            }
-            _ => out.push((*block).clone()),
-        }
-    }
-}
-
-fn find_elem_id(session: &CollaborativeDocument, block_id: BlockId) -> Option<OpId> {
-    session
-        .document()
-        .blocks_in_order()
-        .into_iter()
-        .find(|b| b.id == block_id)
-        .map(|b| b.elem_id)
-}
-
 fn session_err(err: SessionError) -> VaultError {
     VaultError::Session(err.to_string())
 }
@@ -336,7 +294,7 @@ pub enum IngestOutcome {
     NoOp,
     /// File ingested; approximate structure-op count.
     Changed(usize),
-    /// File contains not-yet-ingestable blocks (a table, or a blockquote on re-ingest).
+    /// File contains not-yet-ingestable blocks (e.g. tables).
     Skipped,
 }
 
@@ -351,13 +309,9 @@ fn document_contains_table(doc: &Document) -> bool {
     walk(&doc.blocks_in_order())
 }
 
-fn document_contains_blockquote(doc: &Document) -> bool {
-    doc.blocks_in_order()
-        .iter()
-        .any(|b| matches!(b.kind, BlockKind::BlockQuote { .. }))
-}
-
 /// Insert a parsed block tree into `parent`'s children (top-level when `None`),
+/// preserving blockquote nesting. Returns an approximate structure-op count.
+/// Insert a sequence of parsed blocks into `parent`'s children (top-level when `None`),
 /// preserving blockquote nesting. Returns an approximate structure-op count.
 fn insert_tree(
     session: &mut CollaborativeDocument,
@@ -367,138 +321,279 @@ fn insert_tree(
     let mut ops = 0usize;
     let mut after: Option<OpId> = None;
     for block in blocks {
-        let elem = match &block.kind {
-            BlockKind::Paragraph { text } => {
-                let body = paragraph_visible_string(text);
-                ops += if body.is_empty() { 1 } else { 2 };
-                session
-                    .insert_paragraph_in(parent, after, &body)
-                    .map_err(session_err)?
-            }
-            BlockKind::CodeFence { info, text } => {
-                ops += 1;
-                session
-                    .insert_block_in(
-                        parent,
-                        after,
-                        BlockKind::CodeFence {
-                            info: info.clone(),
-                            text: text.clone(),
-                        },
-                    )
-                    .map_err(session_err)?
-            }
-            BlockKind::RawBlock { raw } => {
-                ops += 1;
-                session
-                    .insert_block_in(parent, after, BlockKind::RawBlock { raw: raw.clone() })
-                    .map_err(session_err)?
-            }
-            BlockKind::BlockQuote { children } => {
-                ops += 1;
-                let q = session
-                    .insert_block_in(
-                        parent,
-                        after,
-                        BlockKind::BlockQuote {
-                            children: Sequence::new(),
-                        },
-                    )
-                    .map_err(session_err)?;
-                let kids: Vec<_> = children.iter_asc().collect();
-                ops += insert_tree(session, Some(q), &kids)?;
-                q
-            }
-            BlockKind::Table { .. } => return Err(VaultError::UnsupportedIngestBlock("table")),
-        };
+        let (elem, n) = insert_one(session, parent, after, block)?;
+        ops += n;
         after = Some(elem);
     }
     Ok(ops)
 }
 
-/// Structure-only: delete removed blocks, insert added (N6-d for paragraphs).
+/// Structure-only re-ingest of a full document tree (including nested blockquotes).
 ///
-/// Matched blocks keep their CRDT identity; text edits on matched blocks are left
-/// for a later text-diff path.
+/// Matched leaves keep CRDT identity; text edits on matched leaves are deferred to LCS.
+/// Blockquotes match as containers (content-agnostic fingerprint) so children can be
+/// reconciled without replacing the quote.
 fn apply_structure_ingest(
     session: &mut CollaborativeDocument,
-    leaves: &[Block],
-    new_parsed: &[super::ParsedBlock],
+    parsed: &Document,
 ) -> Result<usize, VaultError> {
-    let old_state = LastFlushedState {
-        content_hash: 0,
-        blocks: fingerprint_document(session.document()),
-    };
-    let mapping = match_blocks(&old_state, new_parsed, &MatchConfig::default());
+    let old: Vec<Block> = session
+        .document()
+        .blocks_in_order()
+        .into_iter()
+        .cloned()
+        .collect();
+    let new = parsed.blocks_in_order();
+    sync_tree(session, None, &old, &new)
+}
 
-    let mut ops = 0usize;
-
-    // Deletes first so insert anchors resolve against the surviving set.
-    for block_id in &mapping.removed {
-        let Some(elem) = find_elem_id(session, *block_id) else {
-            continue;
-        };
-        session.delete_block(elem).map_err(session_err)?;
-        ops += 1;
+/// Fingerprint used at one tree level. Quotes are structure tokens so nested text
+/// edits do not destroy the container match.
+fn level_match_content(kind: &BlockKind) -> String {
+    match kind {
+        BlockKind::BlockQuote { .. } => "blockquote".to_string(),
+        other => block_content(other),
     }
+}
 
-    let matched_by_new: HashMap<usize, BlockId> = mapping
+fn level_old_state(blocks: &[Block]) -> LastFlushedState {
+    LastFlushedState {
+        content_hash: 0,
+        blocks: blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| BlockFingerprint {
+                block_id: b.id,
+                fingerprint: Fingerprint::from_content(&level_match_content(&b.kind)),
+                container_path: Vec::new(),
+                position: i,
+            })
+            .collect(),
+    }
+}
+
+fn level_new_parsed(blocks: &[&Block]) -> Vec<ParsedBlock> {
+    blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| ParsedBlock {
+            fingerprint: Fingerprint::from_content(&level_match_content(&b.kind)),
+            container_path: Vec::new(),
+            position: i,
+        })
+        .collect()
+}
+
+fn sync_tree(
+    session: &mut CollaborativeDocument,
+    parent: Option<OpId>,
+    old: &[Block],
+    new: &[&Block],
+) -> Result<usize, VaultError> {
+    // Content floor: position alone cannot pair zero-similarity leaves.
+    let config = MatchConfig {
+        min_match_score: Score(5000),
+        ..MatchConfig::default()
+    };
+    let mapping = match_blocks(&level_old_state(old), &level_new_parsed(new), &config);
+
+    let old_by_id: HashMap<BlockId, &Block> = old.iter().map(|b| (b.id, b)).collect();
+    let mut matched_by_new: HashMap<usize, BlockId> = mapping
         .matched
         .iter()
         .map(|m| (m.new_index, m.old_id))
         .collect();
-    let added_indices: HashSet<usize> = mapping.added.iter().map(|a| a.new_index).collect();
+    let mut removed: HashSet<BlockId> = mapping.removed.iter().copied().collect();
+    let mut added: HashSet<usize> = mapping.added.iter().map(|a| a.new_index).collect();
 
-    // Walk file leaf order; insert only newly observed blocks.
+    // Position-pair remaining paragraphs so in-place text edits keep BlockId and use LCS.
+    let rem_old_para: Vec<BlockId> = old
+        .iter()
+        .filter(|b| removed.contains(&b.id) && matches!(b.kind, BlockKind::Paragraph { .. }))
+        .map(|b| b.id)
+        .collect();
+    let rem_new_para: Vec<usize> = new
+        .iter()
+        .enumerate()
+        .filter(|(i, b)| added.contains(i) && matches!(b.kind, BlockKind::Paragraph { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    let pair_n = rem_old_para.len().min(rem_new_para.len());
+    for k in 0..pair_n {
+        let old_id = rem_old_para[k];
+        let new_idx = rem_new_para[k];
+        removed.remove(&old_id);
+        added.remove(&new_idx);
+        matched_by_new.insert(new_idx, old_id);
+    }
+
+    let mut ops = 0usize;
+
+    // Structural deletes (unpaired removed blocks) first.
+    for block_id in &removed {
+        let Some(b) = old_by_id.get(block_id) else {
+            continue;
+        };
+        session
+            .delete_block_in(parent, b.elem_id)
+            .map_err(session_err)?;
+        ops += 1;
+    }
+
     let mut after: Option<OpId> = None;
-    for (idx, leaf) in leaves.iter().enumerate() {
+    for (idx, nb) in new.iter().enumerate() {
         if let Some(old_id) = matched_by_new.get(&idx) {
-            if let Some(elem) = find_elem_id(session, *old_id) {
-                after = Some(elem);
+            let Some(ob) = old_by_id.get(old_id) else {
+                continue;
+            };
+            after = Some(ob.elem_id);
+            match (&ob.kind, &nb.kind) {
+                (
+                    BlockKind::BlockQuote { children: old_kids },
+                    BlockKind::BlockQuote { children: new_kids },
+                ) => {
+                    let live_old: Vec<Block> = session
+                        .document()
+                        .find_block(ob.elem_id)
+                        .and_then(|b| match &b.kind {
+                            BlockKind::BlockQuote { children } => {
+                                Some(children.iter_asc().cloned().collect())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| old_kids.iter_asc().cloned().collect());
+                    let new_refs: Vec<&Block> = new_kids.iter_asc().collect();
+                    ops += sync_tree(session, Some(ob.elem_id), &live_old, &new_refs)?;
+                }
+                (BlockKind::Paragraph { text: old_t }, BlockKind::Paragraph { text: new_t }) => {
+                    let old_s = paragraph_visible_string(old_t);
+                    let new_s = paragraph_visible_string(new_t);
+                    if old_s != new_s {
+                        ops += apply_paragraph_text_diff(session, ob.id, &old_s, &new_s)?;
+                    }
+                }
+                // Matched non-paragraph leaves with different content: leave as-is for now
+                // (code/raw full replace would be delete+insert; content match already paired equals).
+                _ => {}
             }
             continue;
         }
-        if !added_indices.contains(&idx) {
-            // Should not happen if match covers all new indices.
+        if !added.contains(&idx) {
             continue;
         }
-        let elem = insert_leaf_block(session, after, leaf)?;
-        // insert_paragraph / insert_block may emit 1–2 ops; count by clock delta is hard.
-        // Count logical structure ops: one per added leaf (text may be a second envelope).
-        ops += match &leaf.kind {
-            BlockKind::Paragraph { text } if !paragraph_visible_string(text).is_empty() => 2,
-            _ => 1,
-        };
+        let (elem, n) = insert_one(session, parent, after, nb)?;
+        ops += n;
         after = Some(elem);
     }
 
     Ok(ops)
 }
 
-fn insert_leaf_block(
+/// Apply grapheme LCS between current paragraph body and `new_text` (InsertText/DeleteText).
+///
+/// Preserves OpIds for LCS-equal units. Marks on deleted units may be dropped (documented).
+fn apply_paragraph_text_diff(
     session: &mut CollaborativeDocument,
+    block_id: BlockId,
+    old_text: &str,
+    new_text: &str,
+) -> Result<usize, VaultError> {
+    let old_g = graphemes_of(old_text);
+    let new_g = graphemes_of(new_text);
+    if old_g == new_g {
+        return Ok(0);
+    }
+    let steps = lcs_steps(&old_g, &new_g);
+    let mut ops = 0usize;
+
+    // Deletes first (high index → low) so offsets stay valid.
+    for i in delete_indices_high_to_low(&steps) {
+        session.delete_text(block_id, i, 1).map_err(session_err)?;
+        ops += 1;
+    }
+
+    // After deletes, live body is the LCS sequence. Insert missing new graphemes left→right.
+    let mut live_pos = 0usize;
+    let insert_set: HashSet<usize> = insert_new_indices(&steps).into_iter().collect();
+    let mut run = String::new();
+    let mut run_at: Option<usize> = None;
+    for (j, g) in new_g.iter().enumerate() {
+        if insert_set.contains(&j) {
+            if run_at.is_none() {
+                run_at = Some(live_pos);
+            }
+            run.push_str(g);
+        } else {
+            if let Some(at) = run_at.take() {
+                session
+                    .insert_text(block_id, at, &run)
+                    .map_err(session_err)?;
+                live_pos = at + graphemes_of(&run).len();
+                run.clear();
+                ops += 1;
+            }
+            live_pos += 1;
+        }
+    }
+    if let Some(at) = run_at {
+        session
+            .insert_text(block_id, at, &run)
+            .map_err(session_err)?;
+        ops += 1;
+    }
+    Ok(ops)
+}
+
+/// Insert a single parsed block (and nested children for quotes). Returns `(elem_id, op_count)`.
+fn insert_one(
+    session: &mut CollaborativeDocument,
+    parent: Option<OpId>,
     after: Option<OpId>,
-    leaf: &Block,
-) -> Result<OpId, VaultError> {
-    match &leaf.kind {
+    block: &Block,
+) -> Result<(OpId, usize), VaultError> {
+    match &block.kind {
         BlockKind::Paragraph { text } => {
             let body = paragraph_visible_string(text);
-            session.insert_paragraph(after, &body).map_err(session_err)
+            let n = if body.is_empty() { 1 } else { 2 };
+            let id = session
+                .insert_paragraph_in(parent, after, &body)
+                .map_err(session_err)?;
+            Ok((id, n))
         }
-        BlockKind::CodeFence { info, text } => session
-            .insert_block(
-                after,
-                BlockKind::CodeFence {
-                    info: info.clone(),
-                    text: text.clone(),
-                },
-            )
-            .map_err(session_err),
-        BlockKind::RawBlock { raw } => session
-            .insert_block(after, BlockKind::RawBlock { raw: raw.clone() })
-            .map_err(session_err),
+        BlockKind::CodeFence { info, text } => {
+            let id = session
+                .insert_block_in(
+                    parent,
+                    after,
+                    BlockKind::CodeFence {
+                        info: info.clone(),
+                        text: text.clone(),
+                    },
+                )
+                .map_err(session_err)?;
+            Ok((id, 1))
+        }
+        BlockKind::RawBlock { raw } => {
+            let id = session
+                .insert_block_in(parent, after, BlockKind::RawBlock { raw: raw.clone() })
+                .map_err(session_err)?;
+            Ok((id, 1))
+        }
+        BlockKind::BlockQuote { children } => {
+            let q = session
+                .insert_block_in(
+                    parent,
+                    after,
+                    BlockKind::BlockQuote {
+                        children: Sequence::new(),
+                    },
+                )
+                .map_err(session_err)?;
+            let kids: Vec<_> = children.iter_asc().collect();
+            let nested = insert_tree(session, Some(q), &kids)?;
+            Ok((q, 1 + nested))
+        }
         BlockKind::Table { .. } => Err(VaultError::UnsupportedIngestBlock("table")),
-        BlockKind::BlockQuote { .. } => Err(VaultError::UnsupportedIngestBlock("blockquote")),
     }
 }
 

@@ -192,3 +192,254 @@ fn session_snapshot_survives_reopen_after_ingest() {
         .serialize(EquivalenceMode::Structural);
     assert_eq!(text, "persisted body");
 }
+
+#[test]
+fn reingest_unchanged_quote_is_noop() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("q.md"), "> quoted line").unwrap();
+
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    assert_eq!(vs.ingest_all().unwrap().files_changed, 1);
+
+    let r2 = vs.ingest_all().unwrap();
+    assert_eq!(r2.files_noop, 1);
+    assert_eq!(r2.files_changed, 0);
+    assert_eq!(r2.files_skipped, 0);
+    assert_eq!(r2.ops_emitted, 0);
+}
+
+#[test]
+fn reingest_add_paragraph_inside_quote_preserves_quote_and_sibling_ids() {
+    let dir = tempdir().unwrap();
+    // One blockquote with a single paragraph.
+    fs::write(dir.path().join("q.md"), "> first").unwrap();
+
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    vs.ingest_all().unwrap();
+
+    let (quote_id, child_id) = {
+        let top = &vs.session_mut("q.md").unwrap().document().blocks_in_order()[0];
+        match &top.kind {
+            BlockKind::BlockQuote { children } => {
+                let kids: Vec<_> = children.iter().collect();
+                (top.id, kids[0].id)
+            }
+            _ => panic!("expected blockquote"),
+        }
+    };
+
+    // Same quote, second paragraph added (CommonMark merges consecutive > lines).
+    fs::write(dir.path().join("q.md"), "> first\n>\n> second").unwrap();
+    let report = vs.ingest_all().unwrap();
+    assert_eq!(report.files_changed, 1);
+    assert_eq!(report.files_skipped, 0);
+    assert!(report.ops_emitted >= 1);
+
+    let top = &vs.session_mut("q.md").unwrap().document().blocks_in_order()[0];
+    assert_eq!(top.id, quote_id, "quote container id preserved");
+    match &top.kind {
+        BlockKind::BlockQuote { children } => {
+            let kids: Vec<_> = children.iter().collect();
+            assert_eq!(kids.len(), 2);
+            assert_eq!(
+                kids[0].id, child_id,
+                "matched nested paragraph id preserved"
+            );
+            match &kids[1].kind {
+                BlockKind::Paragraph { text } => {
+                    assert_eq!(paragraph_visible_string(text), "second");
+                }
+                _ => panic!("expected second nested paragraph"),
+            }
+        }
+        _ => panic!("expected blockquote"),
+    }
+}
+
+#[test]
+fn reingest_remove_paragraph_inside_quote() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("q.md"), "> keep\n>\n> gone").unwrap();
+
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    vs.ingest_all().unwrap();
+
+    let quote_id = vs.session_mut("q.md").unwrap().document().blocks_in_order()[0].id;
+
+    fs::write(dir.path().join("q.md"), "> keep").unwrap();
+    let report = vs.ingest_all().unwrap();
+    assert_eq!(report.files_changed, 1);
+    assert_eq!(report.files_skipped, 0);
+
+    let top = &vs.session_mut("q.md").unwrap().document().blocks_in_order()[0];
+    assert_eq!(top.id, quote_id);
+    match &top.kind {
+        BlockKind::BlockQuote { children } => {
+            let kids: Vec<_> = children.iter().collect();
+            assert_eq!(kids.len(), 1);
+            match &kids[0].kind {
+                BlockKind::Paragraph { text } => {
+                    assert_eq!(paragraph_visible_string(text), "keep");
+                }
+                _ => panic!("expected nested paragraph"),
+            }
+        }
+        _ => panic!("expected blockquote"),
+    }
+}
+
+#[test]
+fn reingest_text_change_inside_quote_keeps_quote_id() {
+    // Structure-only: changed leaf text rematches as remove+add; quote container stays.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("q.md"), "> alpha").unwrap();
+
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    vs.ingest_all().unwrap();
+    let quote_id = vs.session_mut("q.md").unwrap().document().blocks_in_order()[0].id;
+
+    fs::write(dir.path().join("q.md"), "> beta").unwrap();
+    vs.ingest_all().unwrap();
+
+    let top = &vs.session_mut("q.md").unwrap().document().blocks_in_order()[0];
+    assert_eq!(top.id, quote_id);
+    match &top.kind {
+        BlockKind::BlockQuote { children } => {
+            let kids: Vec<_> = children.iter().collect();
+            assert_eq!(kids.len(), 1);
+            match &kids[0].kind {
+                BlockKind::Paragraph { text } => {
+                    assert_eq!(paragraph_visible_string(text), "beta");
+                }
+                _ => panic!("expected paragraph"),
+            }
+        }
+        _ => panic!("expected blockquote"),
+    }
+}
+
+#[test]
+fn ingest_paragraph_text_edit_preserves_block_and_prefix_unit_ids() {
+    use md_crdt::doc::paragraph_visible_ids;
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("doc.md"), "hello").unwrap();
+
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    vs.ingest_all().unwrap();
+
+    let (block_id, prefix_ids) = {
+        let doc = vs.session_mut("doc.md").unwrap().document();
+        let b = &doc.blocks_in_order()[0];
+        let ids = match &b.kind {
+            BlockKind::Paragraph { text } => paragraph_visible_ids(text),
+            _ => panic!("paragraph"),
+        };
+        // "hel" prefix of "hello"
+        (b.id, ids[..3].to_vec())
+    };
+
+    fs::write(dir.path().join("doc.md"), "help").unwrap();
+    let report = vs.ingest_all().unwrap();
+    assert_eq!(report.files_changed, 1);
+    assert!(report.ops_emitted >= 1);
+
+    let doc = vs.session_mut("doc.md").unwrap().document();
+    let b = &doc.blocks_in_order()[0];
+    assert_eq!(b.id, block_id, "BlockId preserved across text edit");
+    match &b.kind {
+        BlockKind::Paragraph { text } => {
+            assert_eq!(paragraph_visible_string(text), "help");
+            let ids = paragraph_visible_ids(text);
+            assert_eq!(ids.len(), 4);
+            let retained = ids.iter().filter(|id| prefix_ids.contains(id)).count();
+            assert!(
+                retained >= 2,
+                "LCS should retain shared unit OpIds, retained={retained}"
+            );
+        }
+        _ => panic!("paragraph"),
+    }
+}
+
+#[test]
+fn ingest_full_paragraph_rewrite_preserves_block_id_via_position_pairing() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("doc.md"), "alpha").unwrap();
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    vs.ingest_all().unwrap();
+    let id = vs
+        .session_mut("doc.md")
+        .unwrap()
+        .document()
+        .blocks_in_order()[0]
+        .id;
+
+    // Completely different text (zero shared graphemes) falls below the fingerprint
+    // match floor, so only position-pairing keeps the BlockId — otherwise this would be
+    // a remove+add with a fresh id.
+    fs::write(dir.path().join("doc.md"), "zzzzz").unwrap();
+    let report = vs.ingest_all().unwrap();
+    assert_eq!(report.files_changed, 1);
+
+    let doc = vs.session_mut("doc.md").unwrap().document();
+    assert_eq!(doc.blocks_in_order().len(), 1);
+    let b = &doc.blocks_in_order()[0];
+    assert_eq!(
+        b.id, id,
+        "BlockId preserved via position pairing on full rewrite"
+    );
+    match &b.kind {
+        BlockKind::Paragraph { text } => assert_eq!(paragraph_visible_string(text), "zzzzz"),
+        _ => panic!("paragraph"),
+    }
+}
+
+#[test]
+fn ingest_quote_inner_text_edit_preserves_quote_and_lcs_units() {
+    use md_crdt::doc::paragraph_visible_ids;
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("q.md"), "> hello").unwrap();
+
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    vs.ingest_all().unwrap();
+
+    let (quote_id, child_id, prefix) = {
+        let top = &vs.session_mut("q.md").unwrap().document().blocks_in_order()[0];
+        match &top.kind {
+            BlockKind::BlockQuote { children } => {
+                let kid = children.iter().next().unwrap();
+                let ids = match &kid.kind {
+                    BlockKind::Paragraph { text } => paragraph_visible_ids(text),
+                    _ => panic!("para"),
+                };
+                (top.id, kid.id, ids[..3].to_vec())
+            }
+            _ => panic!("quote"),
+        }
+    };
+
+    fs::write(dir.path().join("q.md"), "> help").unwrap();
+    vs.ingest_all().unwrap();
+
+    let top = &vs.session_mut("q.md").unwrap().document().blocks_in_order()[0];
+    assert_eq!(top.id, quote_id);
+    match &top.kind {
+        BlockKind::BlockQuote { children } => {
+            let kid = children.iter().next().unwrap();
+            assert_eq!(kid.id, child_id, "nested paragraph BlockId preserved");
+            match &kid.kind {
+                BlockKind::Paragraph { text } => {
+                    assert_eq!(paragraph_visible_string(text), "help");
+                    let ids = paragraph_visible_ids(text);
+                    let retained = ids.iter().filter(|id| prefix.contains(id)).count();
+                    assert!(
+                        retained >= 2,
+                        "LCS retain inside quote, retained={retained}"
+                    );
+                }
+                _ => panic!("para"),
+            }
+        }
+        _ => panic!("quote"),
+    }
+}

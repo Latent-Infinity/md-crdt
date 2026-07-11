@@ -22,7 +22,10 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-07** Marks | **done** | Unified rich `mark::MarkSet` on Block/EditOp; generic dual API removed |
 | **PR-08** VaultSession | **done** | Path→CollaborativeDocument map; `.mdcrdt/peer_id`; session snapshots under `.mdcrdt/sessions/` |
 | **PR-09** Vault ingest D1 | **done** | Hash gate + match_blocks → Insert/Delete block; N6-d for new paragraphs; `IngestReport` |
-| PR-10+ | pending | Text LCS ingest D2, etc. |
+| Nested collab parents (shipped with PR-09) | **done** | Feature-sized (not audit-only): `parent` on Insert/DeleteBlock, recursive apply, first-ingest quote tree. Prefer separate reviewed unit next time. |
+| **Follow-up: nested re-ingest matching** | **done** | Recursive `sync_tree`; quote containers content-agnostic; structure add/remove inside quotes; stricter match floor |
+| **PR-10** Vault ingest D2 | **done** | Grapheme LCS → InsertText/DeleteText; position-pair unmatched paragraphs; preserves BlockId + LCS unit OpIds |
+| PR-11+ | pending | Headings/lists, tables, … |
 
 ## Phase B checklist
 
@@ -51,6 +54,11 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Ingest D1 scope | Structure only (add/remove); matched different text deferred to D2 | Ship block ops without grapheme LCS |
 | Ingest new paragraphs | `insert_paragraph` (N6-d) | Empty InsertBlock + InsertText body |
 | Pure reorder | Match preserves BlockIds; no move op yet | CRDT order may lag file order until move/reorder support |
+| Nested machinery packaging | Landed in same commit as PR-09 + plan-state | Prefer: feature commit (code+tests) then plan/docs commit, or a dedicated PR slice |
+| Quote editing via vault | Structure re-ingest supported; in-quote *text* LCS still PR-10 | Nested structure add/remove/re-ingest preserve quote + matched child ids |
+| Structure match floor | `min_match_score: 5000` for re-ingest | Default 2000 allowed content_sim=0 matches via position alone |
+| Text ingest LCS | Visible graphemes; deletes high→low then inserts; batch insert runs | Preserves unit OpIds on LCS; marks on deleted units dropped (D non-goal) |
+| Unmatched paragraph pairing | Zip remaining removed/added paragraphs by order | Lets full rewrite still keep BlockId via LCS |
 
 ## Phase C checklist
 
@@ -66,25 +74,35 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Open/save per-file session snapshots (PR-08)
 - [x] Structure ingest: hash gate → match → Insert/Delete block → snapshot (PR-09)
 - [x] Block reorder preserves ids via match_blocks (PR-09; no CRDT re-order yet)
-- [x] Blockquotes preserved on ingest (not flattened); tables skipped, no vault-wide abort (audit)
-- [ ] External in-paragraph text edit → InsertText/DeleteText (PR-10)
-- [ ] Nested re-ingest matching (blockquote edits preserving identity) — follow-up
+- [x] Blockquotes preserved on **first** ingest (not flattened); tables skipped, no vault-wide abort
+- [x] External in-paragraph text edit → InsertText/DeleteText (PR-10)
+- [x] **Nested re-ingest matching** (structure + in-quote text LCS via PR-10)
 - [ ] Two vaults exchange ops after external edits (later)
 
-## Audit finding (PR-09) — ingest mishandled non-flat blocks → **fixed (nested editing machinery)**
+## Nested re-ingest matching — **done** (structure)
 
-**Symptom.** A blockquote in a file was **silently flattened** (structure lost on ingest→flush); a table in any file made `ingest_all` **abort the whole vault** (`?` on `UnsupportedIngestBlock`). Both untested.
+**Shipped:**
+- Remove skip-on-blockquote-re-ingest
+- Recursive `sync_tree(parent, old_children, new_children)` using level match
+- Blockquotes fingerprinted as container token (`"blockquote"`) so child text changes do not destroy the container match
+- Structure ops inside quotes via `delete_block_in` / `insert_paragraph_in` / `insert_block_in`
+- Re-ingest match config `min_match_score: 5000` (avoids position-only false matches when content_sim=0)
+- Tests: unchanged quote → NoOp; add/remove para inside quote preserves quote + matched sibling ids; text replace keeps quote id (leaf remove+add)
 
-**Fix (user chose "build nested-text machinery now").** Added collaborative nested block/paragraph editing:
-- `DocOp::InsertBlock`/`DeleteBlock` gain `parent: Option<OpId>` (container elem_id; `None` = top-level; `#[serde(default)]` for back-compat). Apply navigates to the container's `children` via a recursive elem_id search (arbitrary depth). `InsertText`/`DeleteText` need no wire change — their apply now resolves `block_elem` recursively.
-- Session `insert_block_in` / `insert_paragraph_in(parent, …)`; `insert_text`/`delete_text` locate blocks recursively (`Document::find_block`/`with_block_mut`/`container_children`).
-- Ingest: first ingest inserts the parsed tree recursively (blockquotes preserved, syncable); tables → per-file **skip** (`IngestReport.files_skipped`), no abort. Table parsing isn't implemented yet, so the table path is defensive until PR-12.
-- **Scope note:** nested *re-ingest* matching (editing inside a quote across re-ingests, preserving identity) is deferred — a quote file on re-ingest is skipped rather than flattened.
-- Tests: `nested_paragraph_in_blockquote_converges` (session), `ingest_preserves_blockquote_structure` (vault).
+## PR-10 text LCS ingest — **done**
+
+- `filesync/diff.rs`: grapheme LCS steps + helpers
+- `apply_paragraph_text_diff`: DeleteText (high→low) then InsertText runs
+- Position-pair residual paragraphs after content match so rewrites keep `BlockId`
+- Works for top-level and nested (quote) paragraphs
+- Marks on deleted units may drop (documented D limitation)
+
+**Audit (verified):** `diff.rs` LCS traced correct (insert-middle, replace-all); deletes high→low keep offsets valid; equal units keep OpIds (test `..._preserves_block_and_prefix_unit_ids` asserts ≥2 shared unit ids retained on `hello`→`help`). **TDD gap closed:** added `ingest_full_paragraph_rewrite_preserves_block_id_via_position_pairing` (`alpha`→`zzzzz`, content_sim=0 below the 5000 floor → only position-pairing keeps the id). Matched code/raw blocks with changed content are left as-is (whole-string, not unit CRDTs) — minor documented limitation.
 
 ## Gate
 
-- `just check` — **passed** after PR-09 audit + nested editing (309 tests, 0 warnings)
+- `just check` — **passed** after PR-10 audit (320 tests, 0 warnings)
+- Prior notes: nested re-ingest structure; multi-quote sibling edge still untested
 - Prior audit notes retained (span-aware sync; mark visible-order split)
 
 
