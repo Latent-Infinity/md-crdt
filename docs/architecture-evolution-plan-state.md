@@ -5,7 +5,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Field | Value |
 | --- | --- |
 | **Plan** | `docs/architecture-evolution.md` (Draft revision 6) |
-| **Last updated** | 2026-07-10 |
+| **Last updated** | 2026-07-11 |
 | **Tracking unit** | PR slices under design phases A–H |
 
 ## Progress
@@ -25,7 +25,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Nested collab parents (shipped with PR-09) | **done** | Feature-sized (not audit-only): `parent` on Insert/DeleteBlock, recursive apply, first-ingest quote tree. Prefer separate reviewed unit next time. |
 | **Follow-up: nested re-ingest matching** | **done** | Recursive `sync_tree`; quote containers content-agnostic; structure add/remove inside quotes; stricter match floor |
 | **PR-10** Vault ingest D2 | **done** | Grapheme LCS → InsertText/DeleteText; position-pair unmatched paragraphs; preserves BlockId + LCS unit OpIds |
-| PR-11+ | pending | Headings/lists, tables, … |
+| **PR-11** Headings and lists | **done** | Structured model; ATX/setext parse; ordered/unordered nested lists; canonical serialization; wire/snapshot round trips. Audit fixed silent list-ingest text loss (nested item children now ingested). |
+| PR-12+ | pending | Tables, split/merge, … |
 
 ## Phase B checklist
 
@@ -59,6 +60,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Structure match floor | `min_match_score: 5000` for re-ingest | Default 2000 allowed content_sim=0 matches via position alone |
 | Text ingest LCS | Visible graphemes; deletes high→low then inserts; batch insert runs | Preserves unit OpIds on LCS; marks on deleted units dropped (D non-goal) |
 | Unmatched paragraph pairing | Zip remaining removed/added paragraphs by order | Lets full rewrite still keep BlockId via LCS |
+| List indentation | Expand tabs to CommonMark four-column tab stops | Counting a tab as one character made indented list continuations normalize differently on the second parse; column expansion is deterministic and fixture-compatible |
+| Structured serialization | Canonical ATX headings and `-` / `1.` list markers | The runtime model intentionally does not retain source marker style; structural serialization prioritizes stable semantics and idempotence |
 
 ## Phase C checklist
 
@@ -78,6 +81,16 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] External in-paragraph text edit → InsertText/DeleteText (PR-10)
 - [x] **Nested re-ingest matching** (structure + in-quote text LCS via PR-10)
 - [ ] Two vaults exchange ops after external edits (later)
+
+## Phase E checklist (partial)
+
+- [x] ATX and setext headings parse to `Heading` with text units
+- [x] Ordered, unordered, and nested lists parse to `List` / `ListItem`
+- [x] List **ingest** preserves item children (text), not just the list container
+- [x] Structured headings and lists serialize idempotently across CommonMark fixtures
+- [x] Heading/list wire DTOs and session snapshots round-trip
+- [ ] GFM table parsing and collaborative row operations (PR-12)
+- [ ] Collaborative split/merge block operations (PR-13)
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -99,9 +112,21 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 **Audit (verified):** `diff.rs` LCS traced correct (insert-middle, replace-all); deletes high→low keep offsets valid; equal units keep OpIds (test `..._preserves_block_and_prefix_unit_ids` asserts ≥2 shared unit ids retained on `hello`→`help`). **TDD gap closed:** added `ingest_full_paragraph_rewrite_preserves_block_id_via_position_pairing` (`alpha`→`zzzzz`, content_sim=0 below the 5000 floor → only position-pairing keeps the id). Matched code/raw blocks with changed content are left as-is (whole-string, not unit CRDTs) — minor documented limitation.
 
+## PR-11 audit (headings and lists) — **done**
+
+**Verified TRUE:** structured `Heading {level, text}` and `List {ordered, items: Sequence<ListItem>}` model; ATX/setext parse; ordered/unordered/nested list parse; canonical serialization (ATX `#`, `-`/`1.` markers) idempotent across fixtures; wire DTOs (`BlockKindSkeleton::Heading/List`, `ListItemSkeleton`) and snapshots round-trip; `insert_one(Heading)` uses N6-d (empty heading block + `insert_text` body).
+
+**Bug found + fixed (list ingest silent data loss).** `insert_one(List)` inserted only the list block and dropped every item's children, so `- alpha\n- beta` ingested as a list whose items had no text (serialized `"-\n-"`). Fix mirrors the blockquote nested-text machinery:
+- `insert_one(List)` now allocates contiguous session-peer item elem_ids (`base + 1 + i`), inserts the list with empty `ListItem`s, then inserts each item's children via `insert_tree(Some(item_elem), children)` (text flows through `InsertText`, N6-d). Item ids are self-peer → syncable, not parser-peer-0.
+- `doc/mod.rs` recursive nav now descends `List → ListItem → children`: new `child_seqs` (used by `find_block`/`find_block_by_id`), `find_list_item`, and `with_container_children_mut` (used by `insert_block_at`/`delete_block_at`/`container_children`); `with_block_mut` descends into list items via `items.value_mut`.
+- Tests: `ingest_preserves_list_structure_and_text` (text + structure preserved; re-ingest NoOp) and `nested_paragraph_in_list_item_converges` (insert list + nested paragraph + edit → converges across peers, state vectors equal).
+
+**Latent limitation (documented, same as blockquotes):** in-list-item *text* re-ingest LCS not yet exercised end-to-end; nested-list matching relies on the level-based `sync_tree`.
+
 ## Gate
 
-- `just check` — **passed** after PR-10 audit (320 tests, 0 warnings)
+- `just check` — **passed** after PR-11 list-ingest fix (329 tests, 0 warnings)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 85.93% repository line coverage, with all PR-11 follow-up lines covered (existing global baseline remains below 90%)
 - Prior notes: nested re-ingest structure; multi-quote sibling edge still untested
 - Prior audit notes retained (span-aware sync; mark visible-order split)
 

@@ -4,7 +4,7 @@
 
 use md_crdt::codec::{
     BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, CodecError, DocOp, Envelope,
-    JsonOpCodec, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, WIRE_VERSION,
+    JsonOpCodec, ListItemSkeleton, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, WIRE_VERSION,
     insert_block_paragraph_is_empty,
 };
 use md_crdt::core::OpId;
@@ -222,6 +222,47 @@ fn raw_and_quote_kinds_round_trip() {
             },
         }),
     };
+    let bytes = codec.encode(&env).expect("encode");
+    assert_eq!(codec.decode(&bytes).expect("decode"), env);
+}
+
+#[test]
+fn heading_and_list_kinds_round_trip() {
+    let codec = JsonOpCodec;
+    let env = Envelope {
+        version: WIRE_VERSION,
+        body: OpBody::Doc(DocOp::InsertBlock {
+            parent: None,
+            after: None,
+            id: op(1, 1),
+            right_origin: None,
+            block: BlockSkeleton {
+                block_id: block_id(7),
+                kind: BlockKindSkeleton::List {
+                    ordered: false,
+                    items: vec![ListItemSkeleton {
+                        after: None,
+                        id: op(2, 1),
+                        right_origin: None,
+                        block_id: block_id(8),
+                        children: vec![BlockSkeletonInsert {
+                            after: None,
+                            id: op(3, 1),
+                            right_origin: None,
+                            block: BlockSkeleton {
+                                block_id: block_id(9),
+                                kind: BlockKindSkeleton::Heading {
+                                    level: 2,
+                                    text: "child".into(),
+                                },
+                            },
+                        }],
+                    }],
+                },
+            },
+        }),
+    };
+
     let bytes = codec.encode(&env).expect("encode");
     assert_eq!(codec.decode(&bytes).expect("decode"), env);
 }

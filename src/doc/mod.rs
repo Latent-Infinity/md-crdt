@@ -115,6 +115,15 @@ pub fn block_text_seq(kind: &BlockKind) -> Option<&Sequence<TextUnit>> {
     }
 }
 
+/// Child block sequences a kind contains (blockquote children, or each list item's children).
+fn child_seqs(kind: &BlockKind) -> Vec<&Sequence<Block>> {
+    match kind {
+        BlockKind::BlockQuote { children } => vec![children],
+        BlockKind::List { items, .. } => items.iter().map(|it| &it.children).collect(),
+        _ => Vec::new(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EquivalenceMode {
     Exact,
@@ -308,7 +317,7 @@ impl Document {
         self.blocks.iter_asc().collect()
     }
 
-    /// Find a block by `elem_id` anywhere in the tree (top-level or nested in a blockquote).
+    /// Find a block by `elem_id` anywhere in the tree (nested in blockquotes or list items).
     pub fn find_block(&self, elem_id: OpId) -> Option<&Block> {
         fn walk(seq: &Sequence<Block>, id: OpId) -> Option<&Block> {
             for e in seq.iter_all() {
@@ -316,10 +325,36 @@ impl Document {
                     if b.elem_id == id {
                         return Some(b);
                     }
-                    if let BlockKind::BlockQuote { children } = &b.kind
-                        && let Some(found) = walk(children, id)
-                    {
+                    if let Some(found) = child_seqs(&b.kind).into_iter().find_map(|c| walk(c, id)) {
                         return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        walk(&self.blocks, elem_id)
+    }
+
+    /// Find a list item by its `elem_id` anywhere in the tree.
+    pub fn find_list_item(&self, elem_id: OpId) -> Option<&ListItem> {
+        fn walk(seq: &Sequence<Block>, id: OpId) -> Option<&ListItem> {
+            for e in seq.iter_all() {
+                if let Some(b) = e.value.as_ref() {
+                    if let BlockKind::List { items, .. } = &b.kind {
+                        for ie in items.iter_all() {
+                            if let Some(item) = ie.value.as_ref() {
+                                if item.elem_id == id {
+                                    return Some(item);
+                                }
+                                if let Some(f) = walk(&item.children, id) {
+                                    return Some(f);
+                                }
+                            }
+                        }
+                    } else if let BlockKind::BlockQuote { children } = &b.kind
+                        && let Some(f) = walk(children, id)
+                    {
+                        return Some(f);
                     }
                 }
             }
@@ -346,11 +381,24 @@ impl Document {
                 }
             }
             for bid in seq.ids() {
-                if let Some(b) = seq.value_mut(bid)
-                    && let BlockKind::BlockQuote { children } = &mut b.kind
-                    && let Some(r) = walk(children, id, f)
-                {
-                    return Some(r);
+                if let Some(b) = seq.value_mut(bid) {
+                    match &mut b.kind {
+                        BlockKind::BlockQuote { children } => {
+                            if let Some(r) = walk(children, id, f) {
+                                return Some(r);
+                            }
+                        }
+                        BlockKind::List { items, .. } => {
+                            for iid in items.ids() {
+                                if let Some(item) = items.value_mut(iid)
+                                    && let Some(r) = walk(&mut item.children, id, f)
+                                {
+                                    return Some(r);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             None
@@ -359,8 +407,75 @@ impl Document {
         walk(&mut self.blocks, elem_id, &mut f)
     }
 
+    /// Apply `f` to the children of the container with `container_elem` (a blockquote block
+    /// or a list item), searching the whole tree. `None` if no such container exists.
+    fn with_container_children_mut<R>(
+        &mut self,
+        container_elem: OpId,
+        f: impl FnOnce(&mut Sequence<Block>) -> R,
+    ) -> Option<R> {
+        fn walk<R, F: FnOnce(&mut Sequence<Block>) -> R>(
+            seq: &mut Sequence<Block>,
+            target: OpId,
+            f: &mut Option<F>,
+        ) -> Option<R> {
+            for bid in seq.ids() {
+                if seq.value_mut(bid).is_some_and(|b| {
+                    b.elem_id == target && matches!(b.kind, BlockKind::BlockQuote { .. })
+                }) {
+                    let func = f.take()?;
+                    return seq.value_mut(bid).and_then(|b| match &mut b.kind {
+                        BlockKind::BlockQuote { children } => Some(func(children)),
+                        _ => None,
+                    });
+                }
+                let has_item = seq.value_mut(bid).is_some_and(|b| match &b.kind {
+                    BlockKind::List { items, .. } => items.iter().any(|it| it.elem_id == target),
+                    _ => false,
+                });
+                if has_item {
+                    let func = f.take()?;
+                    if let Some(b) = seq.value_mut(bid)
+                        && let BlockKind::List { items, .. } = &mut b.kind
+                    {
+                        for iid in items.ids() {
+                            if items.value_mut(iid).is_some_and(|it| it.elem_id == target) {
+                                return items.value_mut(iid).map(|it| func(&mut it.children));
+                            }
+                        }
+                    }
+                    return None;
+                }
+            }
+            for bid in seq.ids() {
+                if let Some(b) = seq.value_mut(bid) {
+                    match &mut b.kind {
+                        BlockKind::BlockQuote { children } => {
+                            if let Some(r) = walk(children, target, f) {
+                                return Some(r);
+                            }
+                        }
+                        BlockKind::List { items, .. } => {
+                            for iid in items.ids() {
+                                if let Some(item) = items.value_mut(iid)
+                                    && let Some(r) = walk(&mut item.children, target, f)
+                                {
+                                    return Some(r);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            None
+        }
+        let mut f = Some(f);
+        walk(&mut self.blocks, container_elem, &mut f)
+    }
+
     /// Insert a block into `parent`'s children (top-level when `parent` is `None`).
-    /// Returns `false` if `parent` is not a blockquote in the tree.
+    /// Returns `false` if `parent` is not a container (blockquote or list item) in the tree.
     pub fn insert_block_at(
         &mut self,
         parent: Option<OpId>,
@@ -380,19 +495,15 @@ impl Document {
                 true
             }
             Some(p) => self
-                .with_block_mut(p, |container| match &mut container.kind {
-                    BlockKind::BlockQuote { children } => {
-                        children.apply(SequenceOp::Insert {
-                            after,
-                            id,
-                            value,
-                            right_origin,
-                        });
-                        true
-                    }
-                    _ => false,
+                .with_container_children_mut(p, |children| {
+                    children.apply(SequenceOp::Insert {
+                        after,
+                        id,
+                        value,
+                        right_origin,
+                    });
                 })
-                .unwrap_or(false),
+                .is_some(),
         }
     }
 
@@ -404,29 +515,29 @@ impl Document {
                 true
             }
             Some(p) => self
-                .with_block_mut(p, |container| match &mut container.kind {
-                    BlockKind::BlockQuote { children } => {
-                        children.apply(SequenceOp::Delete { target, id });
-                        true
-                    }
-                    _ => false,
+                .with_container_children_mut(p, |children| {
+                    children.apply(SequenceOp::Delete { target, id });
                 })
-                .unwrap_or(false),
+                .is_some(),
         }
     }
 
     /// The children sequence of a container (top-level when `parent` is `None`); `None`
-    /// if `parent` is not a blockquote in the tree.
+    /// if `parent` is not a container (blockquote or list item) in the tree.
     pub fn container_children(&self, parent: Option<OpId>) -> Option<&Sequence<Block>> {
         match parent {
             None => Some(&self.blocks),
-            Some(p) => match self.find_block(p) {
-                Some(Block {
+            Some(p) => {
+                if let Some(Block {
                     kind: BlockKind::BlockQuote { children },
                     ..
-                }) => Some(children),
-                _ => None,
-            },
+                }) = self.find_block(p)
+                {
+                    Some(children)
+                } else {
+                    self.find_list_item(p).map(|it| &it.children)
+                }
+            }
         }
     }
 
@@ -448,9 +559,7 @@ impl Document {
                     if b.id == id {
                         return Some(b);
                     }
-                    if let BlockKind::BlockQuote { children } = &b.kind
-                        && let Some(found) = walk(children, id)
-                    {
+                    if let Some(found) = child_seqs(&b.kind).into_iter().find_map(|c| walk(c, id)) {
                         return Some(found);
                     }
                 }
@@ -979,7 +1088,15 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
 }
 
 fn indent_of(line: &str) -> usize {
-    line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+    line.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .fold(0, |column, c| {
+            if c == '\t' {
+                column + (4 - column % 4)
+            } else {
+                column + 1
+            }
+        })
 }
 
 fn parse_atx_heading(trimmed: &str) -> Option<(u8, &str)> {
@@ -995,10 +1112,27 @@ fn parse_atx_heading(trimmed: &str) -> Option<(u8, &str)> {
     if (level as usize) < bytes.len() && bytes[level as usize] == b'#' {
         return None;
     }
-    let rest = trimmed[level as usize..].trim_start();
-    // Strip optional trailing closing hashes
-    let rest = rest.trim_end_matches('#').trim_end();
+    let suffix = &trimmed[level as usize..];
+    if !suffix.is_empty() && !suffix.starts_with([' ', '\t']) {
+        return None;
+    }
+    let rest = suffix.trim_start();
+    let rest = strip_atx_closing_sequence(rest);
     Some((level, rest))
+}
+
+fn strip_atx_closing_sequence(text: &str) -> &str {
+    let trimmed = text.trim_end();
+    let closing_start = trimmed.trim_end_matches('#').len();
+    if closing_start == trimmed.len() {
+        return trimmed;
+    }
+    let before = &trimmed[..closing_start];
+    if before.is_empty() || before.ends_with([' ', '\t']) {
+        before.trim_end()
+    } else {
+        trimmed
+    }
 }
 
 fn parse_setext_underline(trimmed: &str) -> Option<u8> {
@@ -1255,7 +1389,14 @@ fn serialize_list(ordered: bool, items: &Sequence<ListItem>, indent: usize) -> S
                 BlockKind::Paragraph { text } => {
                     let body = paragraph_visible_string(text);
                     if ci == 0 {
-                        lines.push(format!("{pad}{marker}{body}"));
+                        let mut body_lines = body.lines();
+                        lines.push(format!(
+                            "{pad}{marker}{}",
+                            body_lines.next().unwrap_or_default()
+                        ));
+                        for body_line in body_lines {
+                            lines.push(format!("{pad}  {body_line}"));
+                        }
                     } else {
                         // Loose list continuation paragraph
                         lines.push(String::new());

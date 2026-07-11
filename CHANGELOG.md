@@ -75,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserves `BlockId` and LCS-equal unit OpIds across external paragraph edits
 - Position-pairs unmatched paragraphs before falling back to block insert/delete
 
+#### Structured headings and lists (`md-crdt::doc`)
+- `Heading { level, text: Sequence<TextUnit> }` for ATX and setext headings
+- `List { ordered, items }` with nested list-item child blocks
+- Canonical heading/list serialization with stable multiline and tab-indented list normalization
+- Heading/list wire DTO and session snapshot round trips
+
 ## [0.1.0] - 2025-02-04
 
 ### Added

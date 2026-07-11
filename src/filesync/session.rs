@@ -7,7 +7,7 @@ use super::{
 };
 use crate::codec::JsonOpCodec;
 use crate::core::{OpId, PeerId, Sequence};
-use crate::doc::{Block, BlockId, BlockKind, Document, Parser, paragraph_visible_string};
+use crate::doc::{Block, BlockId, BlockKind, Document, ListItem, Parser, paragraph_visible_string};
 use crate::session::{CollaborativeDocument, SessionError, SnapshotError};
 use crate::storage::{Storage, StorageError};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -582,20 +582,45 @@ fn insert_one(
             Ok((id, n))
         }
         BlockKind::List { ordered, items } => {
-            // Insert empty list then items as nested structure via recursive tree.
-            // For MVP ingest: flatten list to sequential insert of the List block
-            // with items reconstructed from parse (full children sequences on skeleton).
-            let id = session
+            // Insert the list with session-allocated, contiguous item ids and empty item
+            // children, then insert each item's children (paragraph text via InsertText).
+            // Avoids unit-mode text stripping and keeps the list body syncable.
+            let peer = session.peer();
+            let base = session.peek_next_id().counter; // == the list block's own counter
+            let ordered_items: Vec<&ListItem> = items.iter().collect();
+            let mut item_elems: Vec<OpId> = Vec::new();
+            let mut empty: Vec<(OpId, ListItem)> = Vec::new();
+            for i in 0..ordered_items.len() {
+                let elem = OpId {
+                    counter: base + 1 + i as u64,
+                    peer,
+                };
+                item_elems.push(elem);
+                empty.push((
+                    elem,
+                    ListItem {
+                        id: crate::doc::block_id_from_op(elem),
+                        elem_id: elem,
+                        children: Sequence::new(),
+                    },
+                ));
+            }
+            let list_elem = session
                 .insert_block_in(
                     parent,
                     after,
                     BlockKind::List {
                         ordered: *ordered,
-                        items: items.clone(),
+                        items: Sequence::from_ordered(empty),
                     },
                 )
                 .map_err(session_err)?;
-            Ok((id, 1))
+            let mut n = 1;
+            for (it, item_elem) in ordered_items.iter().zip(item_elems.iter()) {
+                let kids: Vec<&Block> = it.children.iter_asc().collect();
+                n += insert_tree(session, Some(*item_elem), &kids)?;
+            }
+            Ok((list_elem, n))
         }
         BlockKind::CodeFence { info, text } => {
             let id = session

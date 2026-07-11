@@ -1,8 +1,8 @@
 //! Session snapshot save/restore and late-join import.
 
-use md_crdt::doc::EquivalenceMode;
+use md_crdt::doc::{EquivalenceMode, Parser};
 use md_crdt::session::{
-    CollaborativeDocument, SNAPSHOT_FORMAT_VERSION, SessionSnapshot, SnapshotError,
+    CollaborativeDocument, DocumentDto, SNAPSHOT_FORMAT_VERSION, SessionSnapshot, SnapshotError,
 };
 use md_crdt::sync::ValidationLimits;
 
@@ -106,6 +106,17 @@ fn snapshot_bytes_round_trip() {
     let loaded = SessionSnapshot::from_bytes(&bytes).expect("from_bytes");
     assert_eq!(loaded.peer, snap.peer);
     assert_eq!(loaded.ops.len(), snap.ops.len());
+}
+
+#[test]
+fn document_snapshot_preserves_headings_and_nested_lists() {
+    let document = Parser::parse("# heading\n\n- parent\n  1. child");
+    let restored = DocumentDto::from_document(&document).into_document();
+
+    assert_eq!(
+        document.serialize(EquivalenceMode::Structural),
+        restored.serialize(EquivalenceMode::Structural)
+    );
 }
 
 #[cfg(feature = "storage")]

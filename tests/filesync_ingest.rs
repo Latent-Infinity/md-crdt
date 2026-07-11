@@ -55,6 +55,45 @@ fn ingest_preserves_blockquote_structure() {
 }
 
 #[test]
+fn ingest_preserves_list_structure_and_text() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("l.md"), "- alpha\n- beta").unwrap();
+
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    let report = vs.ingest_all().unwrap();
+    assert_eq!(report.files_changed, 1);
+    assert_eq!(report.files_skipped, 0);
+
+    let doc = vs.session_mut("l.md").unwrap().document();
+    let top = &doc.blocks_in_order()[0];
+    match &top.kind {
+        BlockKind::List { ordered, items } => {
+            assert!(!ordered);
+            let its: Vec<_> = items.iter().collect();
+            assert_eq!(its.len(), 2, "two list items");
+            let text = |it: &md_crdt::doc::ListItem| {
+                it.children.iter().next().map(|b| match &b.kind {
+                    BlockKind::Paragraph { text } => paragraph_visible_string(text),
+                    _ => String::new(),
+                })
+            };
+            assert_eq!(
+                text(its[0]).as_deref(),
+                Some("alpha"),
+                "item text preserved"
+            );
+            assert_eq!(text(its[1]).as_deref(), Some("beta"));
+        }
+        _ => panic!("list flattened / item text lost"),
+    }
+
+    // Idempotent: re-ingest of the unchanged file is a NoOp.
+    let r2 = vs.ingest_all().unwrap();
+    assert_eq!(r2.files_noop, 1);
+    assert_eq!(r2.ops_emitted, 0);
+}
+
+#[test]
 fn second_ingest_is_noop_when_file_unchanged() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.md"), "stable").unwrap();

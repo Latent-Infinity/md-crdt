@@ -241,6 +241,60 @@ fn nested_paragraph_in_blockquote_converges() {
 }
 
 #[test]
+fn nested_paragraph_in_list_item_converges() {
+    use md_crdt::core::Sequence;
+    use md_crdt::doc::{ListItem, block_id_from_op};
+    let mut a = CollaborativeDocument::new(1);
+    let mut b = CollaborativeDocument::new(2);
+
+    // Insert a list with one empty item (item id contiguous with the list block id).
+    let item_elem = OpId {
+        counter: 2,
+        peer: 1,
+    };
+    let items = Sequence::from_ordered(vec![(
+        item_elem,
+        ListItem {
+            id: block_id_from_op(item_elem),
+            elem_id: item_elem,
+            children: Sequence::new(),
+        },
+    )]);
+    a.insert_block(
+        None,
+        BlockKind::List {
+            ordered: false,
+            items,
+        },
+    )
+    .expect("list");
+    // Insert a paragraph into the list item, then edit it.
+    let para = a
+        .insert_paragraph_in(Some(item_elem), None, "task")
+        .expect("para in item");
+    a.insert_text(block_id_from_op(para), 4, "!").expect("edit");
+
+    exchange(&a, &mut b);
+
+    // Peer B reconstructs list → item → paragraph "task!".
+    let top = &b.document().blocks_in_order()[0];
+    let BlockKind::List { items, .. } = &top.kind else {
+        panic!("expected list");
+    };
+    let item = items.iter().next().expect("one item");
+    let child = item.children.iter().next().expect("item child");
+    match &child.kind {
+        BlockKind::Paragraph { text } => assert_eq!(paragraph_visible_string(text), "task!"),
+        _ => panic!("expected nested paragraph"),
+    }
+    assert_eq!(
+        a.document().serialize(EquivalenceMode::Structural),
+        b.document().serialize(EquivalenceMode::Structural)
+    );
+    assert_eq!(a.state_vector(), b.state_vector());
+}
+
+#[test]
 fn unit_mode_default_is_true() {
     let a = CollaborativeDocument::new(1);
     assert!(a.unit_mode());
