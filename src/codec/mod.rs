@@ -6,8 +6,8 @@
 mod wire;
 
 pub use wire::{
-    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, DocOp, Envelope, MAX_WIRE_NEST_DEPTH,
-    OpBody, TextUnitWire, WIRE_VERSION, insert_block_paragraph_is_empty,
+    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, DocOp, Envelope, ListItemSkeleton,
+    MAX_WIRE_NEST_DEPTH, OpBody, TextUnitWire, WIRE_VERSION, insert_block_paragraph_is_empty,
 };
 
 use thiserror::Error;

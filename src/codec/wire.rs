@@ -93,10 +93,37 @@ pub struct BlockSkeleton {
 /// unit-mode sessions require empty paragraph text (session-enforced).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockKindSkeleton {
-    Paragraph { text: String },
-    CodeFence { info: Option<String>, text: String },
-    BlockQuote { children: Vec<BlockSkeletonInsert> },
-    RawBlock { raw: String },
+    Paragraph {
+        text: String,
+    },
+    Heading {
+        level: u8,
+        text: String,
+    },
+    List {
+        ordered: bool,
+        items: Vec<ListItemSkeleton>,
+    },
+    CodeFence {
+        info: Option<String>,
+        text: String,
+    },
+    BlockQuote {
+        children: Vec<BlockSkeletonInsert>,
+    },
+    RawBlock {
+        raw: String,
+    },
+}
+
+/// Wire form of a list item (children are nested structure inserts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListItemSkeleton {
+    pub after: Option<OpId>,
+    pub id: OpId,
+    pub right_origin: Option<OpId>,
+    pub block_id: crate::doc::BlockId,
+    pub children: Vec<BlockSkeletonInsert>,
 }
 
 /// Nested block insert used inside blockquotes on the wire.
@@ -116,7 +143,9 @@ pub struct BlockSkeletonInsert {
 pub fn insert_block_paragraph_is_empty(envelope: &Envelope) -> bool {
     match &envelope.body {
         OpBody::Doc(DocOp::InsertBlock { block, .. }) => match &block.kind {
-            BlockKindSkeleton::Paragraph { text } => text.is_empty(),
+            BlockKindSkeleton::Paragraph { text } | BlockKindSkeleton::Heading { text, .. } => {
+                text.is_empty()
+            }
             _ => true,
         },
         OpBody::Doc(
@@ -150,7 +179,16 @@ fn check_kind_depth(kind: &BlockKindSkeleton, depth: u32) -> Result<(), super::C
             }
             Ok(())
         }
+        BlockKindSkeleton::List { items, .. } => {
+            for item in items {
+                for child in &item.children {
+                    check_kind_depth(&child.block.kind, depth + 1)?;
+                }
+            }
+            Ok(())
+        }
         BlockKindSkeleton::Paragraph { .. }
+        | BlockKindSkeleton::Heading { .. }
         | BlockKindSkeleton::CodeFence { .. }
         | BlockKindSkeleton::RawBlock { .. } => Ok(()),
     }

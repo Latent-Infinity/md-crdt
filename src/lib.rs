@@ -70,8 +70,8 @@ pub type RichMarkInterval = MarkInterval;
 // Re-export doc types
 pub use doc::{
     Block, BlockId, BlockKind, CellContent, ColumnAlignment, ColumnDef, Document, EditError,
-    EditOp, EquivalenceMode, InsertTextRun, Parser, RowId, SerializeConfig, Table, TableRow,
-    block_id_from_op,
+    EditOp, EquivalenceMode, InsertTextRun, ListItem, Parser, RowId, SerializeConfig, Table,
+    TableRow, block_id_from_op, block_text_seq, block_text_seq_mut,
 };
 
 // Re-export doc mark operations

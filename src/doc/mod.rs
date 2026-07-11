@@ -48,6 +48,17 @@ pub enum BlockKind {
     Paragraph {
         text: Sequence<TextUnit>,
     },
+    /// ATX or setext heading; body is grapheme units like a paragraph.
+    Heading {
+        /// 1–6
+        level: u8,
+        text: Sequence<TextUnit>,
+    },
+    /// Ordered or unordered list of items (items may nest further lists).
+    List {
+        ordered: bool,
+        items: Sequence<ListItem>,
+    },
     CodeFence {
         info: Option<String>,
         text: String,
@@ -63,12 +74,44 @@ pub enum BlockKind {
     },
 }
 
+/// One list item; children are typically paragraphs and nested lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListItem {
+    pub id: BlockId,
+    pub elem_id: OpId,
+    pub children: Sequence<Block>,
+}
+
 impl BlockKind {
     /// Paragraph from a string; unit OpIds start at `start` (peer + counter chain).
     pub fn paragraph(s: &str, start: OpId) -> Self {
         BlockKind::Paragraph {
             text: units_from_str_at(s, start),
         }
+    }
+
+    /// Heading from a string; unit OpIds start at `start`.
+    pub fn heading(level: u8, s: &str, start: OpId) -> Self {
+        BlockKind::Heading {
+            level: level.clamp(1, 6),
+            text: units_from_str_at(s, start),
+        }
+    }
+}
+
+/// Mutable access to a block's grapheme sequence when it is paragraph or heading text.
+pub fn block_text_seq_mut(kind: &mut BlockKind) -> Option<&mut Sequence<TextUnit>> {
+    match kind {
+        BlockKind::Paragraph { text } | BlockKind::Heading { text, .. } => Some(text),
+        _ => None,
+    }
+}
+
+/// Shared visible-string helper for paragraph/heading bodies.
+pub fn block_text_seq(kind: &BlockKind) -> Option<&Sequence<TextUnit>> {
+    match kind {
+        BlockKind::Paragraph { text } | BlockKind::Heading { text, .. } => Some(text),
+        _ => None,
     }
 }
 
@@ -441,7 +484,7 @@ impl Document {
         };
 
         let mut updated = block.clone();
-        let BlockKind::Paragraph { text: ref mut body } = updated.kind else {
+        let Some(body) = block_text_seq_mut(&mut updated.kind) else {
             return Err(EditError::InvalidOffset);
         };
 
@@ -486,7 +529,7 @@ impl Document {
                 };
 
                 let mut updated = block.clone();
-                let BlockKind::Paragraph { text: ref mut body } = updated.kind else {
+                let Some(body) = block_text_seq_mut(&mut updated.kind) else {
                     return Err(EditError::InvalidOffset);
                 };
 
@@ -619,11 +662,10 @@ impl Document {
             return Err(EditError::InvalidOffset);
         }
 
-        // Anchors are ordered by visible position, so pass the paragraph's element order.
-        let element_order = match &block.kind {
-            BlockKind::Paragraph { text } => paragraph_visible_ids(text),
-            _ => Vec::new(),
-        };
+        // Anchors are ordered by visible position, so pass the text body's element order.
+        let element_order = block_text_seq(&block.kind)
+            .map(paragraph_visible_ids)
+            .unwrap_or_default();
         let (new_intervals, _removed) = mark_ops::lower_remove_mark_range(
             &block.marks,
             interval_id,
@@ -688,7 +730,7 @@ impl Document {
             .into_iter()
             .find(|b| b.id == block_id)
             .ok_or(EditError::BlockNotFound)?;
-        let BlockKind::Paragraph { text } = &block.kind else {
+        let Some(text) = block_text_seq(&block.kind) else {
             return Err(EditError::InvalidOffset);
         };
         let order = paragraph_visible_ids(text);
@@ -881,6 +923,35 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
             continue;
         }
 
+        // ATX heading: # .. ######
+        if let Some((level, title)) = parse_atx_heading(trimmed) {
+            let elem_id = next_op_id(counter);
+            let text = units_from_str(title, counter, 0);
+            out.push(Block::new(BlockKind::Heading { level, text }, elem_id));
+            index += 1;
+            continue;
+        }
+
+        // Unordered / ordered list
+        if is_list_start(trimmed) {
+            let (list_block, next) = parse_list(lines, index, counter, indent_of(line));
+            out.push(list_block);
+            index = next;
+            continue;
+        }
+
+        // Setext heading: title line + === or ---
+        if index + 1 < lines.len()
+            && let Some(level) = parse_setext_underline(lines[index + 1].trim())
+        {
+            let title = trimmed;
+            let elem_id = next_op_id(counter);
+            let text = units_from_str(title, counter, 0);
+            out.push(Block::new(BlockKind::Heading { level, text }, elem_id));
+            index += 2;
+            continue;
+        }
+
         let mut paragraph_lines: Vec<&str> = Vec::new();
         let mut end_index = index;
         while end_index < lines.len() {
@@ -890,9 +961,13 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
                 || current_trimmed.starts_with("```")
                 || current_trimmed.starts_with('>')
                 || current_trimmed.starts_with(":::")
+                || parse_atx_heading(current_trimmed).is_some()
+                || is_list_start(current_trimmed)
             {
                 break;
             }
+            // Stop before a setext underline that would apply to a single prior line only
+            // (already handled above when starting a new block).
             paragraph_lines.push(current);
             end_index += 1;
         }
@@ -901,6 +976,206 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
         out.push(Block::new(BlockKind::Paragraph { text }, elem_id));
         index = end_index;
     }
+}
+
+fn indent_of(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+}
+
+fn parse_atx_heading(trimmed: &str) -> Option<(u8, &str)> {
+    let bytes = trimmed.as_bytes();
+    let mut level = 0u8;
+    while (level as usize) < bytes.len() && bytes[level as usize] == b'#' && level < 6 {
+        level += 1;
+    }
+    if level == 0 {
+        return None;
+    }
+    // Must not be a 7th #
+    if (level as usize) < bytes.len() && bytes[level as usize] == b'#' {
+        return None;
+    }
+    let rest = trimmed[level as usize..].trim_start();
+    // Strip optional trailing closing hashes
+    let rest = rest.trim_end_matches('#').trim_end();
+    Some((level, rest))
+}
+
+fn parse_setext_underline(trimmed: &str) -> Option<u8> {
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.chars().all(|c| c == '=') {
+        return Some(1);
+    }
+    if trimmed.chars().all(|c| c == '-') {
+        return Some(2);
+    }
+    None
+}
+
+fn is_list_start(trimmed: &str) -> bool {
+    unordered_marker(trimmed).is_some() || ordered_marker(trimmed).is_some()
+}
+
+fn unordered_marker(trimmed: &str) -> Option<&str> {
+    for pref in ["- ", "* ", "+ "] {
+        if let Some(rest) = trimmed.strip_prefix(pref) {
+            return Some(rest);
+        }
+    }
+    if matches!(trimmed, "-" | "*" | "+") {
+        return Some("");
+    }
+    None
+}
+
+fn ordered_marker(trimmed: &str) -> Option<(u32, &str)> {
+    let mut i = 0usize;
+    let bytes = trimmed.as_bytes();
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == 0 || i > 9 {
+        return None;
+    }
+    let num: u32 = trimmed[..i].parse().ok()?;
+    let rest = &trimmed[i..];
+    if let Some(r) = rest.strip_prefix(". ") {
+        return Some((num, r));
+    }
+    if rest == "." {
+        return Some((num, ""));
+    }
+    None
+}
+
+/// Parse a list starting at `index` with items at `base_indent` or greater content indent.
+fn parse_list(
+    lines: &[&str],
+    index: usize,
+    counter: &mut u64,
+    base_indent: usize,
+) -> (Block, usize) {
+    let first_trim = lines[index].trim();
+    let ordered = ordered_marker(first_trim).is_some();
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut i = index;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let ind = indent_of(line);
+        if ind < base_indent && !line.trim().is_empty() {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            // Blank line inside list: peek if more list content follows
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim().is_empty() {
+                j += 1;
+            }
+            if j >= lines.len() {
+                break;
+            }
+            let next_ind = indent_of(lines[j]);
+            let next_trim = lines[j].trim();
+            if next_ind >= base_indent && (is_list_start(next_trim) || next_ind > base_indent) {
+                i += 1;
+                continue;
+            }
+            break;
+        }
+
+        let marker_body = if ordered {
+            ordered_marker(trimmed).map(|(_, b)| b)
+        } else {
+            unordered_marker(trimmed)
+        };
+        let Some(body) = marker_body else {
+            break;
+        };
+        if ind > base_indent {
+            // Nested list belongs to previous item
+            break;
+        }
+        if ind < base_indent {
+            break;
+        }
+
+        let item_elem = next_op_id(counter);
+        let mut children = Vec::new();
+        // First paragraph of the item
+        let mut para_lines = vec![body];
+        i += 1;
+
+        // Continuation lines for this item
+        while i < lines.len() {
+            let cl = lines[i];
+            let cind = indent_of(cl);
+            let ctrim = cl.trim();
+            if ctrim.is_empty() {
+                // Look ahead for continuation or nested list
+                let mut j = i + 1;
+                while j < lines.len() && lines[j].trim().is_empty() {
+                    j += 1;
+                }
+                if j < lines.len() && indent_of(lines[j]) > base_indent {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            if cind > base_indent && is_list_start(ctrim) {
+                // Nested list
+                if !para_lines.is_empty() {
+                    let joined = para_lines.join("\n");
+                    let eid = next_op_id(counter);
+                    let text = units_from_str(&joined, counter, 0);
+                    children.push(Block::new(BlockKind::Paragraph { text }, eid));
+                    para_lines.clear();
+                }
+                let (nested, next) = parse_list(lines, i, counter, cind);
+                children.push(nested);
+                i = next;
+                continue;
+            }
+            if cind > base_indent {
+                // Continued paragraph in item (indented)
+                para_lines.push(ctrim);
+                i += 1;
+                continue;
+            }
+            // Same indent: new list item or end
+            break;
+        }
+
+        if !para_lines.is_empty() {
+            let joined = para_lines.join("\n");
+            let eid = next_op_id(counter);
+            let text = units_from_str(&joined, counter, 0);
+            children.push(Block::new(BlockKind::Paragraph { text }, eid));
+        }
+
+        let child_seq =
+            Sequence::from_ordered(children.into_iter().map(|b| (b.elem_id, b)).collect());
+        items.push(ListItem {
+            id: block_id_from_op(item_elem),
+            elem_id: item_elem,
+            children: child_seq,
+        });
+    }
+
+    let list_elem = next_op_id(counter);
+    let items_seq = Sequence::from_ordered(items.into_iter().map(|it| (it.elem_id, it)).collect());
+    let block = Block::new(
+        BlockKind::List {
+            ordered,
+            items: items_seq,
+        },
+        list_elem,
+    );
+    (block, i)
 }
 
 fn next_op_id(counter: &mut u64) -> OpId {
@@ -915,6 +1190,11 @@ fn next_op_id(counter: &mut u64) -> OpId {
 fn serialize_block(block: &Block) -> String {
     match &block.kind {
         BlockKind::Paragraph { text } => paragraph_visible_string(text),
+        BlockKind::Heading { level, text } => {
+            let hashes = "#".repeat((*level).clamp(1, 6) as usize);
+            format!("{} {}", hashes, paragraph_visible_string(text))
+        }
+        BlockKind::List { ordered, items } => serialize_list(*ordered, items, 0),
         BlockKind::CodeFence { info, text } => {
             let mut output = String::from("```");
             if let Some(info) = info {
@@ -954,6 +1234,64 @@ fn serialize_block(block: &Block) -> String {
         BlockKind::RawBlock { raw } => raw.clone(),
         BlockKind::Table { table } => serialize_table(table),
     }
+}
+
+fn serialize_list(ordered: bool, items: &Sequence<ListItem>, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    let mut lines = Vec::new();
+    for (n, item) in items.iter_asc().enumerate() {
+        let marker = if ordered {
+            format!("{}. ", n + 1)
+        } else {
+            "- ".to_string()
+        };
+        let children: Vec<_> = item.children.iter_asc().collect();
+        if children.is_empty() {
+            lines.push(format!("{pad}{marker}"));
+            continue;
+        }
+        for (ci, child) in children.iter().enumerate() {
+            match &child.kind {
+                BlockKind::Paragraph { text } => {
+                    let body = paragraph_visible_string(text);
+                    if ci == 0 {
+                        lines.push(format!("{pad}{marker}{body}"));
+                    } else {
+                        // Loose list continuation paragraph
+                        lines.push(String::new());
+                        for bline in body.lines() {
+                            lines.push(format!("{pad}  {bline}"));
+                        }
+                    }
+                }
+                BlockKind::List {
+                    ordered: o2,
+                    items: nested,
+                } => {
+                    let nested_s = serialize_list(*o2, nested, indent + 2);
+                    lines.push(nested_s);
+                }
+                other => {
+                    let s = serialize_block(child);
+                    if ci == 0 {
+                        // first child non-paragraph: put after marker
+                        let first = s.lines().next().unwrap_or("");
+                        lines.push(format!("{pad}{marker}{first}"));
+                        for bline in s.lines().skip(1) {
+                            lines.push(format!("{pad}  {bline}"));
+                        }
+                    } else {
+                        lines.push(String::new());
+                        for bline in s.lines() {
+                            lines.push(format!("{pad}  {bline}"));
+                        }
+                    }
+                    let _ = other;
+                }
+            }
+        }
+    }
+    lines.join("\n")
 }
 
 fn serialize_table(table: &Table) -> String {

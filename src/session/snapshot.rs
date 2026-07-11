@@ -85,6 +85,17 @@ pub enum BlockKindDto {
         #[serde(default, rename = "text", skip_serializing_if = "Option::is_none")]
         legacy_text: Option<String>,
     },
+    Heading {
+        level: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        units: Option<Vec<ElementDto<TextUnitDto>>>,
+        #[serde(default, rename = "text", skip_serializing_if = "Option::is_none")]
+        legacy_text: Option<String>,
+    },
+    List {
+        ordered: bool,
+        items: Vec<ElementDto<ListItemDto>>,
+    },
     CodeFence {
         info: Option<String>,
         text: String,
@@ -98,6 +109,13 @@ pub enum BlockKindDto {
     Table {
         table: TableDto,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListItemDto {
+    pub id: BlockId,
+    pub elem_id: OpId,
+    pub children: Vec<ElementDto<BlockDto>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,6 +301,17 @@ fn kind_to_dto(kind: &BlockKind) -> BlockKindDto {
             })),
             legacy_text: None,
         },
+        BlockKind::Heading { level, text } => BlockKindDto::Heading {
+            level: *level,
+            units: Some(sequence_to_elements(text, |u| TextUnitDto {
+                grapheme: u.grapheme.clone(),
+            })),
+            legacy_text: None,
+        },
+        BlockKind::List { ordered, items } => BlockKindDto::List {
+            ordered: *ordered,
+            items: sequence_to_elements(items, list_item_to_dto),
+        },
         BlockKind::CodeFence { info, text } => BlockKindDto::CodeFence {
             info: info.clone(),
             text: text.clone(),
@@ -294,6 +323,14 @@ fn kind_to_dto(kind: &BlockKind) -> BlockKindDto {
         BlockKind::Table { table } => BlockKindDto::Table {
             table: table_to_dto(table),
         },
+    }
+}
+
+fn list_item_to_dto(item: &crate::doc::ListItem) -> ListItemDto {
+    ListItemDto {
+        id: item.id,
+        elem_id: item.elem_id,
+        children: sequence_to_elements(&item.children, block_to_dto),
     }
 }
 
@@ -312,6 +349,27 @@ fn kind_from_dto(kind: BlockKindDto) -> BlockKind {
             };
             BlockKind::Paragraph { text: seq }
         }
+        BlockKindDto::Heading {
+            level,
+            units,
+            legacy_text,
+        } => {
+            let seq = if let Some(units) = units {
+                sequence_from_elements(units, |u| TextUnit {
+                    grapheme: u.grapheme,
+                })
+            } else if let Some(s) = legacy_text {
+                let mut c = 1u64;
+                units_from_str(&s, &mut c, 0)
+            } else {
+                Sequence::new()
+            };
+            BlockKind::Heading { level, text: seq }
+        }
+        BlockKindDto::List { ordered, items } => BlockKind::List {
+            ordered,
+            items: sequence_from_elements(items, list_item_from_dto),
+        },
         BlockKindDto::CodeFence { info, text } => BlockKind::CodeFence { info, text },
         BlockKindDto::RawBlock { raw } => BlockKind::RawBlock { raw },
         BlockKindDto::BlockQuote { children } => BlockKind::BlockQuote {
@@ -320,6 +378,14 @@ fn kind_from_dto(kind: BlockKindDto) -> BlockKind {
         BlockKindDto::Table { table } => BlockKind::Table {
             table: table_from_dto(table),
         },
+    }
+}
+
+fn list_item_from_dto(dto: ListItemDto) -> crate::doc::ListItem {
+    crate::doc::ListItem {
+        id: dto.id,
+        elem_id: dto.elem_id,
+        children: sequence_from_elements(dto.children, block_from_dto),
     }
 }
 

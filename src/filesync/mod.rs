@@ -426,6 +426,22 @@ fn collect_parsed_blocks(
 pub(crate) fn block_content(kind: &BlockKind) -> String {
     match kind {
         BlockKind::Paragraph { text } => format!("p:{}", paragraph_visible_string(text)),
+        BlockKind::Heading { level, text } => {
+            format!("h{}:{}", level, paragraph_visible_string(text))
+        }
+        BlockKind::List { ordered, items } => {
+            let parts: Vec<String> = items
+                .iter_asc()
+                .map(|item| {
+                    item.children
+                        .iter_asc()
+                        .map(|b| block_content(&b.kind))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .collect();
+            format!("list:{}:{}", ordered, parts.join("|"))
+        }
         BlockKind::CodeFence { info, text } => format!("code:{:?}:{}", info, text),
         BlockKind::RawBlock { raw } => format!("raw:{}", raw),
         BlockKind::BlockQuote { children } => {

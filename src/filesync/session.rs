@@ -560,6 +560,43 @@ fn insert_one(
                 .map_err(session_err)?;
             Ok((id, n))
         }
+        BlockKind::Heading { level, text } => {
+            // Insert heading skeleton with body via insert_block + insert_text when non-empty.
+            let body = paragraph_visible_string(text);
+            let id = session
+                .insert_block_in(
+                    parent,
+                    after,
+                    BlockKind::Heading {
+                        level: *level,
+                        text: Sequence::new(),
+                    },
+                )
+                .map_err(session_err)?;
+            let mut n = 1;
+            if !body.is_empty() {
+                let bid = crate::doc::block_id_from_op(id);
+                session.insert_text(bid, 0, &body).map_err(session_err)?;
+                n += 1;
+            }
+            Ok((id, n))
+        }
+        BlockKind::List { ordered, items } => {
+            // Insert empty list then items as nested structure via recursive tree.
+            // For MVP ingest: flatten list to sequential insert of the List block
+            // with items reconstructed from parse (full children sequences on skeleton).
+            let id = session
+                .insert_block_in(
+                    parent,
+                    after,
+                    BlockKind::List {
+                        ordered: *ordered,
+                        items: items.clone(),
+                    },
+                )
+                .map_err(session_err)?;
+            Ok((id, 1))
+        }
         BlockKind::CodeFence { info, text } => {
             let id = session
                 .insert_block_in(

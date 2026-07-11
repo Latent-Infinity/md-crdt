@@ -10,14 +10,15 @@ pub use snapshot::{
 };
 
 use crate::codec::{
-    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, DocOp, Envelope, JsonOpCodec, OpBody,
-    OpCodec, TextUnitWire, WIRE_VERSION, insert_block_paragraph_is_empty,
+    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, DocOp, Envelope, JsonOpCodec,
+    ListItemSkeleton, OpBody, OpCodec, TextUnitWire, WIRE_VERSION, insert_block_paragraph_is_empty,
 };
 use crate::core::mark::MarkSet;
 use crate::core::{OpId, PeerId, Sequence, SequenceOp, StateVector};
 use crate::doc::{
-    Block, BlockId, BlockKind, Document, TextUnit, after_for_grapheme_offset, block_id_from_op,
-    grapheme_count, paragraph_visible_ids, paragraph_visible_string, units_from_str,
+    Block, BlockId, BlockKind, Document, ListItem, TextUnit, after_for_grapheme_offset,
+    block_id_from_op, grapheme_count, paragraph_visible_ids, paragraph_visible_string,
+    units_from_str,
 };
 use crate::sync::{
     ChangeMessage, IntegrateResult, Operation, SyncState, ValidationError, ValidationLimits,
@@ -298,7 +299,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 .find_block_by_id(block_id)
                 .ok_or(SessionError::BlockNotFound)?;
             let block_elem = block.elem_id;
-            let BlockKind::Paragraph { text: body } = &block.kind else {
+            let Some(body) = crate::doc::block_text_seq(&block.kind) else {
                 return Err(SessionError::NotParagraph);
             };
             if grapheme_offset > body.len_visible() {
@@ -371,7 +372,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 .find_block_by_id(block_id)
                 .ok_or(SessionError::BlockNotFound)?;
             let block_elem = block.elem_id;
-            let BlockKind::Paragraph { text: body } = &block.kind else {
+            let Some(body) = crate::doc::block_text_seq(&block.kind) else {
                 return Err(SessionError::NotParagraph);
             };
             let ids = paragraph_visible_ids(body);
@@ -682,7 +683,7 @@ fn operation_extent(env: &Envelope) -> (OpId, u64) {
 /// `parent`. A paragraph seeds units at `parent.counter + 1 ..= parent.counter + G`.
 fn max_counter_in_kind(kind: &BlockKindSkeleton, parent: OpId) -> u64 {
     match kind {
-        BlockKindSkeleton::Paragraph { text } => {
+        BlockKindSkeleton::Paragraph { text } | BlockKindSkeleton::Heading { text, .. } => {
             parent.counter.saturating_add(grapheme_count(text) as u64)
         }
         BlockKindSkeleton::BlockQuote { children } => {
@@ -691,6 +692,18 @@ fn max_counter_in_kind(kind: &BlockKindSkeleton, parent: OpId) -> u64 {
                 hi = hi
                     .max(child.id.counter)
                     .max(max_counter_in_kind(&child.block.kind, child.id));
+            }
+            hi
+        }
+        BlockKindSkeleton::List { items, .. } => {
+            let mut hi = parent.counter;
+            for item in items {
+                hi = hi.max(item.id.counter);
+                for child in &item.children {
+                    hi = hi
+                        .max(child.id.counter)
+                        .max(max_counter_in_kind(&child.block.kind, child.id));
+                }
             }
             hi
         }
@@ -729,13 +742,29 @@ fn check_peer_consistency(op: &Operation, env: &Envelope) -> Result<(), SessionE
 }
 
 fn check_kind_peers(peer: PeerId, kind: &BlockKindSkeleton) -> Result<(), SessionError> {
-    if let BlockKindSkeleton::BlockQuote { children } = kind {
-        for child in children {
-            if child.id.peer != peer {
-                return Err(SessionError::PeerMismatch);
+    match kind {
+        BlockKindSkeleton::BlockQuote { children } => {
+            for child in children {
+                if child.id.peer != peer {
+                    return Err(SessionError::PeerMismatch);
+                }
+                check_kind_peers(peer, &child.block.kind)?;
             }
-            check_kind_peers(peer, &child.block.kind)?;
         }
+        BlockKindSkeleton::List { items, .. } => {
+            for item in items {
+                if item.id.peer != peer {
+                    return Err(SessionError::PeerMismatch);
+                }
+                for child in &item.children {
+                    if child.id.peer != peer {
+                        return Err(SessionError::PeerMismatch);
+                    }
+                    check_kind_peers(peer, &child.block.kind)?;
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -752,6 +781,46 @@ fn block_kind_to_skeleton(
                 paragraph_visible_string(text)
             },
         }),
+        BlockKind::Heading { level, text } => Ok(BlockKindSkeleton::Heading {
+            level: *level,
+            text: if unit_mode {
+                String::new()
+            } else {
+                paragraph_visible_string(text)
+            },
+        }),
+        BlockKind::List { ordered, items } => {
+            let mut wire_items = Vec::new();
+            for elem in items.iter_all() {
+                if let Some(item) = elem.value.as_ref() {
+                    let mut children = Vec::new();
+                    for ce in item.children.iter_all() {
+                        if let Some(child) = ce.value.as_ref() {
+                            children.push(BlockSkeletonInsert {
+                                after: ce.after,
+                                id: ce.id,
+                                right_origin: ce.right_origin,
+                                block: BlockSkeleton {
+                                    block_id: child.id,
+                                    kind: block_kind_to_skeleton(&child.kind, unit_mode)?,
+                                },
+                            });
+                        }
+                    }
+                    wire_items.push(ListItemSkeleton {
+                        after: elem.after,
+                        id: elem.id,
+                        right_origin: elem.right_origin,
+                        block_id: item.id,
+                        children,
+                    });
+                }
+            }
+            Ok(BlockKindSkeleton::List {
+                ordered: *ordered,
+                items: wire_items,
+            })
+        }
         BlockKind::CodeFence { info, text } => Ok(BlockKindSkeleton::CodeFence {
             info: info.clone(),
             text: text.clone(),
@@ -803,7 +872,7 @@ fn apply_envelope_to_document(document: &mut Document, envelope: &Envelope) {
         }) => {
             // block_elem may be nested inside a blockquote; search the whole tree.
             let _ = document.with_block_mut(*block_elem, |block| {
-                let BlockKind::Paragraph { text: body } = &mut block.kind else {
+                let Some(body) = crate::doc::block_text_seq_mut(&mut block.kind) else {
                     return;
                 };
                 for u in units {
@@ -825,7 +894,7 @@ fn apply_envelope_to_document(document: &mut Document, envelope: &Envelope) {
             ..
         }) => {
             let _ = document.with_block_mut(*block_elem, |block| {
-                let BlockKind::Paragraph { text: body } = &mut block.kind else {
+                let Some(body) = crate::doc::block_text_seq_mut(&mut block.kind) else {
                     return;
                 };
                 for target in targets {
@@ -855,6 +924,48 @@ fn kind_from_skeleton(kind: &BlockKindSkeleton, parent_elem: OpId) -> BlockKind 
             let mut counter = parent_elem.counter.saturating_add(1);
             BlockKind::Paragraph {
                 text: units_from_str(text, &mut counter, parent_elem.peer),
+            }
+        }
+        BlockKindSkeleton::Heading { level, text } => {
+            let mut counter = parent_elem.counter.saturating_add(1);
+            BlockKind::Heading {
+                level: *level,
+                text: units_from_str(text, &mut counter, parent_elem.peer),
+            }
+        }
+        BlockKindSkeleton::List { ordered, items } => {
+            let mut seq = Sequence::new();
+            for item in items {
+                let mut child_seq = Sequence::new();
+                for child in &item.children {
+                    let block = Block {
+                        id: child.block.block_id,
+                        elem_id: child.id,
+                        kind: kind_from_skeleton(&child.block.kind, child.id),
+                        marks: MarkSet::new(),
+                    };
+                    child_seq.apply(SequenceOp::Insert {
+                        after: child.after,
+                        id: child.id,
+                        value: block,
+                        right_origin: child.right_origin,
+                    });
+                }
+                let list_item = ListItem {
+                    id: item.block_id,
+                    elem_id: item.id,
+                    children: child_seq,
+                };
+                seq.apply(SequenceOp::Insert {
+                    after: item.after,
+                    id: item.id,
+                    value: list_item,
+                    right_origin: item.right_origin,
+                });
+            }
+            BlockKind::List {
+                ordered: *ordered,
+                items: seq,
             }
         }
         BlockKindSkeleton::CodeFence { info, text } => BlockKind::CodeFence {
