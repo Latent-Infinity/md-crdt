@@ -3,7 +3,9 @@
 //! This module provides a block-based document model for markdown content,
 //! with support for collaborative editing operations.
 
-use crate::core::{MarkInterval, MarkSet, OpId, Sequence, TextAnchor};
+use crate::core::mark::{Anchor, MarkIntervalId, MarkKind, MarkSet, MarkValue};
+use crate::core::{OpId, Sequence, StateVector};
+use std::collections::BTreeMap;
 use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
@@ -37,7 +39,7 @@ pub struct Block {
     pub id: BlockId,
     pub elem_id: OpId,
     pub kind: BlockKind,
-    pub marks: MarkSet<String, String>,
+    pub marks: MarkSet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,12 +215,22 @@ pub struct InsertTextRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditOp {
     InsertText(InsertTextRun),
-    AddMark {
-        interval: MarkInterval<String, String>,
+    /// Apply a rich mark interval on a block (anchors are text-unit OpIds).
+    SetMark {
+        block_id: BlockId,
+        interval_id: MarkIntervalId,
+        kind: MarkKind,
+        start: Anchor,
+        end: Anchor,
+        attrs: BTreeMap<String, MarkValue>,
+        op_id: OpId,
     },
+    /// Causal remove of a mark interval (optional range split emits follow-up SetMarks).
     RemoveMark {
-        add_id: OpId,
-        remove_id: OpId,
+        block_id: BlockId,
+        interval_id: MarkIntervalId,
+        observed: StateVector,
+        op_id: OpId,
     },
 }
 
@@ -346,53 +358,97 @@ impl Document {
                 self.clear_raw_source();
                 Ok(())
             }
-            EditOp::AddMark { interval } => {
-                // Only clone and update the target block with matching elem_id
-                let target_elem_id = interval.id;
-                if let Some(existing) = self.blocks.get_element(&target_elem_id)
-                    && let Some(block) = existing.value.as_ref()
-                {
-                    let mut updated = block.clone();
-                    updated.marks.add(interval);
-                    self.blocks.update_value(target_elem_id, updated);
-                }
+            EditOp::SetMark {
+                block_id,
+                interval_id,
+                kind,
+                start,
+                end,
+                attrs,
+                op_id,
+            } => {
+                let elem_id = self
+                    .blocks
+                    .iter_asc()
+                    .find(|block| block.id == block_id)
+                    .map(|block| block.elem_id)
+                    .ok_or(EditError::BlockNotFound)?;
+                let Some(existing) = self.blocks.get_element(&elem_id) else {
+                    return Err(EditError::BlockNotFound);
+                };
+                let Some(block) = existing.value.as_ref() else {
+                    return Err(EditError::BlockNotFound);
+                };
+                let mut updated = block.clone();
+                updated
+                    .marks
+                    .set_mark(interval_id, kind, start, end, attrs, op_id);
+                self.blocks.update_value(elem_id, updated);
                 self.clear_raw_source();
                 Ok(())
             }
-            EditOp::RemoveMark { add_id, remove_id } => {
-                // Only clone and update blocks that actually have the mark
-                // Collect elem_ids first to avoid borrow conflict
-                let elem_ids_with_mark: Vec<_> = self
+            EditOp::RemoveMark {
+                block_id,
+                interval_id,
+                observed,
+                op_id,
+            } => {
+                let elem_id = self
                     .blocks
                     .iter_asc()
-                    .filter(|block| block.marks.interval(&add_id).is_some())
+                    .find(|block| block.id == block_id)
                     .map(|block| block.elem_id)
-                    .collect();
-
-                for elem_id in elem_ids_with_mark {
-                    if let Some(existing) = self.blocks.get_element(&elem_id)
-                        && let Some(block) = existing.value.as_ref()
-                    {
-                        let mut updated = block.clone();
-                        updated.marks.remove(add_id, remove_id);
-                        self.blocks.update_value(elem_id, updated);
-                    }
-                }
+                    .ok_or(EditError::BlockNotFound)?;
+                let Some(existing) = self.blocks.get_element(&elem_id) else {
+                    return Err(EditError::BlockNotFound);
+                };
+                let Some(block) = existing.value.as_ref() else {
+                    return Err(EditError::BlockNotFound);
+                };
+                let mut updated = block.clone();
+                updated.marks.remove_mark(interval_id, observed, op_id);
+                self.blocks.update_value(elem_id, updated);
                 self.clear_raw_source();
                 Ok(())
             }
         }
     }
 
+    /// Set a mark on a block's text units (anchors are unit OpIds).
+    #[allow(clippy::too_many_arguments)] // mirrors MarkSet::set_mark fields
+    pub fn set_mark(
+        &mut self,
+        block_id: BlockId,
+        interval_id: MarkIntervalId,
+        kind: MarkKind,
+        start: Anchor,
+        end: Anchor,
+        attrs: BTreeMap<String, MarkValue>,
+        op_id: OpId,
+    ) -> Result<Vec<EditOp>, EditError> {
+        let op = EditOp::SetMark {
+            block_id,
+            interval_id,
+            kind,
+            start,
+            end,
+            attrs,
+            op_id,
+        };
+        self.raw_apply_op(op.clone(), false)?;
+        Ok(vec![op])
+    }
+
+    /// Remove (or range-split) a mark. Range split uses [`mark_ops::lower_remove_mark_range`].
     pub fn remove_mark(
         &mut self,
         block_id: BlockId,
-        add_id: OpId,
+        interval_id: MarkIntervalId,
         remove_id: OpId,
-        remove_start: TextAnchor,
-        remove_end: TextAnchor,
+        observed: StateVector,
+        remove_start: Anchor,
+        remove_end: Anchor,
     ) -> Result<Vec<EditOp>, EditError> {
-        // Find block's elem_id by block_id
         let elem_id = self
             .blocks
             .iter_asc()
@@ -400,7 +456,6 @@ impl Document {
             .map(|block| block.elem_id)
             .ok_or(EditError::BlockNotFound)?;
 
-        // Get element via O(1) lookup and clone block for modification
         let Some(existing) = self.blocks.get_element(&elem_id) else {
             return Err(EditError::BlockNotFound);
         };
@@ -408,45 +463,84 @@ impl Document {
             return Err(EditError::BlockNotFound);
         };
 
-        let Some(interval) = block.marks.interval(&add_id).cloned() else {
+        if block.marks.interval(&interval_id).is_none() {
             return Err(EditError::InvalidOffset);
+        }
+
+        // Anchors are ordered by visible position, so pass the paragraph's element order.
+        let element_order = match &block.kind {
+            BlockKind::Paragraph { text } => paragraph_visible_ids(text),
+            _ => Vec::new(),
         };
+        let (new_intervals, _removed) = mark_ops::lower_remove_mark_range(
+            &block.marks,
+            interval_id,
+            remove_start,
+            remove_end,
+            OpId {
+                counter: remove_id.counter.saturating_add(1),
+                peer: remove_id.peer,
+            },
+            &element_order,
+        );
 
         let mut updated = block.clone();
         let mut ops = Vec::new();
-        updated.marks.remove(add_id, remove_id);
-        ops.push(EditOp::RemoveMark { add_id, remove_id });
+        updated
+            .marks
+            .remove_mark(interval_id, observed.clone(), remove_id);
+        ops.push(EditOp::RemoveMark {
+            block_id,
+            interval_id,
+            observed,
+            op_id: remove_id,
+        });
 
-        let left_needed = remove_start > interval.start;
-        let right_needed = remove_end < interval.end;
-
-        if left_needed {
-            let left_id = OpId {
-                counter: add_id.counter + 1,
-                peer: add_id.peer,
-            };
-            let mut left = MarkInterval::new(left_id, interval.start, remove_start);
-            left.attributes = interval.attributes.clone();
-            updated.marks.add(left.clone());
-            ops.push(EditOp::AddMark { interval: left });
+        for interval in new_intervals {
+            let attrs: BTreeMap<String, MarkValue> = interval
+                .attrs
+                .iter()
+                .map(|(k, reg)| (k.clone(), reg.get()))
+                .collect();
+            updated.marks.set_mark(
+                interval.id,
+                interval.kind.clone(),
+                interval.start,
+                interval.end,
+                attrs.clone(),
+                interval.op_id,
+            );
+            ops.push(EditOp::SetMark {
+                block_id,
+                interval_id: interval.id,
+                kind: interval.kind,
+                start: interval.start,
+                end: interval.end,
+                attrs,
+                op_id: interval.op_id,
+            });
         }
 
-        if right_needed {
-            let right_id = OpId {
-                counter: add_id.counter + 2,
-                peer: add_id.peer,
-            };
-            let mut right = MarkInterval::new(right_id, remove_end, interval.end);
-            right.attributes = interval.attributes.clone();
-            updated.marks.add(right.clone());
-            ops.push(EditOp::AddMark { interval: right });
-        }
-
-        // O(1) update instead of O(n) sequence rebuild
         self.blocks.update_value(elem_id, updated);
         self.clear_raw_source();
-
         Ok(ops)
+    }
+
+    /// Render mark spans over a paragraph block using visible text-unit order.
+    pub fn render_paragraph_spans(
+        &self,
+        block_id: BlockId,
+    ) -> Result<Vec<crate::core::mark::Span>, EditError> {
+        let block = self
+            .blocks_in_order()
+            .into_iter()
+            .find(|b| b.id == block_id)
+            .ok_or(EditError::BlockNotFound)?;
+        let BlockKind::Paragraph { text } = &block.kind else {
+            return Err(EditError::InvalidOffset);
+        };
+        let order = paragraph_visible_ids(text);
+        Ok(block.marks.render_spans(&order, order.len()))
     }
 
     pub fn serialize(&self, mode: EquivalenceMode) -> String {
@@ -816,7 +910,7 @@ fn normalize_structural(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::mark::{Anchor, AnchorBias, MarkKind, MarkSet as RichMarkSet, MarkValue};
+    use crate::core::mark::{Anchor, AnchorBias, MarkKind, MarkSet, MarkValue};
     use std::collections::BTreeMap;
 
     #[test]
@@ -963,56 +1057,117 @@ mod tests {
                 peer: 0,
             },
         );
-        let interval = MarkInterval::new(
-            OpId {
-                counter: 10,
-                peer: 0,
-            },
-            TextAnchor {
-                op_id: OpId {
+        // Units for "Hello" are counters 1..5 peer 0.
+        let mark_id = OpId {
+            counter: 10,
+            peer: 0,
+        };
+        block.marks.set_mark(
+            mark_id,
+            MarkKind::Bold,
+            Anchor {
+                elem_id: OpId {
                     counter: 1,
                     peer: 0,
                 },
+                bias: AnchorBias::Before,
             },
-            TextAnchor {
-                op_id: OpId {
+            Anchor {
+                elem_id: OpId {
                     counter: 5,
                     peer: 0,
                 },
+                bias: AnchorBias::After,
             },
+            BTreeMap::new(),
+            mark_id,
         );
-        block.marks.add(interval.clone());
         let block_id = block.id;
         doc.blocks.apply_op((block.elem_id, block));
 
         let ops = doc
             .remove_mark(
                 block_id,
-                interval.id,
+                mark_id,
                 OpId {
                     counter: 20,
                     peer: 0,
                 },
-                TextAnchor {
-                    op_id: OpId {
+                StateVector::new(),
+                Anchor {
+                    elem_id: OpId {
                         counter: 2,
                         peer: 0,
                     },
+                    bias: AnchorBias::Before,
                 },
-                TextAnchor {
-                    op_id: OpId {
+                Anchor {
+                    elem_id: OpId {
                         counter: 4,
                         peer: 0,
                     },
+                    bias: AnchorBias::After,
                 },
             )
             .unwrap();
 
-        let add_ops = ops
+        let set_ops = ops
             .iter()
-            .filter(|op| matches!(op, EditOp::AddMark { .. }))
+            .filter(|op| matches!(op, EditOp::SetMark { .. }))
             .count();
-        assert_eq!(add_ops, 2, "Expected split into two add ops");
+        assert_eq!(set_ops, 2, "Expected split into two SetMark ops");
+        assert!(matches!(ops[0], EditOp::RemoveMark { .. }));
+    }
+
+    #[test]
+    fn test_render_spans_over_paragraph_units() {
+        let mut doc = Document::new();
+        let mut block = Block::new(
+            BlockKind::paragraph(
+                "abc",
+                OpId {
+                    counter: 1,
+                    peer: 0,
+                },
+            ),
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let mark_id = OpId {
+            counter: 50,
+            peer: 0,
+        };
+        // Bold on middle unit "b" (counter 2).
+        block.marks.set_mark(
+            mark_id,
+            MarkKind::Bold,
+            Anchor {
+                elem_id: OpId {
+                    counter: 2,
+                    peer: 0,
+                },
+                bias: AnchorBias::Before,
+            },
+            Anchor {
+                elem_id: OpId {
+                    counter: 2,
+                    peer: 0,
+                },
+                bias: AnchorBias::After,
+            },
+            BTreeMap::new(),
+            mark_id,
+        );
+        let block_id = block.id;
+        doc.blocks.apply_op((block.elem_id, block));
+
+        let spans = doc.render_paragraph_spans(block_id).unwrap();
+        assert_eq!(spans.len(), 3);
+        assert!(spans[0].marks.is_empty());
+        assert_eq!(spans[1].marks, vec![mark_id]);
+        assert!(spans[2].marks.is_empty());
     }
 
     #[test]
@@ -1058,7 +1213,7 @@ mod tests {
 
     #[test]
     fn test_insert_text_run_mark_expansion() {
-        let mut set = RichMarkSet::new();
+        let mut set = MarkSet::new();
         let id = OpId {
             counter: 1,
             peer: 1,
@@ -1109,7 +1264,7 @@ mod tests {
 
     #[test]
     fn test_insert_text_run_no_expand() {
-        let set = RichMarkSet::new();
+        let set = MarkSet::new();
         let order = vec![OpId {
             counter: 1,
             peer: 1,
@@ -1132,7 +1287,7 @@ mod tests {
 
     #[test]
     fn test_remove_mark_range_splits_interval() {
-        let mut set = RichMarkSet::new();
+        let mut set = MarkSet::new();
         let id = OpId {
             counter: 1,
             peer: 1,
@@ -1174,6 +1329,20 @@ mod tests {
                 counter: 10,
                 peer: 1,
             },
+            &[
+                OpId {
+                    counter: 1,
+                    peer: 1,
+                },
+                OpId {
+                    counter: 2,
+                    peer: 1,
+                },
+                OpId {
+                    counter: 3,
+                    peer: 1,
+                },
+            ],
         );
         assert_eq!(removed, vec![id]);
         assert_eq!(new_intervals.len(), 2);
@@ -1181,7 +1350,7 @@ mod tests {
 
     #[test]
     fn test_remove_mark_range_full() {
-        let mut set = RichMarkSet::new();
+        let mut set = MarkSet::new();
         let id = OpId {
             counter: 1,
             peer: 1,
@@ -1211,8 +1380,80 @@ mod tests {
                 counter: 10,
                 peer: 1,
             },
+            &[
+                OpId {
+                    counter: 1,
+                    peer: 1,
+                },
+                OpId {
+                    counter: 2,
+                    peer: 1,
+                },
+            ],
         );
         assert_eq!(removed, vec![id]);
         assert!(new_intervals.is_empty());
+    }
+
+    #[test]
+    fn remove_mark_range_orders_by_visible_position_not_opid() {
+        // Visible order [B, A] but OpId order [A, B] (B has the higher counter) —
+        // exactly what RGA can produce for concurrently-inserted units. The range
+        // split must use visible position, not raw OpId order.
+        let a = OpId {
+            counter: 3,
+            peer: 1,
+        };
+        let b = OpId {
+            counter: 5,
+            peer: 2,
+        };
+        let element_order = [b, a]; // B is first visually, then A
+        let mut set = MarkSet::new();
+        let id = OpId {
+            counter: 1,
+            peer: 1,
+        };
+        // Mark spans the whole paragraph: B(before) .. A(after).
+        let start = Anchor {
+            elem_id: b,
+            bias: AnchorBias::Before,
+        };
+        let end = Anchor {
+            elem_id: a,
+            bias: AnchorBias::After,
+        };
+        set.set_mark(id, MarkKind::Bold, start, end, BTreeMap::new(), id);
+
+        // Remove the mark from the first *visible* element (B).
+        let (new_intervals, removed) = mark_ops::lower_remove_mark_range(
+            &set,
+            id,
+            Anchor {
+                elem_id: b,
+                bias: AnchorBias::Before,
+            },
+            Anchor {
+                elem_id: b,
+                bias: AnchorBias::After,
+            },
+            OpId {
+                counter: 10,
+                peer: 1,
+            },
+            &element_order,
+        );
+        assert_eq!(removed, vec![id]);
+        // Keep a right remnant over A (positions 1..2); no left remnant (B is first).
+        // Raw-OpId ordering would compare B{5,2} > A{3,1} and wrongly drop this remnant.
+        assert_eq!(new_intervals.len(), 1, "must keep the right remnant over A");
+        assert_eq!(
+            new_intervals[0].start,
+            Anchor {
+                elem_id: b,
+                bias: AnchorBias::After
+            }
+        );
+        assert_eq!(new_intervals[0].end, end);
     }
 }

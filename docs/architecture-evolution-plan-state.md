@@ -15,11 +15,11 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-01** Codec | **done** | |
 | **PR-02** Deterministic BlockId | **done** | |
 | **PR-03** CollaborativeDocument | **done** | |
-| **PR-04** SessionSnapshot | **done** | (may be staged with this work if not yet pushed) |
+| **PR-04** SessionSnapshot | **done** | |
 | PR-05 SemanticConflict (optional) | **skipped for now** | Not MVP gate; can land later |
-| **PR-06a** Paragraph TextUnit representation | **done** | `doc/text.rs`, parse/serialize/insert_text, snapshot v2. Audit-found OpId-collision blocker **resolved via span-aware sync** — see below. |
-| PR-06b Text CRDT wire ops | pending | InsertText/DeleteText on wire + with_value_mut |
-| PR-07 Marks | pending | Phase C |
+| **PR-06a** Paragraph TextUnit representation | **done** | `doc/text.rs`, parse/serialize/insert_text, snapshot v2. Span-aware sync for unit OpIds. |
+| **PR-06b** Text CRDT wire ops | **done** | InsertText/DeleteText + insert_paragraph N6-d; unit_mode default true; with_value_mut |
+| **PR-07** Marks | **done** | Unified rich `mark::MarkSet` on Block/EditOp; generic dual API removed |
 | PR-08+ | pending | |
 
 ## Phase B checklist
@@ -28,8 +28,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Parse + serialize round-trip on units
 - [x] insert_text inserts grapheme units (local API)
 - [x] Snapshot format v2 + v1 string upgrade path
-- [ ] Wire InsertText/DeleteText + session commits (PR-06b)
-- [ ] Concurrent multi-peer paragraph edits (PR-06b)
+- [x] Wire InsertText/DeleteText + session commits (PR-06b)
+- [x] Concurrent multi-peer paragraph edits (PR-06b)
 
 ## Decisions log (implementation)
 
@@ -39,10 +39,25 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Unit OpIds on skeleton expand | `parent_elem.counter + 1 + i` same peer | Deterministic across peers; wire still only carries block id + string |
 | Snapshot paragraph body | v2 `units` list; accept v1 `text` string | Offline upgrade without live N6-c |
 | Span-aware sync (audit) | `Operation` covers a counter range `[e-span+1, e]`; `Operation.id` = max embedded id (N1); readiness gates on range start vs frontier | Lets one op reserve a contiguous id range (block + G units) without sparse op ids; span 1 = old behavior; unblocks multi-unit InsertText |
+| Unit-mode default | `CollaborativeDocument::new` → `unit_mode = true` | Phase B cutover; string-mode still available via `with_codec(..., false)` |
+| N6-d insert_paragraph | empty `InsertBlock` then `InsertText` (two commits) | Pure N1–N4; no skeleton range-seed |
+| Nested text apply | `Sequence::with_value_mut` on block element | Avoid full `Block` clone per unit |
+| Mark unification | Keep rich causal `core::mark::MarkSet`; delete generic `MarkSet<K,V>` / `TextAnchor` | Single public API; matches `render_spans` + text-unit anchors |
+| Deprecated aliases | `RichMarkSet` / `RichMarkInterval` type aliases for one release | Migration path for callers |
+
+## Phase C checklist
+
+- [x] One public `MarkSet` (rich causal)
+- [x] `Block.marks` / `EditOp` use rich types
+- [x] Generic LWW mark types removed from `core`
+- [x] `render_spans` over paragraph unit order (`Document::render_paragraph_spans`)
+- [x] Expand-on-insert / range-remove helpers still green
 
 ## Gate
 
-- `just check` — **passed** after span-aware-sync fix (276 tests, 0 ignored)
+- `just check` — **passed** after PR-07 audit (290 tests, 0 warnings)
+- Prior PR-06b audit notes retained: span-aware sync + multi-unit paste convergence
+- **Audit fix (PR-07):** `mark_ops::lower_remove_mark_range` ordered mark-split anchors by raw OpId (`anchor_lt`), which is wrong when a paragraph's units were concurrently interleaved (RGA orders same-anchor siblings by descending id, so OpId order ≠ visible order). Now compares by **visible position** (`resolve_anchor` over the paragraph's element order, threaded in from `Document::remove_mark`); removed the dead `anchor_lt`/`bias_rank`. Regression test `remove_mark_range_orders_by_visible_position_not_opid` (`doc/mod.rs`).
 
 ## Audit blocker (PR-06a) — text-unit / op-counter collision — **RESOLVED (span-aware sync)**
 

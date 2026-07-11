@@ -51,16 +51,21 @@ pub mod storage;
 pub mod filesync;
 
 // Re-export core types
-pub use core::{
-    Element, LwwRegister, Map, MarkInterval, MarkSet, OpId, PeerId, Sequence, SequenceOp,
-    StateVector, TextAnchor,
+pub use core::{Element, LwwRegister, Map, OpId, PeerId, Sequence, SequenceOp, StateVector};
+
+// Re-export unified mark types (rich causal MarkSet is the single public API)
+pub use core::mark::{
+    Anchor, AnchorBias, MarkInterval, MarkIntervalId, MarkKind, MarkSet, MarkValue, RemoveMark,
+    Span,
 };
 
-// Re-export mark types
-pub use core::mark::{
-    Anchor, AnchorBias, MarkInterval as RichMarkInterval, MarkIntervalId, MarkKind,
-    MarkSet as RichMarkSet, MarkValue, RemoveMark, Span,
-};
+/// Deprecated alias — use [`MarkSet`].
+#[deprecated(note = "use MarkSet")]
+pub type RichMarkSet = MarkSet;
+
+/// Deprecated alias — use [`MarkInterval`].
+#[deprecated(note = "use MarkInterval")]
+pub type RichMarkInterval = MarkInterval;
 
 // Re-export doc types
 pub use doc::{
@@ -81,7 +86,7 @@ pub use sync::{
 // Re-export codec types
 pub use codec::{
     BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, CodecError, DocOp, Envelope,
-    JsonOpCodec, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, WIRE_VERSION,
+    JsonOpCodec, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, TextUnitWire, WIRE_VERSION,
     insert_block_paragraph_is_empty,
 };
 

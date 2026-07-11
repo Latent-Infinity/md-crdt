@@ -35,6 +35,7 @@ pub fn lower_remove_mark_range(
     remove_start: Anchor,
     remove_end: Anchor,
     next_id: OpId,
+    element_order: &[OpId],
 ) -> (Vec<MarkInterval>, Vec<MarkIntervalId>) {
     let mut new_intervals = Vec::new();
     let mut removed = Vec::new();
@@ -51,8 +52,12 @@ pub fn lower_remove_mark_range(
         return (new_intervals, removed);
     };
 
-    let left_needed = anchor_lt(interval.start, remove_start);
-    let right_needed = anchor_lt(remove_end, interval.end);
+    // Compare anchors by visible text position, not raw OpId: RGA can order
+    // concurrently-inserted units so that OpId order differs from visible order.
+    let len = element_order.len();
+    let pos = |a: &Anchor| resolve_anchor(a, element_order, len);
+    let left_needed = pos(&interval.start) < pos(&remove_start);
+    let right_needed = pos(&remove_end) < pos(&interval.end);
 
     if left_needed {
         let mut attrs = BTreeMap::new();
@@ -113,17 +118,6 @@ fn resolve_anchor(anchor: &Anchor, order: &[OpId], len: usize) -> usize {
     match anchor.bias {
         AnchorBias::Before => idx,
         AnchorBias::After => (idx + 1).min(len),
-    }
-}
-
-fn anchor_lt(a: Anchor, b: Anchor) -> bool {
-    (a.elem_id, bias_rank(a.bias)) < (b.elem_id, bias_rank(b.bias))
-}
-
-fn bias_rank(bias: AnchorBias) -> u8 {
-    match bias {
-        AnchorBias::Before => 0,
-        AnchorBias::After => 1,
     }
 }
 

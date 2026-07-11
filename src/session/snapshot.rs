@@ -271,7 +271,7 @@ fn block_from_dto(dto: BlockDto) -> Block {
         id: dto.id,
         elem_id: dto.elem_id,
         kind: kind_from_dto(dto.kind),
-        marks: crate::core::MarkSet::new(),
+        marks: crate::core::mark::MarkSet::new(),
     }
 }
 

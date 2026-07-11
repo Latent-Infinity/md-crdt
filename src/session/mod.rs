@@ -11,13 +11,13 @@ pub use snapshot::{
 
 use crate::codec::{
     BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, DocOp, Envelope, JsonOpCodec, OpBody,
-    OpCodec, WIRE_VERSION, insert_block_paragraph_is_empty,
+    OpCodec, TextUnitWire, WIRE_VERSION, insert_block_paragraph_is_empty,
 };
-use crate::core::MarkSet;
+use crate::core::mark::MarkSet;
 use crate::core::{OpId, PeerId, Sequence, SequenceOp, StateVector};
 use crate::doc::{
-    Block, BlockKind, Document, block_id_from_op, grapheme_count, paragraph_visible_string,
-    units_from_str,
+    Block, BlockId, BlockKind, Document, TextUnit, after_for_grapheme_offset, block_id_from_op,
+    grapheme_count, paragraph_visible_ids, paragraph_visible_string, units_from_str,
 };
 use crate::sync::{
     ChangeMessage, IntegrateResult, Operation, SyncState, ValidationError, ValidationLimits,
@@ -47,6 +47,12 @@ pub enum SessionError {
     MissingDeleteTarget,
     #[error("unsupported block kind on the collaborative wire: {0}")]
     UnsupportedBlockKind(&'static str),
+    #[error("block not found")]
+    BlockNotFound,
+    #[error("target is not a paragraph")]
+    NotParagraph,
+    #[error("grapheme offset out of range")]
+    InvalidOffset,
 }
 
 fn codec_err<E: std::fmt::Display>(e: E) -> SessionError {
@@ -83,7 +89,8 @@ pub struct CollaborativeDocument<C: OpCodec = JsonOpCodec> {
 
 impl CollaborativeDocument<JsonOpCodec> {
     pub fn new(peer: PeerId) -> Self {
-        Self::with_codec(peer, JsonOpCodec, false)
+        // Unit-mode is the collaborative default: empty InsertBlock + InsertText body.
+        Self::with_codec(peer, JsonOpCodec, true)
     }
 }
 
@@ -208,6 +215,163 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         });
         self.next_counter = b + 1;
         Ok(delete_id)
+    }
+
+    /// Insert an empty paragraph skeleton, then `InsertText` for `text` when non-empty.
+    ///
+    /// Two N3 commits (N6-d). Returns the block `elem_id`. Empty `text` is block-only.
+    pub fn insert_paragraph(
+        &mut self,
+        after: Option<OpId>,
+        text: &str,
+    ) -> Result<OpId, SessionError> {
+        let empty = BlockKind::paragraph(
+            "",
+            OpId {
+                counter: 1,
+                peer: 0,
+            },
+        );
+        let block_elem = self.insert_block(after, empty)?;
+        if text.is_empty() {
+            return Ok(block_elem);
+        }
+        let block_id = block_id_from_op(block_elem);
+        self.insert_text(block_id, 0, text)?;
+        Ok(block_elem)
+    }
+
+    /// Insert grapheme units into a paragraph. Returns the max unit `OpId` (N1).
+    ///
+    /// Empty `text` is a no-op that does not advance the clock.
+    pub fn insert_text(
+        &mut self,
+        block_id: BlockId,
+        grapheme_offset: usize,
+        text: &str,
+    ) -> Result<Option<OpId>, SessionError> {
+        if text.is_empty() {
+            return Ok(None);
+        }
+
+        let (block_elem, units) = {
+            let block = self
+                .document
+                .blocks_in_order()
+                .into_iter()
+                .find(|b| b.id == block_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            let block_elem = block.elem_id;
+            let BlockKind::Paragraph { text: body } = &block.kind else {
+                return Err(SessionError::NotParagraph);
+            };
+            if grapheme_offset > body.len_visible() {
+                return Err(SessionError::InvalidOffset);
+            }
+
+            let mut after = after_for_grapheme_offset(body, grapheme_offset);
+            let mut counter = self.next_counter;
+            let mut units = Vec::new();
+            for g in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
+                let id = OpId {
+                    counter,
+                    peer: self.peer,
+                };
+                counter = counter.saturating_add(1);
+                // First unit: right_origin from current paragraph; subsequent chain units
+                // insert after a brand-new id so right_origin is None.
+                let right_origin = if units.is_empty() {
+                    body.compute_right_origin(after)
+                } else {
+                    None
+                };
+                units.push(TextUnitWire {
+                    id,
+                    after,
+                    right_origin,
+                    grapheme: g.to_string(),
+                });
+                after = Some(id);
+            }
+            (block_elem, units)
+        };
+
+        if units.is_empty() {
+            return Ok(None);
+        }
+
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::InsertText {
+                block_elem,
+                block_id,
+                units,
+            }),
+        };
+        let (op_id, _span) = operation_extent(&envelope);
+        let payload = self.codec.encode(&envelope).map_err(codec_err)?;
+        apply_envelope_to_document(&mut self.document, &envelope);
+        self.sync.add_local_op(Operation { id: op_id, payload });
+        self.next_counter = op_id.counter + 1;
+        Ok(Some(op_id))
+    }
+
+    /// Delete a visible grapheme range from a paragraph. Returns the delete-op id.
+    ///
+    /// `grapheme_count == 0` is a no-op that does not advance the clock.
+    pub fn delete_text(
+        &mut self,
+        block_id: BlockId,
+        grapheme_offset: usize,
+        grapheme_count: usize,
+    ) -> Result<Option<OpId>, SessionError> {
+        if grapheme_count == 0 {
+            return Ok(None);
+        }
+
+        let (block_elem, targets) = {
+            let block = self
+                .document
+                .blocks_in_order()
+                .into_iter()
+                .find(|b| b.id == block_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            let block_elem = block.elem_id;
+            let BlockKind::Paragraph { text: body } = &block.kind else {
+                return Err(SessionError::NotParagraph);
+            };
+            let ids = paragraph_visible_ids(body);
+            let end = grapheme_offset
+                .checked_add(grapheme_count)
+                .ok_or(SessionError::InvalidOffset)?;
+            if end > ids.len() {
+                return Err(SessionError::InvalidOffset);
+            }
+            let targets = ids[grapheme_offset..end].to_vec();
+            (block_elem, targets)
+        };
+
+        let delete_id = OpId {
+            peer: self.peer,
+            counter: self.next_counter,
+        };
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::DeleteText {
+                block_elem,
+                block_id,
+                id: delete_id,
+                targets,
+            }),
+        };
+        let payload = self.codec.encode(&envelope).map_err(codec_err)?;
+        apply_envelope_to_document(&mut self.document, &envelope);
+        self.sync.add_local_op(Operation {
+            id: delete_id,
+            payload,
+        });
+        self.next_counter = delete_id.counter + 1;
+        Ok(Some(delete_id))
     }
 
     /// Apply remote changes: pre-decode all, then integrate with document apply.
@@ -454,6 +618,29 @@ fn operation_extent(env: &Envelope) -> (OpId, u64) {
             )
         }
         OpBody::Doc(DocOp::DeleteBlock { id, .. }) => (*id, 1),
+        OpBody::Doc(DocOp::InsertText { units, .. }) => {
+            // Empty InsertText should not appear on the wire; treat as span 1 with peer-0 id 0
+            // only for defensive extent — producers never emit empty InsertText.
+            let Some(first) = units.first() else {
+                return (
+                    OpId {
+                        counter: 0,
+                        peer: 0,
+                    },
+                    1,
+                );
+            };
+            let mut hi = first.id.counter;
+            let peer = first.id.peer;
+            let mut lo = first.id.counter;
+            for u in units {
+                hi = hi.max(u.id.counter);
+                lo = lo.min(u.id.counter);
+            }
+            let span = hi.saturating_sub(lo).saturating_add(1);
+            (OpId { counter: hi, peer }, span)
+        }
+        OpBody::Doc(DocOp::DeleteText { id, .. }) => (*id, 1),
     }
 }
 
@@ -487,6 +674,18 @@ fn check_peer_consistency(op: &Operation, env: &Envelope) -> Result<(), SessionE
             check_kind_peers(peer, &block.kind)?;
         }
         OpBody::Doc(DocOp::DeleteBlock { id, target: _ }) => {
+            if id.peer != peer {
+                return Err(SessionError::PeerMismatch);
+            }
+        }
+        OpBody::Doc(DocOp::InsertText { units, .. }) => {
+            for u in units {
+                if u.id.peer != peer {
+                    return Err(SessionError::PeerMismatch);
+                }
+            }
+        }
+        OpBody::Doc(DocOp::DeleteText { id, .. }) => {
             if id.peer != peer {
                 return Err(SessionError::PeerMismatch);
             }
@@ -570,6 +769,43 @@ fn apply_envelope_to_document(document: &mut Document, envelope: &Envelope) {
             document.blocks.apply(SequenceOp::Delete {
                 target: *target,
                 id: *id,
+            });
+        }
+        OpBody::Doc(DocOp::InsertText {
+            block_elem, units, ..
+        }) => {
+            let _ = document.blocks.with_value_mut(*block_elem, |block| {
+                let BlockKind::Paragraph { text: body } = &mut block.kind else {
+                    return;
+                };
+                for u in units {
+                    body.apply(SequenceOp::Insert {
+                        after: u.after,
+                        id: u.id,
+                        value: TextUnit {
+                            grapheme: u.grapheme.clone(),
+                        },
+                        right_origin: u.right_origin,
+                    });
+                }
+            });
+        }
+        OpBody::Doc(DocOp::DeleteText {
+            block_elem,
+            id,
+            targets,
+            ..
+        }) => {
+            let _ = document.blocks.with_value_mut(*block_elem, |block| {
+                let BlockKind::Paragraph { text: body } = &mut block.kind else {
+                    return;
+                };
+                for target in targets {
+                    body.apply(SequenceOp::Delete {
+                        target: *target,
+                        id: *id,
+                    });
+                }
             });
         }
     }

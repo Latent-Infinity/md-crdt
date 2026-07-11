@@ -32,6 +32,16 @@ pub enum OpBody {
     Doc(DocOp),
 }
 
+/// One grapheme unit on an [`DocOp::InsertText`] envelope (N1 + N4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextUnitWire {
+    pub id: OpId,
+    pub after: Option<OpId>,
+    /// Concurrent-insert right neighbor; always stamped on the wire (N4).
+    pub right_origin: Option<OpId>,
+    pub grapheme: String,
+}
+
 /// Serializable document operations for the collaborative wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DocOp {
@@ -47,6 +57,22 @@ pub enum DocOp {
         target: OpId,
         /// Delete-op id; also `Operation.id` when this is the sole effect.
         id: OpId,
+    },
+    /// Nested RGA inserts into a paragraph body (one element per grapheme).
+    InsertText {
+        block_elem: OpId,
+        block_id: BlockId,
+        /// Contiguous paste: units listed in left-to-right insert order.
+        units: Vec<TextUnitWire>,
+    },
+    /// Tombstone unit element ids inside a paragraph body.
+    DeleteText {
+        block_elem: OpId,
+        block_id: BlockId,
+        /// Delete-op id; equals `Operation.id` (one fresh counter).
+        id: OpId,
+        /// Existing unit element ids to tombstone.
+        targets: Vec<OpId>,
     },
 }
 
@@ -87,7 +113,9 @@ pub fn insert_block_paragraph_is_empty(envelope: &Envelope) -> bool {
             BlockKindSkeleton::Paragraph { text } => text.is_empty(),
             _ => true,
         },
-        OpBody::Doc(DocOp::DeleteBlock { .. }) => true,
+        OpBody::Doc(
+            DocOp::DeleteBlock { .. } | DocOp::InsertText { .. } | DocOp::DeleteText { .. },
+        ) => true,
     }
 }
 
@@ -97,7 +125,9 @@ pub(crate) fn validate_envelope_structure(envelope: &Envelope) -> Result<(), sup
         OpBody::Doc(DocOp::InsertBlock { block, .. }) => {
             check_kind_depth(&block.kind, 0)?;
         }
-        OpBody::Doc(DocOp::DeleteBlock { .. }) => {}
+        OpBody::Doc(
+            DocOp::DeleteBlock { .. } | DocOp::InsertText { .. } | DocOp::DeleteText { .. },
+        ) => {}
     }
     Ok(())
 }

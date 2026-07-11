@@ -119,6 +119,11 @@ impl MarkSet {
         }
     }
 
+    /// Look up an interval by id (active or not).
+    pub fn interval(&self, interval_id: &MarkIntervalId) -> Option<&MarkInterval> {
+        self.intervals.get(interval_id)
+    }
+
     pub fn is_active(&self, interval_id: &MarkIntervalId) -> bool {
         let Some(interval) = self.intervals.get(interval_id) else {
             return false;

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### Wire Codec (`md-crdt::codec`)
-- Versioned `Envelope` / `DocOp` DTOs for collaborative ops (`InsertBlock`, `DeleteBlock`)
+- Versioned `Envelope` / `DocOp` DTOs for collaborative ops (`InsertBlock`, `DeleteBlock`, `InsertText`, `DeleteText`)
 - `JsonOpCodec` encode/decode with nest-depth limits and unknown-version rejection
 - `insert_block_paragraph_is_empty` helper for unit-mode session validation (not an unconditional decode ban)
 - Wire kinds: Paragraph, CodeFence, BlockQuote (nested), RawBlock — no live `Sequence` serialization
@@ -36,6 +36,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TextUnit` + `BlockKind::Paragraph { text: Sequence<TextUnit> }` (one grapheme per element)
 - Parse/serialize/insert_text operate on unit sequences; wire `Paragraph { text: String }` unchanged
 - Snapshot format v2 stores unit lists; v1 `text` string still loads via peer-0 synthetic unit ids
+
+#### Text CRDT wire ops (`md-crdt::codec` / `session`)
+- Wire `DocOp::InsertText` / `DeleteText` with `TextUnitWire` (explicit unit ids + N4 `right_origin`)
+- Session `insert_text` / `delete_text` / `insert_paragraph` (N6-d: empty InsertBlock + InsertText)
+- `CollaborativeDocument::new` defaults to `unit_mode = true`; string-mode via `with_codec(..., false)`
+- Nested paragraph apply via `Sequence::with_value_mut` (no full block clone per unit)
+- Concurrent multi-peer same-paragraph insert/delete convergence tests
+
+#### Mark unification (`md-crdt::core::mark`)
+- Single public `MarkSet` is the rich causal remove-wins CRDT (`MarkKind`, `Anchor`, spans)
+- Removed generic `MarkSet<K,V>` / `TextAnchor` / LWW-only mark path from `core`
+- `Block.marks` and `EditOp::{SetMark,RemoveMark}` use the unified type
+- `Document::set_mark` / `remove_mark` (range split via `mark_ops`) and `render_paragraph_spans`
+- Temporary deprecated aliases: `RichMarkSet`, `RichMarkInterval`
 
 ## [0.1.0] - 2025-02-04
 

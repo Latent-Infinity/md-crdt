@@ -8,12 +8,18 @@
 //! - [`Sequence`] - RGA-based ordered sequence with tombstones
 //! - [`LwwRegister`] - Last-writer-wins register for single values
 //! - [`Map`] - LWW-based key-value map
-//! - [`MarkSet`] and [`MarkInterval`] - Text formatting marks
+//! - [`mark`] - Rich causal mark/formatting CRDT (`MarkSet`, spans)
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod mark;
+
+// Unified mark API (rich causal remove-wins). Generic LWW mark types were removed.
+pub use mark::{
+    Anchor, AnchorBias, MarkInterval, MarkIntervalId, MarkKind, MarkSet, MarkValue, RemoveMark,
+    Span,
+};
 
 pub type PeerId = u64;
 
@@ -148,6 +154,16 @@ impl<T: Clone> Sequence<T> {
         {
             elem.value = Some(value);
         }
+    }
+
+    /// Mutate the value of element `id` in place (no full-element clone).
+    ///
+    /// Returns `None` if the id is unknown or the element is tombstoned.
+    pub fn with_value_mut<R>(&mut self, id: OpId, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        let index = *self.index.get(&id)?;
+        let elem = self.elements.get_mut(index)?;
+        let value = elem.value.as_mut()?;
+        Some(f(value))
     }
 
     pub fn apply_op(&mut self, op: (OpId, T)) {
@@ -487,79 +503,5 @@ impl<K: Ord + Clone, V: Clone> Map<K, V> {
     /// Returns a clone of the value. Prefer `get()` when a reference suffices.
     pub fn get_cloned(&self, key: &K) -> Option<V> {
         self.entries.get(key).map(|register| register.get())
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TextAnchor {
-    pub op_id: OpId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarkInterval<K, V> {
-    pub id: OpId,
-    pub start: TextAnchor,
-    pub end: TextAnchor,
-    pub attributes: BTreeMap<K, LwwRegister<V>>,
-}
-
-impl<K: Ord, V: Clone> MarkInterval<K, V> {
-    pub fn new(id: OpId, start: TextAnchor, end: TextAnchor) -> Self {
-        Self {
-            id,
-            start,
-            end,
-            attributes: BTreeMap::new(),
-        }
-    }
-
-    pub fn update_attribute(&mut self, key: K, value: V, op_id: OpId) {
-        self.attributes
-            .entry(key)
-            .and_modify(|register| register.set(value.clone(), op_id))
-            .or_insert_with(|| LwwRegister::new(value, op_id));
-    }
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct MarkSet<K, V> {
-    adds: BTreeMap<OpId, MarkInterval<K, V>>,
-    removes: BTreeMap<OpId, OpId>,
-}
-
-impl<K: Ord + Clone, V: Clone> MarkSet<K, V> {
-    pub fn new() -> Self {
-        Self {
-            adds: BTreeMap::new(),
-            removes: BTreeMap::new(),
-        }
-    }
-
-    pub fn add(&mut self, interval: MarkInterval<K, V>) {
-        self.adds.insert(interval.id, interval);
-    }
-
-    pub fn remove(&mut self, add_id: OpId, remove_id: OpId) {
-        match self.removes.get(&add_id) {
-            Some(existing) if *existing >= remove_id => {}
-            _ => {
-                self.removes.insert(add_id, remove_id);
-            }
-        }
-    }
-
-    pub fn is_active(&self, add_id: &OpId) -> bool {
-        if !self.adds.contains_key(add_id) {
-            return false;
-        }
-
-        match self.removes.get(add_id) {
-            None => true,
-            Some(remove_id) => add_id > remove_id,
-        }
-    }
-
-    pub fn interval(&self, add_id: &OpId) -> Option<&MarkInterval<K, V>> {
-        self.adds.get(add_id)
     }
 }

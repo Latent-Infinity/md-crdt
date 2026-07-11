@@ -1,8 +1,9 @@
-use md_crdt::core::{LwwRegister, MarkInterval, MarkSet, OpId, StateVector, TextAnchor};
+use md_crdt::core::mark::{Anchor, AnchorBias, MarkKind, MarkSet, MarkValue};
+use md_crdt::core::{LwwRegister, OpId, StateVector};
+use std::collections::BTreeMap;
 
 #[test]
 fn test_op_id_ordering() {
-    // This will fail to compile until Ord is derived or implemented for OpId
     let op1 = OpId {
         counter: 1,
         peer: 1,
@@ -16,7 +17,6 @@ fn test_op_id_ordering() {
 
 #[test]
 fn test_op_id_lexicographic_tie_breaking() {
-    // This will also fail to compile until Ord is implemented
     let op1 = OpId {
         counter: 1,
         peer: 1,
@@ -30,7 +30,6 @@ fn test_op_id_lexicographic_tie_breaking() {
 
 #[test]
 fn test_state_vector_new_is_empty() {
-    // This will fail because the placeholder for is_empty returns false
     let sv = StateVector::new();
     assert!(sv.is_empty());
 }
@@ -39,18 +38,14 @@ fn test_state_vector_new_is_empty() {
 fn test_state_vector_get_set() {
     let mut sv = StateVector::new();
 
-    // Test get on empty vector
     assert_eq!(sv.get(1), None);
 
-    // Test set and get
     sv.set(1, 42);
     assert_eq!(sv.get(1), Some(42));
 
-    // Test update existing
     sv.set(1, 100);
     assert_eq!(sv.get(1), Some(100));
 
-    // Test multiple peers
     sv.set(2, 50);
     assert_eq!(sv.get(2), Some(50));
     assert_eq!(sv.get(1), Some(100));
@@ -76,7 +71,7 @@ fn test_lww_register_op_id() {
 
 #[test]
 fn test_mark_set_edge_cases() {
-    let mut set = MarkSet::<String, String>::new();
+    let mut set = MarkSet::new();
     let add_id = OpId {
         counter: 1,
         peer: 1,
@@ -86,45 +81,35 @@ fn test_mark_set_edge_cases() {
         peer: 1,
     };
 
-    // Test is_active on non-existent interval
     assert!(!set.is_active(&add_id));
 
-    // Add interval
-    let interval = MarkInterval::new(
-        add_id,
-        TextAnchor {
-            op_id: OpId {
-                counter: 0,
-                peer: 0,
-            },
+    let start = Anchor {
+        elem_id: OpId {
+            counter: 0,
+            peer: 0,
         },
-        TextAnchor {
-            op_id: OpId {
-                counter: 10,
-                peer: 0,
-            },
-        },
-    );
-    set.add(interval);
-    assert!(set.is_active(&add_id));
-
-    // Remove with lower OpId (add wins)
-    let lower_remove = OpId {
-        counter: 0,
-        peer: 1,
+        bias: AnchorBias::Before,
     };
-    set.remove(add_id, lower_remove);
+    let end = Anchor {
+        elem_id: OpId {
+            counter: 10,
+            peer: 0,
+        },
+        bias: AnchorBias::After,
+    };
+    set.set_mark(
+        add_id,
+        MarkKind::Bold,
+        start,
+        end,
+        BTreeMap::from([("k".into(), MarkValue::String("v".into()))]),
+        add_id,
+    );
     assert!(set.is_active(&add_id));
 
-    // Remove with equal OpId (not active)
-    set.remove(add_id, add_id);
-    assert!(!set.is_active(&add_id));
-
-    // Remove again with same remove_id (idempotent, should keep highest remove)
-    set.remove(add_id, lower_remove);
-    assert!(!set.is_active(&add_id));
-
-    // Remove with higher OpId
-    set.remove(add_id, remove_id);
+    // Causal remove: observed state vector must include the add for remove to win.
+    let mut observed = StateVector::new();
+    observed.set(add_id.peer, add_id.counter);
+    set.remove_mark(add_id, observed, remove_id);
     assert!(!set.is_active(&add_id));
 }

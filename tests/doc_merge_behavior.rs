@@ -3,7 +3,8 @@
 //! These tests verify that concurrent operations from multiple peers
 //! converge to the same state regardless of application order.
 
-use md_crdt::core::{MarkSet, OpId, SequenceOp};
+use md_crdt::core::mark::MarkSet;
+use md_crdt::core::{OpId, SequenceOp};
 use md_crdt::doc::{Block, BlockKind, Document, SerializeConfig};
 use uuid::Uuid;
 
