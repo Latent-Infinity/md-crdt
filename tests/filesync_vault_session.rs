@@ -1,0 +1,104 @@
+//! VaultSession: shared peer id + lazy multi-doc CollaborativeDocument store.
+
+#![cfg(feature = "filesync")]
+
+use md_crdt::doc::EquivalenceMode;
+use md_crdt::filesync::{VaultError, VaultSession};
+use std::fs;
+use tempfile::tempdir;
+
+#[test]
+fn peer_id_persists_across_reopen() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("readme.md"), "# hi").unwrap();
+
+    let peer = {
+        let vs = VaultSession::open(dir.path()).unwrap();
+        assert!(dir.path().join(".mdcrdt").join("peer_id").exists());
+        vs.peer()
+    };
+    let vs2 = VaultSession::open(dir.path()).unwrap();
+    assert_eq!(vs2.peer(), peer);
+}
+
+#[test]
+fn two_files_share_peer_keep_independent_docs() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("one.md"), "").unwrap();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    fs::write(dir.path().join("sub").join("two.md"), "").unwrap();
+
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    let peer = vs.peer();
+
+    vs.session_mut("one.md")
+        .unwrap()
+        .insert_paragraph(None, "alpha")
+        .unwrap();
+    vs.session_mut(std::path::Path::new("sub").join("two.md"))
+        .unwrap()
+        .insert_paragraph(None, "beta")
+        .unwrap();
+
+    assert_eq!(vs.session_mut("one.md").unwrap().peer(), peer);
+    assert_eq!(
+        vs.session_mut(std::path::Path::new("sub").join("two.md"))
+            .unwrap()
+            .peer(),
+        peer
+    );
+    assert_eq!(
+        vs.session_mut("one.md")
+            .unwrap()
+            .document()
+            .serialize(EquivalenceMode::Structural),
+        "alpha"
+    );
+    assert_eq!(
+        vs.session_mut(std::path::Path::new("sub").join("two.md"))
+            .unwrap()
+            .document()
+            .serialize(EquivalenceMode::Structural),
+        "beta"
+    );
+}
+
+#[test]
+fn snapshot_round_trip_across_process_boundary() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("doc.md"), "").unwrap();
+
+    let peer = {
+        let mut vs = VaultSession::open(dir.path()).unwrap();
+        vs.session_mut("doc.md")
+            .unwrap()
+            .insert_paragraph(None, "round-trip")
+            .unwrap();
+        vs.save_all().unwrap();
+        vs.peer()
+    };
+
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    assert_eq!(vs.peer(), peer);
+    assert!(!vs.is_open("doc.md"));
+    let text = vs
+        .session_mut("doc.md")
+        .unwrap()
+        .document()
+        .serialize(EquivalenceMode::Structural);
+    assert_eq!(text, "round-trip");
+}
+
+#[test]
+fn invalid_relative_path_rejected() {
+    let dir = tempdir().unwrap();
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    assert!(matches!(
+        vs.session_mut("/abs.md"),
+        Err(VaultError::InvalidRelativePath(_))
+    ));
+    assert!(matches!(
+        vs.session_mut("../x.md"),
+        Err(VaultError::InvalidRelativePath(_))
+    ));
+}

@@ -3,6 +3,10 @@
 //! This module provides vault-based file synchronization, enabling sync between
 //! local markdown files and CRDT state using fingerprinting and block matching.
 
+mod session;
+
+pub use session::VaultSession;
+
 use crate::doc::{Block, BlockId, BlockKind, Document, Parser, paragraph_visible_string};
 use crate::storage::Storage;
 use rkyv::{Archive, Deserialize, Serialize};
@@ -27,6 +31,14 @@ pub enum VaultError {
     Storage(#[from] crate::storage::StorageError),
     #[error("Serialization error")]
     Serialization,
+    #[error("invalid peer id in .mdcrdt/peer_id: {0}")]
+    InvalidPeerId(String),
+    #[error("path must be relative to the vault root: {0}")]
+    InvalidRelativePath(PathBuf),
+    #[error("session not open for path: {0}")]
+    SessionNotOpen(PathBuf),
+    #[error("session snapshot: {0}")]
+    Snapshot(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]

@@ -20,7 +20,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-06a** Paragraph TextUnit representation | **done** | `doc/text.rs`, parse/serialize/insert_text, snapshot v2. Span-aware sync for unit OpIds. |
 | **PR-06b** Text CRDT wire ops | **done** | InsertText/DeleteText + insert_paragraph N6-d; unit_mode default true; with_value_mut |
 | **PR-07** Marks | **done** | Unified rich `mark::MarkSet` on Block/EditOp; generic dual API removed |
-| PR-08+ | pending | |
+| **PR-08** VaultSession | **done** | Path→CollaborativeDocument map; `.mdcrdt/peer_id`; session snapshots under `.mdcrdt/sessions/` |
+| PR-09+ | pending | Vault ingest D1, etc. |
 
 ## Phase B checklist
 
@@ -44,6 +45,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Nested text apply | `Sequence::with_value_mut` on block element | Avoid full `Block` clone per unit |
 | Mark unification | Keep rich causal `core::mark::MarkSet`; delete generic `MarkSet<K,V>` / `TextAnchor` | Single public API; matches `render_spans` + text-unit anchors |
 | Deprecated aliases | `RichMarkSet` / `RichMarkInterval` type aliases for one release | Migration path for callers |
+| Session snapshot dir | `.mdcrdt/sessions/<rel>.mdcrdt` (not `.mdcrdt/state/`) | Avoid collision with existing fingerprint `LastFlushedState` blobs in `state/` until ingest unifies storage |
+| Peer id format | Decimal `u64` text in `.mdcrdt/peer_id`; non-zero | Shared clock domain for all file sessions in a vault |
 
 ## Phase C checklist
 
@@ -53,11 +56,19 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] `render_spans` over paragraph unit order (`Document::render_paragraph_spans`)
 - [x] Expand-on-insert / range-remove helpers still green
 
+## Phase D checklist (partial)
+
+- [x] Multi-file vault opens distinct sessions per path; shared peer id (PR-08)
+- [x] Open/save per-file session snapshots (PR-08)
+- [ ] External paragraph edit → ops → snapshot (PR-09/10)
+- [ ] Block reorder preserves ids via match_blocks (PR-09)
+- [ ] Two vaults exchange ops after external edits (later)
+
 ## Gate
 
-- `just check` — **passed** after PR-07 audit (290 tests, 0 warnings)
-- Prior PR-06b audit notes retained: span-aware sync + multi-unit paste convergence
-- **Audit fix (PR-07):** `mark_ops::lower_remove_mark_range` ordered mark-split anchors by raw OpId (`anchor_lt`), which is wrong when a paragraph's units were concurrently interleaved (RGA orders same-anchor siblings by descending id, so OpId order ≠ visible order). Now compares by **visible position** (`resolve_anchor` over the paragraph's element order, threaded in from `Document::remove_mark`); removed the dead `anchor_lt`/`bias_rank`. Regression test `remove_mark_range_orders_by_visible_position_not_opid` (`doc/mod.rs`).
+- `just check` — **passed** after PR-08 (fmt + clippy + full workspace tests)
+- Prior audit notes retained (span-aware sync; mark visible-order split)
+
 
 ## Audit blocker (PR-06a) — text-unit / op-counter collision — **RESOLVED (span-aware sync)**
 

@@ -51,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Document::set_mark` / `remove_mark` (range split via `mark_ops`) and `render_paragraph_spans`
 - Temporary deprecated aliases: `RichMarkSet`, `RichMarkInterval`
 
+#### Vault multi-doc session (`md-crdt::filesync`)
+- `VaultSession`: lazy `Path` → `CollaborativeDocument` map with shared vault peer
+- `.mdcrdt/peer_id` load-or-create (non-zero `u64`)
+- Per-file session snapshots under `.mdcrdt/sessions/` (separate from fingerprint `state/`)
+- `session_mut` / `save` / `save_all` / `flush_all` / `close`
+
 ## [0.1.0] - 2025-02-04
 
 ### Added

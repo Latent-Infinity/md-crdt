@@ -108,5 +108,5 @@ pub use storage::{CompactionReport, Storage, StorageError, TombstoneRetention};
 pub use filesync::{
     AddedBlock, ArchivedBlockFingerprint, BlockFingerprint, BlockMapping, BlockMatch, Fingerprint,
     IngestResult, LastFlushedState, MatchConfig, MatchType, ParsedBlock, Score, Vault, VaultError,
-    match_blocks, parsed_blocks_from_doc,
+    VaultSession, match_blocks, parsed_blocks_from_doc,
 };
