@@ -197,6 +197,50 @@ fn multi_peer_insert_paragraph_propagates() {
 }
 
 #[test]
+fn nested_paragraph_in_blockquote_converges() {
+    use md_crdt::core::Sequence;
+    let mut a = CollaborativeDocument::new(1);
+    let mut b = CollaborativeDocument::new(2);
+
+    // Insert an empty top-level blockquote, then a paragraph inside it.
+    let quote = a
+        .insert_block(
+            None,
+            BlockKind::BlockQuote {
+                children: Sequence::new(),
+            },
+        )
+        .expect("quote");
+    let child = a
+        .insert_paragraph_in(Some(quote), None, "quoted")
+        .expect("nested para");
+    // Edit the nested paragraph's text.
+    a.insert_text(block_id_from_op(child), 6, "!")
+        .expect("edit");
+
+    exchange(&a, &mut b);
+
+    // Peer B must reconstruct the nested structure and text.
+    let quote_block = &b.document().blocks_in_order()[0];
+    let BlockKind::BlockQuote { children } = &quote_block.kind else {
+        panic!("expected blockquote at top level");
+    };
+    let kids: Vec<_> = children.iter().collect();
+    assert_eq!(kids.len(), 1);
+    match &kids[0].kind {
+        BlockKind::Paragraph { text } => {
+            assert_eq!(paragraph_visible_string(text), "quoted!");
+        }
+        _ => panic!("expected nested paragraph"),
+    }
+    assert_eq!(
+        a.document().serialize(EquivalenceMode::Structural),
+        b.document().serialize(EquivalenceMode::Structural)
+    );
+    assert_eq!(a.state_vector(), b.state_vector());
+}
+
+#[test]
 fn unit_mode_default_is_true() {
     let a = CollaborativeDocument::new(1);
     assert!(a.unit_mode());

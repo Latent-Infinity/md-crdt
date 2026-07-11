@@ -107,6 +107,6 @@ pub use storage::{CompactionReport, Storage, StorageError, TombstoneRetention};
 #[cfg(feature = "filesync")]
 pub use filesync::{
     AddedBlock, ArchivedBlockFingerprint, BlockFingerprint, BlockMapping, BlockMatch, Fingerprint,
-    IngestResult, LastFlushedState, MatchConfig, MatchType, ParsedBlock, Score, Vault, VaultError,
-    VaultSession, match_blocks, parsed_blocks_from_doc,
+    IngestReport, IngestResult, LastFlushedState, MatchConfig, MatchType, ParsedBlock, Score,
+    Vault, VaultError, VaultSession, fingerprint_document, match_blocks, parsed_blocks_from_doc,
 };

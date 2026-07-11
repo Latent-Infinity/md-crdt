@@ -47,6 +47,9 @@ pub struct TextUnitWire {
 pub enum DocOp {
     /// Block-level RGA insert with skeleton only (no nested live Sequence).
     InsertBlock {
+        /// Container block elem_id to insert into; `None` = top-level document.
+        #[serde(default)]
+        parent: Option<OpId>,
         after: Option<OpId>,
         id: OpId,
         right_origin: Option<OpId>,
@@ -54,6 +57,9 @@ pub enum DocOp {
     },
     /// Block-level RGA delete.
     DeleteBlock {
+        /// Container block elem_id the target lives in; `None` = top-level document.
+        #[serde(default)]
+        parent: Option<OpId>,
         target: OpId,
         /// Delete-op id; also `Operation.id` when this is the sole effect.
         id: OpId,
@@ -159,6 +165,7 @@ mod tests {
         let empty = Envelope {
             version: WIRE_VERSION,
             body: OpBody::Doc(DocOp::InsertBlock {
+                parent: None,
                 after: None,
                 id: OpId {
                     counter: 1,

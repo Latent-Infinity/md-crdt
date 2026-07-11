@@ -148,6 +148,7 @@ fn unknown_wire_version_rejected_without_mutation() {
     let mut bad = Envelope {
         version: WIRE_VERSION + 9,
         body: OpBody::Doc(DocOp::DeleteBlock {
+            parent: None,
             target: OpId {
                 counter: 1,
                 peer: 1,
@@ -197,6 +198,7 @@ fn unit_mode_rejects_non_empty_paragraph_on_insert_block() {
     let env = Envelope {
         version: WIRE_VERSION,
         body: OpBody::Doc(DocOp::InsertBlock {
+            parent: None,
             after: None,
             id: OpId {
                 counter: 1,
@@ -270,6 +272,7 @@ fn remote_operation_id_not_max_rejected() {
     let env = Envelope {
         version: WIRE_VERSION,
         body: OpBody::Doc(DocOp::InsertBlock {
+            parent: None,
             after: None,
             id: block_op,
             right_origin: None,
@@ -312,6 +315,7 @@ fn remote_peer_mismatch_in_nested_child_rejected() {
     let env = Envelope {
         version: WIRE_VERSION,
         body: OpBody::Doc(DocOp::InsertBlock {
+            parent: None,
             after: None,
             id: top,
             right_origin: None,

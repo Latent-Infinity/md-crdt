@@ -6,6 +6,7 @@
 mod session;
 
 pub use session::VaultSession;
+// IngestReport is defined in this module.
 
 use crate::doc::{Block, BlockId, BlockKind, Document, Parser, paragraph_visible_string};
 use crate::storage::Storage;
@@ -39,6 +40,10 @@ pub enum VaultError {
     SessionNotOpen(PathBuf),
     #[error("session snapshot: {0}")]
     Snapshot(String),
+    #[error("session: {0}")]
+    Session(String),
+    #[error("unsupported block kind during ingest: {0}")]
+    UnsupportedIngestBlock(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
@@ -106,6 +111,8 @@ pub enum MatchType {
 pub struct BlockMatch {
     pub old_id: BlockId,
     pub new_id: BlockId,
+    /// Index into the new parsed-block list that matched this old block.
+    pub new_index: usize,
     pub confidence: Score,
     pub match_type: MatchType,
 }
@@ -113,7 +120,20 @@ pub struct BlockMatch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddedBlock {
     pub id: BlockId,
+    /// Index into the new parsed-block list for this addition.
+    pub new_index: usize,
     pub probable_copy_of: Option<BlockId>,
+}
+
+/// Aggregate result of structure ingest across vault files.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct IngestReport {
+    pub files_noop: usize,
+    pub files_changed: usize,
+    /// Files skipped because they contain not-yet-ingestable blocks (e.g. tables, or a
+    /// blockquote on re-ingest). Left untouched on disk; no ops emitted.
+    pub files_skipped: usize,
+    pub ops_emitted: usize,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -277,19 +297,61 @@ impl Vault {
         match_blocks(old_state, new_blocks, config)
     }
 
-    fn state_root(&self) -> PathBuf {
+    pub(crate) fn state_root(&self) -> PathBuf {
         self.path.join(".mdcrdt").join("state")
     }
 
-    fn state_path_for(&self, file: &Path) -> PathBuf {
+    /// Absolute path of the fingerprint / content-hash state blob for a vault file.
+    pub(crate) fn state_path_for(&self, file: &Path) -> PathBuf {
         let relative = file.strip_prefix(&self.path).unwrap_or(file);
         let mut path = self.state_root().join(relative);
         path.set_extension("mdcrdt");
         path
     }
+
+    /// Load last flushed fingerprint state for a file (absolute or vault-relative).
+    pub(crate) fn read_last_flushed(
+        &self,
+        file: &Path,
+    ) -> Result<Option<LastFlushedState>, VaultError> {
+        let abs = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            self.path.join(file)
+        };
+        let storage = Storage::open(self.state_path_for(&abs))?;
+        match storage.read_snapshot() {
+            Ok((bytes, _, _)) => {
+                let archived =
+                    rkyv::access::<ArchivedSerializableState, rkyv::rancor::Error>(&bytes)
+                        .map_err(|_| VaultError::Serialization)?;
+                Ok(Some(LastFlushedState::from_archived(archived)))
+            }
+            Err(crate::storage::StorageError::Missing) => Ok(None),
+            Err(err) => Err(VaultError::Storage(err)),
+        }
+    }
+
+    pub(crate) fn write_last_flushed(
+        &self,
+        file: &Path,
+        state: &LastFlushedState,
+    ) -> Result<(), VaultError> {
+        let abs = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            self.path.join(file)
+        };
+        let serializable = state.to_serializable();
+        let encoded = rkyv::to_bytes::<rkyv::rancor::Error>(&serializable)
+            .map_err(|_| VaultError::Serialization)?;
+        let storage = Storage::open(self.state_path_for(&abs))?;
+        storage.write_snapshot(&encoded, &[], false)?;
+        Ok(())
+    }
 }
 
-fn fingerprint_document(doc: &Document) -> Vec<BlockFingerprint> {
+pub fn fingerprint_document(doc: &Document) -> Vec<BlockFingerprint> {
     let mut fingerprints = Vec::new();
     let mut container_path = Vec::new();
     collect_block_fingerprints(
@@ -421,7 +483,7 @@ pub fn match_blocks(
     }
 
     let mut result = BlockMapping::default();
-    for (old_idx, _new_idx, score) in &matches {
+    for (old_idx, new_idx, score) in &matches {
         let old_block = &old_state.blocks[*old_idx];
         let match_type = if *score >= config.exact_threshold {
             MatchType::ExactFingerprint
@@ -431,6 +493,7 @@ pub fn match_blocks(
         result.matched.push(BlockMatch {
             old_id: old_block.block_id,
             new_id: old_block.block_id,
+            new_index: *new_idx,
             confidence: *score,
             match_type,
         });
@@ -461,6 +524,7 @@ pub fn match_blocks(
         });
         result.added.push(AddedBlock {
             id: block_id_for_unmatched_parsed(new_block, new_idx),
+            new_index: new_idx,
             probable_copy_of: copy_source,
         });
     }
@@ -592,7 +656,7 @@ impl Fingerprint {
     }
 }
 
-fn hash_string(value: &str) -> u64 {
+pub(crate) fn hash_string(value: &str) -> u64 {
     stable_hash_string(value)
 }
 

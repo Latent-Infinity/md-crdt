@@ -1,11 +1,15 @@
 //! Multi-document vault session: shared peer identity + lazy CollaborativeDocuments.
 
-use super::{Vault, VaultError};
+use super::{
+    IngestReport, LastFlushedState, MatchConfig, Vault, VaultError, fingerprint_document,
+    hash_string, match_blocks, parsed_blocks_from_doc,
+};
 use crate::codec::JsonOpCodec;
-use crate::core::PeerId;
-use crate::session::{CollaborativeDocument, SnapshotError};
+use crate::core::{OpId, PeerId, Sequence};
+use crate::doc::{Block, BlockId, BlockKind, Document, Parser, paragraph_visible_string};
+use crate::session::{CollaborativeDocument, SessionError, SnapshotError};
 use crate::storage::{Storage, StorageError};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -105,6 +109,96 @@ impl VaultSession {
         Ok(())
     }
 
+    /// Structure-only ingest of all markdown files (hash gate → match_blocks → block ops).
+    ///
+    /// Text LCS for matched-but-edited paragraphs is deferred. New paragraphs use N6-d
+    /// (`insert_paragraph` = empty InsertBlock + InsertText).
+    pub fn ingest_all(&mut self) -> Result<IngestReport, VaultError> {
+        let files: Vec<PathBuf> = self.vault.files().collect();
+        let mut report = IngestReport::default();
+        for abs in files {
+            let rel = abs
+                .strip_prefix(&self.vault.path)
+                .unwrap_or(abs.as_path())
+                .to_path_buf();
+            match self.ingest_file(&rel)? {
+                IngestOutcome::Changed(ops) => {
+                    report.files_changed += 1;
+                    report.ops_emitted += ops;
+                }
+                IngestOutcome::NoOp => report.files_noop += 1,
+                IngestOutcome::Skipped => report.files_skipped += 1,
+            }
+        }
+        Ok(report)
+    }
+
+    /// Structure ingest for a single vault-relative markdown path.
+    ///
+    /// Returns `(changed, ops_emitted)`.
+    pub fn ingest_file(&mut self, rel_path: impl AsRef<Path>) -> Result<IngestOutcome, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        let abs = self.vault.path.join(&rel);
+        if !abs.exists() {
+            return Err(VaultError::PathDoesNotExist(abs));
+        }
+        let content = fs::read_to_string(&abs)?;
+        let content_hash = hash_string(&content);
+
+        if let Some(prev) = self.vault.read_last_flushed(&abs)?
+            && prev.content_hash == content_hash
+        {
+            return Ok(IngestOutcome::NoOp);
+        }
+
+        let parsed = Parser::parse(&content);
+        // Tables aren't wire-ready yet: skip the whole file (don't record its hash, so it
+        // gets picked up once table support lands). No silent flatten, no vault-wide abort.
+        if document_contains_table(&parsed) {
+            return Ok(IngestOutcome::Skipped);
+        }
+
+        // Ensure session is loaded before matching against its CRDT state.
+        self.session_mut(&rel)?;
+        let empty = self
+            .docs
+            .get(&rel)
+            .expect("session opened above")
+            .document()
+            .blocks_in_order()
+            .is_empty();
+
+        // Nested re-ingest matching (blockquote edits preserving identity) is a follow-up;
+        // skip a blockquote file when the session already has content.
+        if !empty && document_contains_blockquote(&parsed) {
+            return Ok(IngestOutcome::Skipped);
+        }
+
+        let ops = {
+            let session = self.docs.get_mut(&rel).expect("session opened above");
+            if empty {
+                // First ingest: insert the parsed tree recursively (blockquotes preserved).
+                let blocks = parsed.blocks_in_order();
+                insert_tree(session, None, &blocks)?
+            } else {
+                // Re-ingest of a flat document: structure match against CRDT state.
+                let leaves = leaf_blocks_in_order(&parsed);
+                let new_parsed = parsed_blocks_from_doc(&parsed);
+                apply_structure_ingest(session, &leaves, &new_parsed)?
+            }
+        };
+
+        // Persist session snapshot + fingerprint/hash gate state.
+        self.save(&rel)?;
+        let session = self.docs.get(&rel).expect("session still open");
+        let state = LastFlushedState {
+            content_hash,
+            blocks: fingerprint_document(session.document()),
+        };
+        self.vault.write_last_flushed(&abs, &state)?;
+        Ok(IngestOutcome::Changed(ops))
+    }
+
     fn load_or_create_session(&self, rel: &Path) -> Result<CollaborativeDocument, VaultError> {
         let storage_path = session_storage_path(&self.vault, rel);
         match Storage::open(&storage_path) {
@@ -201,6 +295,211 @@ fn write_session_snapshot(
     doc.write_to_storage(&storage)
         .map_err(|e| VaultError::Snapshot(e.to_string()))?;
     Ok(())
+}
+
+/// Leaf blocks in the same traversal order as [`parsed_blocks_from_doc`].
+fn leaf_blocks_in_order(doc: &Document) -> Vec<Block> {
+    let mut out = Vec::new();
+    collect_leaf_blocks(&doc.blocks_in_order(), &mut out);
+    out
+}
+
+fn collect_leaf_blocks(blocks: &[&Block], out: &mut Vec<Block>) {
+    for block in blocks {
+        match &block.kind {
+            BlockKind::BlockQuote { children } => {
+                let kids: Vec<_> = children.iter_asc().collect();
+                collect_leaf_blocks(&kids, out);
+            }
+            _ => out.push((*block).clone()),
+        }
+    }
+}
+
+fn find_elem_id(session: &CollaborativeDocument, block_id: BlockId) -> Option<OpId> {
+    session
+        .document()
+        .blocks_in_order()
+        .into_iter()
+        .find(|b| b.id == block_id)
+        .map(|b| b.elem_id)
+}
+
+fn session_err(err: SessionError) -> VaultError {
+    VaultError::Session(err.to_string())
+}
+
+/// Outcome of ingesting a single file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestOutcome {
+    /// File unchanged since last flush (hash gate).
+    NoOp,
+    /// File ingested; approximate structure-op count.
+    Changed(usize),
+    /// File contains not-yet-ingestable blocks (a table, or a blockquote on re-ingest).
+    Skipped,
+}
+
+fn document_contains_table(doc: &Document) -> bool {
+    fn walk(blocks: &[&Block]) -> bool {
+        blocks.iter().any(|b| match &b.kind {
+            BlockKind::Table { .. } => true,
+            BlockKind::BlockQuote { children } => walk(&children.iter_asc().collect::<Vec<_>>()),
+            _ => false,
+        })
+    }
+    walk(&doc.blocks_in_order())
+}
+
+fn document_contains_blockquote(doc: &Document) -> bool {
+    doc.blocks_in_order()
+        .iter()
+        .any(|b| matches!(b.kind, BlockKind::BlockQuote { .. }))
+}
+
+/// Insert a parsed block tree into `parent`'s children (top-level when `None`),
+/// preserving blockquote nesting. Returns an approximate structure-op count.
+fn insert_tree(
+    session: &mut CollaborativeDocument,
+    parent: Option<OpId>,
+    blocks: &[&Block],
+) -> Result<usize, VaultError> {
+    let mut ops = 0usize;
+    let mut after: Option<OpId> = None;
+    for block in blocks {
+        let elem = match &block.kind {
+            BlockKind::Paragraph { text } => {
+                let body = paragraph_visible_string(text);
+                ops += if body.is_empty() { 1 } else { 2 };
+                session
+                    .insert_paragraph_in(parent, after, &body)
+                    .map_err(session_err)?
+            }
+            BlockKind::CodeFence { info, text } => {
+                ops += 1;
+                session
+                    .insert_block_in(
+                        parent,
+                        after,
+                        BlockKind::CodeFence {
+                            info: info.clone(),
+                            text: text.clone(),
+                        },
+                    )
+                    .map_err(session_err)?
+            }
+            BlockKind::RawBlock { raw } => {
+                ops += 1;
+                session
+                    .insert_block_in(parent, after, BlockKind::RawBlock { raw: raw.clone() })
+                    .map_err(session_err)?
+            }
+            BlockKind::BlockQuote { children } => {
+                ops += 1;
+                let q = session
+                    .insert_block_in(
+                        parent,
+                        after,
+                        BlockKind::BlockQuote {
+                            children: Sequence::new(),
+                        },
+                    )
+                    .map_err(session_err)?;
+                let kids: Vec<_> = children.iter_asc().collect();
+                ops += insert_tree(session, Some(q), &kids)?;
+                q
+            }
+            BlockKind::Table { .. } => return Err(VaultError::UnsupportedIngestBlock("table")),
+        };
+        after = Some(elem);
+    }
+    Ok(ops)
+}
+
+/// Structure-only: delete removed blocks, insert added (N6-d for paragraphs).
+///
+/// Matched blocks keep their CRDT identity; text edits on matched blocks are left
+/// for a later text-diff path.
+fn apply_structure_ingest(
+    session: &mut CollaborativeDocument,
+    leaves: &[Block],
+    new_parsed: &[super::ParsedBlock],
+) -> Result<usize, VaultError> {
+    let old_state = LastFlushedState {
+        content_hash: 0,
+        blocks: fingerprint_document(session.document()),
+    };
+    let mapping = match_blocks(&old_state, new_parsed, &MatchConfig::default());
+
+    let mut ops = 0usize;
+
+    // Deletes first so insert anchors resolve against the surviving set.
+    for block_id in &mapping.removed {
+        let Some(elem) = find_elem_id(session, *block_id) else {
+            continue;
+        };
+        session.delete_block(elem).map_err(session_err)?;
+        ops += 1;
+    }
+
+    let matched_by_new: HashMap<usize, BlockId> = mapping
+        .matched
+        .iter()
+        .map(|m| (m.new_index, m.old_id))
+        .collect();
+    let added_indices: HashSet<usize> = mapping.added.iter().map(|a| a.new_index).collect();
+
+    // Walk file leaf order; insert only newly observed blocks.
+    let mut after: Option<OpId> = None;
+    for (idx, leaf) in leaves.iter().enumerate() {
+        if let Some(old_id) = matched_by_new.get(&idx) {
+            if let Some(elem) = find_elem_id(session, *old_id) {
+                after = Some(elem);
+            }
+            continue;
+        }
+        if !added_indices.contains(&idx) {
+            // Should not happen if match covers all new indices.
+            continue;
+        }
+        let elem = insert_leaf_block(session, after, leaf)?;
+        // insert_paragraph / insert_block may emit 1–2 ops; count by clock delta is hard.
+        // Count logical structure ops: one per added leaf (text may be a second envelope).
+        ops += match &leaf.kind {
+            BlockKind::Paragraph { text } if !paragraph_visible_string(text).is_empty() => 2,
+            _ => 1,
+        };
+        after = Some(elem);
+    }
+
+    Ok(ops)
+}
+
+fn insert_leaf_block(
+    session: &mut CollaborativeDocument,
+    after: Option<OpId>,
+    leaf: &Block,
+) -> Result<OpId, VaultError> {
+    match &leaf.kind {
+        BlockKind::Paragraph { text } => {
+            let body = paragraph_visible_string(text);
+            session.insert_paragraph(after, &body).map_err(session_err)
+        }
+        BlockKind::CodeFence { info, text } => session
+            .insert_block(
+                after,
+                BlockKind::CodeFence {
+                    info: info.clone(),
+                    text: text.clone(),
+                },
+            )
+            .map_err(session_err),
+        BlockKind::RawBlock { raw } => session
+            .insert_block(after, BlockKind::RawBlock { raw: raw.clone() })
+            .map_err(session_err),
+        BlockKind::Table { .. } => Err(VaultError::UnsupportedIngestBlock("table")),
+        BlockKind::BlockQuote { .. } => Err(VaultError::UnsupportedIngestBlock("blockquote")),
+    }
 }
 
 /// Normalize to a vault-relative path without `..` components.

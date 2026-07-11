@@ -4,7 +4,7 @@
 //! with support for collaborative editing operations.
 
 use crate::core::mark::{Anchor, MarkIntervalId, MarkKind, MarkSet, MarkValue};
-use crate::core::{OpId, Sequence, StateVector};
+use crate::core::{OpId, Sequence, SequenceOp, StateVector};
 use std::collections::BTreeMap;
 use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
@@ -263,6 +263,158 @@ impl Document {
 
     pub fn blocks_in_order(&self) -> Vec<&Block> {
         self.blocks.iter_asc().collect()
+    }
+
+    /// Find a block by `elem_id` anywhere in the tree (top-level or nested in a blockquote).
+    pub fn find_block(&self, elem_id: OpId) -> Option<&Block> {
+        fn walk(seq: &Sequence<Block>, id: OpId) -> Option<&Block> {
+            for e in seq.iter_all() {
+                if let Some(b) = e.value.as_ref() {
+                    if b.elem_id == id {
+                        return Some(b);
+                    }
+                    if let BlockKind::BlockQuote { children } = &b.kind
+                        && let Some(found) = walk(children, id)
+                    {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        walk(&self.blocks, elem_id)
+    }
+
+    /// Mutate a block by `elem_id` anywhere in the tree. Returns `None` if not found.
+    pub fn with_block_mut<R>(
+        &mut self,
+        elem_id: OpId,
+        f: impl FnOnce(&mut Block) -> R,
+    ) -> Option<R> {
+        fn walk<R, F: FnOnce(&mut Block) -> R>(
+            seq: &mut Sequence<Block>,
+            id: OpId,
+            f: &mut Option<F>,
+        ) -> Option<R> {
+            for bid in seq.ids() {
+                if seq.value_mut(bid).is_some_and(|b| b.elem_id == id) {
+                    let func = f.take()?;
+                    return seq.value_mut(bid).map(func);
+                }
+            }
+            for bid in seq.ids() {
+                if let Some(b) = seq.value_mut(bid)
+                    && let BlockKind::BlockQuote { children } = &mut b.kind
+                    && let Some(r) = walk(children, id, f)
+                {
+                    return Some(r);
+                }
+            }
+            None
+        }
+        let mut f = Some(f);
+        walk(&mut self.blocks, elem_id, &mut f)
+    }
+
+    /// Insert a block into `parent`'s children (top-level when `parent` is `None`).
+    /// Returns `false` if `parent` is not a blockquote in the tree.
+    pub fn insert_block_at(
+        &mut self,
+        parent: Option<OpId>,
+        after: Option<OpId>,
+        id: OpId,
+        value: Block,
+        right_origin: Option<OpId>,
+    ) -> bool {
+        match parent {
+            None => {
+                self.blocks.apply(SequenceOp::Insert {
+                    after,
+                    id,
+                    value,
+                    right_origin,
+                });
+                true
+            }
+            Some(p) => self
+                .with_block_mut(p, |container| match &mut container.kind {
+                    BlockKind::BlockQuote { children } => {
+                        children.apply(SequenceOp::Insert {
+                            after,
+                            id,
+                            value,
+                            right_origin,
+                        });
+                        true
+                    }
+                    _ => false,
+                })
+                .unwrap_or(false),
+        }
+    }
+
+    /// Delete a block from `parent`'s children (top-level when `parent` is `None`).
+    pub fn delete_block_at(&mut self, parent: Option<OpId>, target: OpId, id: OpId) -> bool {
+        match parent {
+            None => {
+                self.blocks.apply(SequenceOp::Delete { target, id });
+                true
+            }
+            Some(p) => self
+                .with_block_mut(p, |container| match &mut container.kind {
+                    BlockKind::BlockQuote { children } => {
+                        children.apply(SequenceOp::Delete { target, id });
+                        true
+                    }
+                    _ => false,
+                })
+                .unwrap_or(false),
+        }
+    }
+
+    /// The children sequence of a container (top-level when `parent` is `None`); `None`
+    /// if `parent` is not a blockquote in the tree.
+    pub fn container_children(&self, parent: Option<OpId>) -> Option<&Sequence<Block>> {
+        match parent {
+            None => Some(&self.blocks),
+            Some(p) => match self.find_block(p) {
+                Some(Block {
+                    kind: BlockKind::BlockQuote { children },
+                    ..
+                }) => Some(children),
+                _ => None,
+            },
+        }
+    }
+
+    /// Compute the RGA `right_origin` for an insert into `parent`'s children.
+    pub fn compute_child_right_origin(
+        &self,
+        parent: Option<OpId>,
+        after: Option<OpId>,
+    ) -> Option<OpId> {
+        self.container_children(parent)
+            .and_then(|c| c.compute_right_origin(after))
+    }
+
+    /// Find a block by its stable `BlockId` anywhere in the tree.
+    pub fn find_block_by_id(&self, block_id: BlockId) -> Option<&Block> {
+        fn walk(seq: &Sequence<Block>, id: BlockId) -> Option<&Block> {
+            for e in seq.iter_all() {
+                if let Some(b) = e.value.as_ref() {
+                    if b.id == id {
+                        return Some(b);
+                    }
+                    if let BlockKind::BlockQuote { children } = &b.kind
+                        && let Some(found) = walk(children, id)
+                    {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        walk(&self.blocks, block_id)
     }
 
     pub fn insert_text(

@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use md_crdt::filesync::{IngestResult, Vault};
+use md_crdt::filesync::{Vault, VaultSession};
 use serde::Serialize;
 use std::env;
 use std::path::PathBuf;
@@ -144,52 +144,56 @@ fn flush_command() {
 
 fn ingest_command() {
     let current_dir = current_dir_or_exit();
-    let vault = match Vault::open(&current_dir) {
-        Ok(vault) => vault,
+    let mut session = match VaultSession::open(&current_dir) {
+        Ok(s) => s,
         Err(err) => {
             eprintln!("Error: {err}");
             std::process::exit(1);
         }
     };
-    let result = match vault.ingest() {
-        Ok(result) => result,
+    let report = match session.ingest_all() {
+        Ok(r) => r,
         Err(err) => {
             eprintln!("Error: {err}");
             std::process::exit(1);
         }
     };
-    match result {
-        IngestResult::NoOp => println!("Ingest complete: no changes"),
-        IngestResult::Changed => println!("Ingest complete: changes detected"),
+    if report.files_changed == 0 {
+        println!("Ingest complete: no changes");
+    } else {
+        println!(
+            "Ingest complete: {} file(s) changed, {} op(s)",
+            report.files_changed, report.ops_emitted
+        );
     }
 }
 
 fn sync_command() {
     let current_dir = current_dir_or_exit();
-    let vault = match Vault::open(&current_dir) {
-        Ok(vault) => vault,
+    let mut session = match VaultSession::open(&current_dir) {
+        Ok(s) => s,
         Err(err) => {
             eprintln!("Error: {err}");
             std::process::exit(1);
         }
     };
-    let result = match vault.ingest() {
-        Ok(result) => result,
+    let report = match session.ingest_all() {
+        Ok(r) => r,
         Err(err) => {
             eprintln!("Error: {err}");
             std::process::exit(1);
         }
     };
 
-    match result {
-        IngestResult::NoOp => {
-            println!("Sync complete: clean");
-            std::process::exit(0);
-        }
-        IngestResult::Changed => {
-            println!("Sync complete: changes detected");
-            std::process::exit(2);
-        }
+    if report.files_changed == 0 {
+        println!("Sync complete: clean");
+        std::process::exit(0);
+    } else {
+        println!(
+            "Sync complete: {} file(s) changed, {} op(s)",
+            report.files_changed, report.ops_emitted
+        );
+        std::process::exit(2);
     }
 }
 

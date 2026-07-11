@@ -140,16 +140,28 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         self.sync.encode_changes_since(since)
     }
 
-    /// Insert a block after `after` (None = start). Returns the block `elem_id`.
+    /// Insert a top-level block after `after` (None = start). Returns the block `elem_id`.
     pub fn insert_block(
         &mut self,
         after: Option<OpId>,
         kind: BlockKind,
     ) -> Result<OpId, SessionError> {
-        if let Some(anchor) = after {
-            if self.document.blocks.get_element(&anchor).is_none() {
-                return Err(SessionError::MissingAfterAnchor);
-            }
+        self.insert_block_in(None, after, kind)
+    }
+
+    /// Insert a block into `parent`'s children (top-level when `parent` is `None`).
+    pub fn insert_block_in(
+        &mut self,
+        parent: Option<OpId>,
+        after: Option<OpId>,
+        kind: BlockKind,
+    ) -> Result<OpId, SessionError> {
+        let ok = match self.document.container_children(parent) {
+            None => return Err(SessionError::MissingAfterAnchor),
+            Some(children) => after.is_none_or(|a| children.get_element(&a).is_some()),
+        };
+        if !ok {
+            return Err(SessionError::MissingAfterAnchor);
         }
 
         let b = self.next_counter;
@@ -158,11 +170,12 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             counter: b,
         };
         let block_id = block_id_from_op(block_elem);
-        let right_origin = self.document.blocks.compute_right_origin(after);
+        let right_origin = self.document.compute_child_right_origin(parent, after);
         let skeleton = block_kind_to_skeleton(&kind, self.unit_mode)?;
         let envelope = Envelope {
             version: WIRE_VERSION,
             body: OpBody::Doc(DocOp::InsertBlock {
+                parent,
                 after,
                 id: block_elem,
                 right_origin,
@@ -189,9 +202,22 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         Ok(block_elem)
     }
 
-    /// Delete block element `target`. Returns the delete-op id.
+    /// Delete a top-level block element `target`. Returns the delete-op id.
     pub fn delete_block(&mut self, target: OpId) -> Result<OpId, SessionError> {
-        if self.document.blocks.get_element(&target).is_none() {
+        self.delete_block_in(None, target)
+    }
+
+    /// Delete a block from `parent`'s children (top-level when `parent` is `None`).
+    pub fn delete_block_in(
+        &mut self,
+        parent: Option<OpId>,
+        target: OpId,
+    ) -> Result<OpId, SessionError> {
+        let found = matches!(
+            self.document.container_children(parent),
+            Some(children) if children.get_element(&target).is_some()
+        );
+        if !found {
             return Err(SessionError::MissingDeleteTarget);
         }
 
@@ -203,6 +229,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         let envelope = Envelope {
             version: WIRE_VERSION,
             body: OpBody::Doc(DocOp::DeleteBlock {
+                parent,
                 target,
                 id: delete_id,
             }),
@@ -225,6 +252,17 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         after: Option<OpId>,
         text: &str,
     ) -> Result<OpId, SessionError> {
+        self.insert_paragraph_in(None, after, text)
+    }
+
+    /// Insert a paragraph (empty `InsertBlock` + `InsertText` body, N6-d) into `parent`'s
+    /// children (top-level when `parent` is `None`).
+    pub fn insert_paragraph_in(
+        &mut self,
+        parent: Option<OpId>,
+        after: Option<OpId>,
+        text: &str,
+    ) -> Result<OpId, SessionError> {
         let empty = BlockKind::paragraph(
             "",
             OpId {
@@ -232,7 +270,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 peer: 0,
             },
         );
-        let block_elem = self.insert_block(after, empty)?;
+        let block_elem = self.insert_block_in(parent, after, empty)?;
         if text.is_empty() {
             return Ok(block_elem);
         }
@@ -257,9 +295,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         let (block_elem, units) = {
             let block = self
                 .document
-                .blocks_in_order()
-                .into_iter()
-                .find(|b| b.id == block_id)
+                .find_block_by_id(block_id)
                 .ok_or(SessionError::BlockNotFound)?;
             let block_elem = block.elem_id;
             let BlockKind::Paragraph { text: body } = &block.kind else {
@@ -332,9 +368,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         let (block_elem, targets) = {
             let block = self
                 .document
-                .blocks_in_order()
-                .into_iter()
-                .find(|b| b.id == block_id)
+                .find_block_by_id(block_id)
                 .ok_or(SessionError::BlockNotFound)?;
             let block_elem = block.elem_id;
             let BlockKind::Paragraph { text: body } = &block.kind else {
@@ -673,7 +707,7 @@ fn check_peer_consistency(op: &Operation, env: &Envelope) -> Result<(), SessionE
             }
             check_kind_peers(peer, &block.kind)?;
         }
-        OpBody::Doc(DocOp::DeleteBlock { id, target: _ }) => {
+        OpBody::Doc(DocOp::DeleteBlock { id, .. }) => {
             if id.peer != peer {
                 return Err(SessionError::PeerMismatch);
             }
@@ -752,29 +786,23 @@ fn block_kind_to_skeleton(
 fn apply_envelope_to_document(document: &mut Document, envelope: &Envelope) {
     match &envelope.body {
         OpBody::Doc(DocOp::InsertBlock {
+            parent,
             after,
             id,
             right_origin,
             block,
         }) => {
             let value = block_from_skeleton(block, *id);
-            document.blocks.apply(SequenceOp::Insert {
-                after: *after,
-                id: *id,
-                value,
-                right_origin: *right_origin,
-            });
+            document.insert_block_at(*parent, *after, *id, value, *right_origin);
         }
-        OpBody::Doc(DocOp::DeleteBlock { target, id }) => {
-            document.blocks.apply(SequenceOp::Delete {
-                target: *target,
-                id: *id,
-            });
+        OpBody::Doc(DocOp::DeleteBlock { parent, target, id }) => {
+            document.delete_block_at(*parent, *target, *id);
         }
         OpBody::Doc(DocOp::InsertText {
             block_elem, units, ..
         }) => {
-            let _ = document.blocks.with_value_mut(*block_elem, |block| {
+            // block_elem may be nested inside a blockquote; search the whole tree.
+            let _ = document.with_block_mut(*block_elem, |block| {
                 let BlockKind::Paragraph { text: body } = &mut block.kind else {
                     return;
                 };
@@ -796,7 +824,7 @@ fn apply_envelope_to_document(document: &mut Document, envelope: &Envelope) {
             targets,
             ..
         }) => {
-            let _ = document.blocks.with_value_mut(*block_elem, |block| {
+            let _ = document.with_block_mut(*block_elem, |block| {
                 let BlockKind::Paragraph { text: body } = &mut block.kind else {
                     return;
                 };

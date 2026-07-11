@@ -21,7 +21,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-06b** Text CRDT wire ops | **done** | InsertText/DeleteText + insert_paragraph N6-d; unit_mode default true; with_value_mut |
 | **PR-07** Marks | **done** | Unified rich `mark::MarkSet` on Block/EditOp; generic dual API removed |
 | **PR-08** VaultSession | **done** | Path→CollaborativeDocument map; `.mdcrdt/peer_id`; session snapshots under `.mdcrdt/sessions/` |
-| PR-09+ | pending | Vault ingest D1, etc. |
+| **PR-09** Vault ingest D1 | **done** | Hash gate + match_blocks → Insert/Delete block; N6-d for new paragraphs; `IngestReport` |
+| PR-10+ | pending | Text LCS ingest D2, etc. |
 
 ## Phase B checklist
 
@@ -47,6 +48,9 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Deprecated aliases | `RichMarkSet` / `RichMarkInterval` type aliases for one release | Migration path for callers |
 | Session snapshot dir | `.mdcrdt/sessions/<rel>.mdcrdt` (not `.mdcrdt/state/`) | Avoid collision with existing fingerprint `LastFlushedState` blobs in `state/` until ingest unifies storage |
 | Peer id format | Decimal `u64` text in `.mdcrdt/peer_id`; non-zero | Shared clock domain for all file sessions in a vault |
+| Ingest D1 scope | Structure only (add/remove); matched different text deferred to D2 | Ship block ops without grapheme LCS |
+| Ingest new paragraphs | `insert_paragraph` (N6-d) | Empty InsertBlock + InsertText body |
+| Pure reorder | Match preserves BlockIds; no move op yet | CRDT order may lag file order until move/reorder support |
 
 ## Phase C checklist
 
@@ -60,13 +64,27 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 - [x] Multi-file vault opens distinct sessions per path; shared peer id (PR-08)
 - [x] Open/save per-file session snapshots (PR-08)
-- [ ] External paragraph edit → ops → snapshot (PR-09/10)
-- [ ] Block reorder preserves ids via match_blocks (PR-09)
+- [x] Structure ingest: hash gate → match → Insert/Delete block → snapshot (PR-09)
+- [x] Block reorder preserves ids via match_blocks (PR-09; no CRDT re-order yet)
+- [x] Blockquotes preserved on ingest (not flattened); tables skipped, no vault-wide abort (audit)
+- [ ] External in-paragraph text edit → InsertText/DeleteText (PR-10)
+- [ ] Nested re-ingest matching (blockquote edits preserving identity) — follow-up
 - [ ] Two vaults exchange ops after external edits (later)
+
+## Audit finding (PR-09) — ingest mishandled non-flat blocks → **fixed (nested editing machinery)**
+
+**Symptom.** A blockquote in a file was **silently flattened** (structure lost on ingest→flush); a table in any file made `ingest_all` **abort the whole vault** (`?` on `UnsupportedIngestBlock`). Both untested.
+
+**Fix (user chose "build nested-text machinery now").** Added collaborative nested block/paragraph editing:
+- `DocOp::InsertBlock`/`DeleteBlock` gain `parent: Option<OpId>` (container elem_id; `None` = top-level; `#[serde(default)]` for back-compat). Apply navigates to the container's `children` via a recursive elem_id search (arbitrary depth). `InsertText`/`DeleteText` need no wire change — their apply now resolves `block_elem` recursively.
+- Session `insert_block_in` / `insert_paragraph_in(parent, …)`; `insert_text`/`delete_text` locate blocks recursively (`Document::find_block`/`with_block_mut`/`container_children`).
+- Ingest: first ingest inserts the parsed tree recursively (blockquotes preserved, syncable); tables → per-file **skip** (`IngestReport.files_skipped`), no abort. Table parsing isn't implemented yet, so the table path is defensive until PR-12.
+- **Scope note:** nested *re-ingest* matching (editing inside a quote across re-ingests, preserving identity) is deferred — a quote file on re-ingest is skipped rather than flattened.
+- Tests: `nested_paragraph_in_blockquote_converges` (session), `ingest_preserves_blockquote_structure` (vault).
 
 ## Gate
 
-- `just check` — **passed** after PR-08 (fmt + clippy + full workspace tests)
+- `just check` — **passed** after PR-09 audit + nested editing (309 tests, 0 warnings)
 - Prior audit notes retained (span-aware sync; mark visible-order split)
 
 

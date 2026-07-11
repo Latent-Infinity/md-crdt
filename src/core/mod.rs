@@ -166,6 +166,17 @@ impl<T: Clone> Sequence<T> {
         Some(f(value))
     }
 
+    /// Element ids in storage order (used for tree navigation).
+    pub fn ids(&self) -> Vec<OpId> {
+        self.elements.iter().map(|e| e.id).collect()
+    }
+
+    /// Direct mutable access to a live element's value (`None` if unknown/tombstoned).
+    pub fn value_mut(&mut self, id: OpId) -> Option<&mut T> {
+        let index = *self.index.get(&id)?;
+        self.elements.get_mut(index)?.value.as_mut()
+    }
+
     pub fn apply_op(&mut self, op: (OpId, T)) {
         let after = self.elements.last().map(|elem| elem.id);
         self.insert(after, op.1, op.0);

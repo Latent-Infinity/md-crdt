@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CollaborativeDocument::new` defaults to `unit_mode = true`; string-mode via `with_codec(..., false)`
 - Nested paragraph apply via `Sequence::with_value_mut` (no full block clone per unit)
 - Concurrent multi-peer same-paragraph insert/delete convergence tests
+- Nested collaborative editing: `DocOp::InsertBlock`/`DeleteBlock` carry an optional `parent` container id; session `insert_block_in`/`insert_paragraph_in` and recursive text apply support editing blocks inside blockquotes (arbitrary depth)
+- Vault ingest preserves blockquote nesting (no longer flattened) and skips table files per-file (`IngestReport.files_skipped`) instead of aborting the whole vault
 
 #### Mark unification (`md-crdt::core::mark`)
 - Single public `MarkSet` is the rich causal remove-wins CRDT (`MarkKind`, `Anchor`, spans)
@@ -56,6 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.mdcrdt/peer_id` load-or-create (non-zero `u64`)
 - Per-file session snapshots under `.mdcrdt/sessions/` (separate from fingerprint `state/`)
 - `session_mut` / `save` / `save_all` / `flush_all` / `close`
+
+#### Vault structure ingest (`md-crdt::filesync`)
+- `VaultSession::ingest_all` / `ingest_file`: content-hash gate → parse → `match_blocks` → structure ops
+- Removed blocks → `delete_block`; added paragraphs → N6-d `insert_paragraph`
+- `IngestReport { files_noop, files_changed, ops_emitted }`; CLI `ingest`/`sync` use `VaultSession`
+- Matched-block text diffs deferred (no grapheme LCS yet)
 
 ## [0.1.0] - 2025-02-04
 

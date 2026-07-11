@@ -23,6 +23,7 @@ fn sample_insert_block(text: &str) -> Envelope {
     Envelope {
         version: WIRE_VERSION,
         body: OpBody::Doc(DocOp::InsertBlock {
+            parent: None,
             after: None,
             id: op(1, 1),
             right_origin: None,
@@ -51,6 +52,7 @@ fn insert_block_with_after_and_right_origin_round_trip() {
     let env = Envelope {
         version: WIRE_VERSION,
         body: OpBody::Doc(DocOp::InsertBlock {
+            parent: None,
             after: Some(op(2, 1)),
             id: op(3, 2),
             right_origin: Some(op(4, 1)),
@@ -73,6 +75,7 @@ fn delete_block_round_trip() {
     let env = Envelope {
         version: WIRE_VERSION,
         body: OpBody::Doc(DocOp::DeleteBlock {
+            parent: None,
             target: op(5, 1),
             id: op(6, 1),
         }),
@@ -121,6 +124,7 @@ fn nest_depth_exceeded_on_encode() {
     let env = Envelope {
         version: WIRE_VERSION,
         body: OpBody::Doc(DocOp::InsertBlock {
+            parent: None,
             after: None,
             id: op(100, 1),
             right_origin: None,
@@ -157,6 +161,7 @@ fn nest_depth_exceeded_on_decode() {
     let env = Envelope {
         version: WIRE_VERSION,
         body: OpBody::Doc(DocOp::InsertBlock {
+            parent: None,
             after: None,
             id: op(100, 1),
             right_origin: None,
@@ -181,6 +186,7 @@ fn insert_block_paragraph_is_empty_helper() {
     let del = Envelope {
         version: WIRE_VERSION,
         body: OpBody::Doc(DocOp::DeleteBlock {
+            parent: None,
             target: op(1, 1),
             id: op(2, 1),
         }),
@@ -194,6 +200,7 @@ fn raw_and_quote_kinds_round_trip() {
     let env = Envelope {
         version: WIRE_VERSION,
         body: OpBody::Doc(DocOp::InsertBlock {
+            parent: None,
             after: None,
             id: op(1, 1),
             right_origin: None,

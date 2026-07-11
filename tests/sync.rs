@@ -146,7 +146,7 @@ fn test_ingest_changes_detected_message() {
     cmd.assert()
         .success()
         .code(0)
-        .stdout(predicate::str::contains("changes detected"));
+        .stdout(predicate::str::contains("changed"));
 }
 
 #[test]
