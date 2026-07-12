@@ -98,6 +98,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cached per-peer `StateVector` frontiers updated by local, remote, promoted, and restored operations
 - Immutable operation payloads now use `Arc<[u8]>`, so delta/outbox/pending encoding shares bytes instead of cloning buffers; serialized wire and snapshot shapes remain unchanged
 - Criterion baselines for block lookup, state-vector generation, and delta encoding in `benches/performance.rs`
+
+#### Optional incremental sequence ordering (`md-crdt::core`)
+- Default-off `sequence_incremental` feature for sibling-local insertion without a full sequence rebuild
+- Debug dual-path validation against the full rebuild after each completed apply, including released pending batches
+- Differential coverage for varied right origins and Criterion probes for top-level, nested-text, and serialization paths
 - `Document` remains `Send + Sync`; public top-level sequence mutation invalidates or self-repairs the index
 
 ## [0.1.0] - 2025-02-04

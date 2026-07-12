@@ -20,9 +20,10 @@ lint:
 # Run all quality checks
 check: fmt lint test
 
-# Differential testing against the naive oracle
+# Differential testing against the naive oracle (both ordering strategies)
 differential-test:
     PROPTEST_CASES=${PROPTEST_CASES:-100000} cargo test --test core_differential differential_test_sequence
+    PROPTEST_CASES=${PROPTEST_CASES:-100000} cargo test --features sequence_incremental --test core_differential differential_test_sequence
 
 # Run benchmarks
 bench:

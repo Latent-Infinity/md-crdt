@@ -1156,10 +1156,10 @@ Nested text inserts each trigger paragraph sequence rebuild—Phase F must basel
 
 #### Success criteria
 
-- [ ] Profile before/after in PR body.
-- [ ] Differential/oracle green; optional flag default off until soak.
-- [ ] BlockId lookup O(1); state_vector O(peers).
-- [ ] Run-length (if landed): no OpId renumber; mark spans still correct; feature-flagged until soak.
+- [x] Profile before/after recorded in the companion plan state.
+- [x] Differential/oracle green; `sequence_incremental` remains default off until soak.
+- [x] BlockId lookup O(1); state_vector O(peers).
+- [x] Run-length not landed: post-incremental profiles did not justify it, so no OpIds changed.
 
 ---
 

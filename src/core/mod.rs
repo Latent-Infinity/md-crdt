@@ -94,6 +94,11 @@ impl<T: Clone> Sequence<T> {
         }
     }
 
+    /// Whether this build uses sibling-local sequence ordering updates.
+    pub const fn incremental_ordering_enabled() -> bool {
+        cfg!(feature = "sequence_incremental")
+    }
+
     pub fn insert(&mut self, after: Option<OpId>, value: T, id: OpId) {
         let right_origin = self.compute_right_origin(after);
         self.apply(SequenceOp::Insert {
@@ -112,6 +117,8 @@ impl<T: Clone> Sequence<T> {
         if let Some(inserted_id) = self.apply_now(op) {
             self.process_pending(inserted_id);
         }
+        #[cfg(feature = "sequence_incremental")]
+        self.debug_assert_incremental_order();
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &T> {
@@ -259,6 +266,13 @@ impl<T: Clone> Sequence<T> {
             after,
             right_origin,
         };
+
+        #[cfg(feature = "sequence_incremental")]
+        if rebuild {
+            self.insert_incrementally(element);
+            return true;
+        }
+
         self.elements.push(element);
         if rebuild {
             self.rebuild_order();
@@ -268,6 +282,77 @@ impl<T: Clone> Sequence<T> {
         }
         true
     }
+
+    #[cfg(feature = "sequence_incremental")]
+    fn insert_incrementally(&mut self, element: Element<T>) {
+        let insert_at = self
+            .elements
+            .iter()
+            .enumerate()
+            .find(|(_, sibling)| {
+                sibling.after == element.after && Self::compare_siblings(&element, sibling).is_lt()
+            })
+            .map(|(index, _)| index)
+            .unwrap_or_else(|| self.subtree_end(element.after));
+
+        self.elements.insert(insert_at, element);
+        for index in insert_at..self.elements.len() {
+            self.index.insert(self.elements[index].id, index);
+        }
+    }
+
+    #[cfg(feature = "sequence_incremental")]
+    fn subtree_end(&self, parent: Option<OpId>) -> usize {
+        let Some(parent) = parent else {
+            return self.elements.len();
+        };
+        let start = self.index[&parent] + 1;
+        self.elements[start..]
+            .iter()
+            .position(|candidate| !self.is_descendant_of(candidate, parent))
+            .map_or(self.elements.len(), |offset| start + offset)
+    }
+
+    #[cfg(feature = "sequence_incremental")]
+    fn is_descendant_of(&self, candidate: &Element<T>, ancestor: OpId) -> bool {
+        let mut cursor = candidate.after;
+        while let Some(id) = cursor {
+            if id == ancestor {
+                return true;
+            }
+            cursor = self.get_element(&id).and_then(|element| element.after);
+        }
+        false
+    }
+
+    fn compare_siblings(a: &Element<T>, b: &Element<T>) -> std::cmp::Ordering {
+        match (a.right_origin, b.right_origin) {
+            (Some(ra), Some(rb)) => {
+                if ra == rb {
+                    b.id.cmp(&a.id)
+                } else {
+                    ra.cmp(&rb)
+                }
+            }
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => b.id.cmp(&a.id),
+        }
+    }
+
+    #[cfg(all(feature = "sequence_incremental", debug_assertions))]
+    fn debug_assert_incremental_order(&self) {
+        let mut rebuilt = self.clone();
+        rebuilt.rebuild_order();
+        debug_assert_eq!(
+            self.element_ids(),
+            rebuilt.element_ids(),
+            "incremental sequence order diverged from full rebuild"
+        );
+    }
+
+    #[cfg(all(feature = "sequence_incremental", not(debug_assertions)))]
+    fn debug_assert_incremental_order(&self) {}
 
     fn apply_delete(&mut self, target: OpId) -> bool {
         let Some(index) = self.index.get(&target).copied() else {
@@ -312,18 +397,7 @@ impl<T: Clone> Sequence<T> {
                 let elem_b = element_map
                     .get(b)
                     .expect("child id must exist in element map during rebuild");
-                match (elem_a.right_origin, elem_b.right_origin) {
-                    (Some(ra), Some(rb)) => {
-                        if ra == rb {
-                            b.cmp(a)
-                        } else {
-                            ra.cmp(&rb)
-                        }
-                    }
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => b.cmp(a),
-                }
+                Self::compare_siblings(elem_a, elem_b)
             });
         }
 
@@ -411,7 +485,13 @@ impl<T: Clone> Sequence<T> {
                     value,
                     right_origin,
                 } => {
-                    if self.apply_insert_internal(after, &id, &value, right_origin, false) {
+                    if self.apply_insert_internal(
+                        after,
+                        &id,
+                        &value,
+                        right_origin,
+                        cfg!(feature = "sequence_incremental"),
+                    ) {
                         inserted = true;
                         self.enqueue_pending(id, &mut queue);
                     } else if let Some(anchor) = after {
@@ -437,7 +517,7 @@ impl<T: Clone> Sequence<T> {
             }
         }
 
-        if inserted {
+        if inserted && !cfg!(feature = "sequence_incremental") {
             self.rebuild_order();
         }
     }

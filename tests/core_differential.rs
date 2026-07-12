@@ -8,6 +8,7 @@ mod proptest_config;
 enum OpSpec {
     Insert {
         after_index: Option<usize>,
+        right_origin_index: Option<usize>,
         value: u8,
         peer: u64,
     },
@@ -22,11 +23,13 @@ fn op_spec_strategy() -> impl Strategy<Value = Vec<OpSpec>> {
         prop_oneof![
             (
                 any::<Option<prop::sample::Index>>(),
+                any::<Option<prop::sample::Index>>(),
                 any::<u8>(),
                 1u64..4u64
             )
-                .prop_map(|(idx, value, peer)| OpSpec::Insert {
-                    after_index: idx.map(|i| i.index(128)),
+                .prop_map(|(after, right_origin, value, peer)| OpSpec::Insert {
+                    after_index: after.map(|i| i.index(128)),
+                    right_origin_index: right_origin.map(|i| i.index(128)),
                     value,
                     peer,
                 },),
@@ -50,6 +53,7 @@ fn realize_ops(specs: &[OpSpec]) -> Vec<SequenceOp<u8>> {
         match *spec {
             OpSpec::Insert {
                 after_index,
+                right_origin_index,
                 value,
                 peer,
             } => {
@@ -64,11 +68,16 @@ fn realize_ops(specs: &[OpSpec]) -> Vec<SequenceOp<u8>> {
                 } else {
                     after_index.and_then(|idx| ids.get(idx % ids.len()).copied())
                 };
+                let right_origin = if ids.is_empty() {
+                    None
+                } else {
+                    right_origin_index.and_then(|idx| ids.get(idx % ids.len()).copied())
+                };
                 ops.push(SequenceOp::Insert {
                     after,
                     id,
                     value,
-                    right_origin: None,
+                    right_origin,
                 });
                 ids.push(id);
             }
@@ -111,11 +120,20 @@ proptest! {
         for op in ops {
             crdt_seq.apply(op.clone());
             oracle_seq.apply(op);
+
+            prop_assert_eq!(
+                crdt_seq.to_vec(),
+                oracle_seq.elements(),
+                "CRDT sequence should match the naive oracle after every operation"
+            );
         }
-
-        let crdt_elements = crdt_seq.to_vec();
-        let oracle_elements = oracle_seq.elements();
-
-        prop_assert_eq!(crdt_elements, oracle_elements, "CRDT sequence should match the naive oracle");
     }
+}
+
+#[test]
+fn sequence_reports_the_compiled_ordering_strategy() {
+    assert_eq!(
+        Sequence::<u8>::incremental_ordering_enabled(),
+        cfg!(feature = "sequence_incremental")
+    );
 }

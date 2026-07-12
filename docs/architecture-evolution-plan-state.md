@@ -5,7 +5,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Field | Value |
 | --- | --- |
 | **Plan** | `docs/architecture-evolution.md` (Draft revision 6) |
-| **Last updated** | 2026-07-11 |
+| **Last updated** | 2026-07-12 |
 | **Tracking unit** | PR slices under design phases A–H |
 
 ## Progress
@@ -29,7 +29,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-12** Table parse and row ops | **done** | GFM parse/alignment; table block skeleton; Insert/Set/Delete row DocOps; concurrent row convergence |
 | **PR-13** SplitBlock / MergeBlocks | **done** | Atomic text-unit transfer for paragraph/heading siblings; nested APIs; identity-preserving split/merge with collision fallback |
 | **PR-14** Block index / cached state vector / shared payloads | **done** | Nested BlockId path index; O(peers) state vector; `Arc<[u8]>` operation payloads; Criterion before/after |
-| PR-15+ | pending | Incremental sequence order, storage durability, … |
+| **PR-15** Incremental sequence order | **done** | Sibling-local insertion behind default-off `sequence_incremental`; debug dual-path check; top-level/nested Criterion results |
+| PR-16+ | pending | Storage durability, recreated bench coverage, … |
 
 ## Phase B checklist
 
@@ -75,6 +76,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Block index path shape | `BlockId` and `elem_id` map to container paths through blockquotes/list items | Raw references cannot survive sequence mutation safely; paths make lookup O(depth), bounded by structural depth rather than document size |
 | Payload sharing ablation | `Arc<[u8]>` over `Bytes` | Both make clone O(1); `Arc` adds no dependency and payload slicing is unused. Serde `rc` preserves the existing byte-array JSON shape. |
 | State-vector cache | Store the per-peer maximum beside the op map and update it on every applied/restore path | Append-only applied ops make invalidation unnecessary; `state_vector()` becomes O(peers) clone instead of O(ops) rescan |
+| Sequence ordering ablation | Default full rebuild vs feature-gated sibling-local vector insertion | At 10k elements the incremental path reduced top-level insertion from 2.074 ms to 96.65 µs and nested text insertion from 2.165 ms to 96.69 µs; the flag stays default off for soak |
+| Run-length text | **Defer** | Incremental ordering removed about 95.4% of the measured insertion cost; 10k structural serialization was already 17.57 µs. No profile justified storage/wire/mark complexity or any OpId representation change |
 
 ## Phase C checklist
 
@@ -113,8 +116,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] BlockId/elem-id nested path index with mutation invalidation (PR-14)
 - [x] Cached state vector / per-peer applied frontier (PR-14)
 - [x] Shared immutable operation payloads; persistence converts to owned bytes only at snapshot boundary (PR-14)
-- [ ] Incremental sequence ordering behind a soakable flag (PR-15)
-- [ ] Optional run-length text only if profiling still demands it (PR-15 or later)
+- [x] Incremental sequence ordering behind a soakable, default-off flag (PR-15)
+- [x] Run-length text evaluated and deferred because profiling did not demand it (PR-15)
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -191,8 +194,37 @@ The index/cache/`Arc` alternatives all earned their complexity. Incremental RGA 
 
 **Audit (verified, fanned out over 3 slices):** All claims TRUE. Block index is correct via *two* independent defenses — a generation stamp (fast path) plus a per-lookup identity re-check that rebuilds on mismatch — so even a generation *collision* (whole-`IndexedBlocks` swap, exercised by `block_index_repairs_after_public_sequence_replacement`) cannot return a wrong block; the private `sequence` field forces every mutation through the generation-bumping `DerefMut`. State-vector cache is sound: applied ops are strictly append-only (an incremental max is valid) and all five insertion paths (`apply_op`, `apply_one`, `promote_ready_pending`, `add_local_op`, `restore_applied`) call `observe`. `Arc<[u8]>` change is behavior-preserving (`ptr_eq` sharing test + JSON byte-array wire-shape test; serde `rc` enabled). Benchmarks measure the right operations with no timing-bound assertions (no CI flakiness); no phase language leaked into code. **TDD gap closed:** the state-vector test compared the cache only to explicit expected values and to a restore that reuses the same cache, so a systematic `observe` bug would pass both sides; added `cached_state_vector_matches_independent_recompute` (`tests/performance_indices.rs`) pinning the cache to a from-scratch max-per-peer recompute over `applied_ops()`. **Non-blocking notes:** split/merge index re-lookups are already covered transitively (`merge_blocks_preserves_right_unit_ids_and_converges` asserts the tombstoned right block is unfindable; the split test finds the new suffix block); the committed bench measures only the "after" state (before column requires the standard Criterion baseline checkout). **Out-of-scope pre-existing observation (not PR-14):** `raw_apply_op` mark arms resolve `block_elem_id` tree-wide but then call top-level-only `blocks.get_element`, so marks on *nested* blocks would return `BlockNotFound` — a latent mark limitation, harmless today since marks have no collaborative wire op.
 
+## PR-15 incremental sequence ordering — **done**
+
+- `sequence_incremental` is an empty, default-off Cargo feature; the existing full-rebuild behavior remains the default soak/control path.
+- With the feature enabled, insertion finds the next ordered sibling or the end of the anchor subtree, inserts once, and repairs shifted index entries without rebuilding and sorting the full sequence.
+- Debug builds compare the completed incremental apply (including a released pending batch) with a cloned full rebuild. The differential generator now varies `right_origin` and compares against the naive oracle after every operation.
+- The 10k reverse-causal buffering test and the complete workspace suite pass with the feature enabled. No wire, snapshot, storage, or OpId representation changed.
+
+### Criterion before/after (100 samples, default Criterion timing)
+
+| Benchmark | Full rebuild | Incremental | Change |
+| --- | ---: | ---: | ---: |
+| Top-level middle insert, 1k elements | 133.28 µs | 5.987 µs | -95.5% |
+| Top-level middle insert, 10k elements | 2.074 ms | 96.65 µs | -95.3% |
+| Nested text middle insert, 1k units | 144.07 µs | 5.921 µs | -95.9% |
+| Nested text middle insert, 10k units | 2.165 ms | 96.69 µs | -95.5% |
+| Structural serialize, 1k bytes | 2.102 µs | unchanged path | baseline only |
+| Structural serialize, 10k bytes | 17.57 µs | unchanged path | baseline only |
+
+Run-length text was deliberately not implemented. The insertion profile no longer supports paying its storage, split, mark-expansion, and compatibility costs; it remains a future option only if later memory or editing profiles produce new evidence.
+
+**Audit (verified):** `compare_siblings` is a faithful extraction of the prior rebuild comparator (identical right_origin / id tie-break logic), and `insert_incrementally` places a new child at the next-greater sibling's index (after that sibling's whole subtree) or at `subtree_end(after)`, matching the rebuild's tree order. Confirmed empirically: the upgraded differential proptest (now varies `right_origin`, compares against the naive oracle after *every* op) plus `debug_assert_incremental_order` (clones + full-rebuilds + compares element ids on every apply) pass with the feature enabled — 20k differential cases and the full 360-test workspace suite all green under `--features sequence_incremental`. **Gap found + fixed (gate coverage):** `sequence_incremental` is default-off, and neither `just check` (`cargo test --workspace`) nor CI's `just differential-test` enabled it, so the entire incremental algorithm and its debug dual-path check ran in *no* automated gate — a regression in `insert_incrementally`/`subtree_end`/`compare_siblings` would keep the gate green. Fixed by making the `differential-test` recipe run the oracle proptest in **both** configurations (default rebuild + `sequence_incremental`); CI already invokes this recipe in the PR and nightly jobs, so both ordering strategies are now covered with the debug assertion active. No production wire/snapshot/OpId behavior changed (feature is off by default).
+
 ## Gate
 
+- `just check` — **passed** after PR-15 audit (360 tests, 0 warnings; default full-rebuild path)
+- `just differential-test` — **passed** after audit fix; now runs the oracle proptest in **both** default and `sequence_incremental` configurations (was default-only)
+- `cargo test --workspace --features sequence_incremental` — **passed** (360 tests; debug dual-path assertion active on every apply)
+- `cargo test --workspace --all-features` — **passed** (360 tests, 3 manual dhat tests ignored; incremental path and 10k reverse-causal chain green)
+- `PROPTEST_CASES=100000 cargo test --test core_differential --features sequence_incremental differential_test_sequence -- --exact` — **passed**; oracle and debug full-rebuild comparison green after every generated operation
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 90.61% repository line coverage / 89.21% region coverage, above the PR-14 baseline, with all new incremental-ordering lines covered
+- Criterion before/after probes — **passed**; 10k top-level and nested insertion improved by about 95.4%; serialization baseline recorded; run-length deferred
 - `just check` — **passed** after PR-14 audit (359 tests, 0 warnings; added independent state-vector recompute oracle)
 - `just check` — **passed** for PR-14 (358 tests, 0 warnings; differential/oracle green)
 - `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 90.52% repository line coverage / 89.04% region coverage, both above the PR-13 baseline, with >90% coverage on PR-14 changed source lines

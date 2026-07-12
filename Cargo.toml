@@ -57,6 +57,7 @@ default = ["storage", "filesync"]
 storage = ["dep:rkyv", "dep:crc32fast"]
 filesync = ["storage", "dep:walkdir", "dep:tracing"]
 dhat-heap = ["dhat"]
+sequence_incremental = []
 
 [[bench]]
 name = "performance"

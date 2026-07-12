@@ -1,7 +1,11 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use md_crdt::core::{OpId, Sequence, StateVector};
-use md_crdt::doc::{Block, BlockKind, Document, block_id_from_op};
+use md_crdt::core::{OpId, Sequence, SequenceOp, StateVector};
+use md_crdt::doc::{
+    Block, BlockKind, Document, EquivalenceMode, Parser, TextUnit, block_id_from_op,
+    units_from_str_at,
+};
 use md_crdt::sync::{Operation, SyncState};
+use std::time::{Duration, Instant};
 
 fn op(counter: u64, peer: u64) -> OpId {
     OpId { counter, peer }
@@ -84,5 +88,86 @@ fn encode_changes(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, block_lookup, state_vector, encode_changes);
+fn sequence_insert_middle(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sequence_insert_middle");
+    for count in [1_000usize, 10_000] {
+        let items = (1..=count as u64).map(|counter| (op(counter, 1), counter));
+        let base = Sequence::from_ordered(items.collect());
+        let after = Some(op(count as u64 / 2, 1));
+        let right_origin = base.compute_right_origin(after);
+        group.throughput(Throughput::Elements(1));
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, _| {
+            b.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let mut sequence = base.clone();
+                    let start = Instant::now();
+                    sequence.apply(SequenceOp::Insert {
+                        after,
+                        id: op(1, 2),
+                        value: 0,
+                        right_origin,
+                    });
+                    elapsed += start.elapsed();
+                    black_box(sequence);
+                }
+                elapsed
+            });
+        });
+    }
+    group.finish();
+}
+
+fn nested_text_insert(c: &mut Criterion) {
+    let mut group = c.benchmark_group("nested_text_insert");
+    for count in [1_000usize, 10_000] {
+        let base = units_from_str_at(&"x".repeat(count), op(1, 1));
+        let after = Some(op(count as u64 / 2, 1));
+        let right_origin = base.compute_right_origin(after);
+        group.throughput(Throughput::Elements(1));
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, _| {
+            b.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let mut sequence = base.clone();
+                    let start = Instant::now();
+                    sequence.apply(SequenceOp::Insert {
+                        after,
+                        id: op(1, 2),
+                        value: TextUnit {
+                            grapheme: "y".into(),
+                        },
+                        right_origin,
+                    });
+                    elapsed += start.elapsed();
+                    black_box(sequence);
+                }
+                elapsed
+            });
+        });
+    }
+    group.finish();
+}
+
+fn document_serialize(c: &mut Criterion) {
+    let mut group = c.benchmark_group("document_serialize");
+    for count in [1_000usize, 10_000] {
+        let document = Parser::parse(&"x".repeat(count));
+        group.throughput(Throughput::Bytes(count as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, _| {
+            b.iter(|| black_box(document.serialize(EquivalenceMode::Structural)))
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    block_lookup,
+    state_vector,
+    encode_changes,
+    sequence_insert_middle,
+    nested_text_insert,
+    document_serialize
+);
 criterion_main!(benches);
