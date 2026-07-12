@@ -204,7 +204,10 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
         // Apply to document before advancing clock / logging (N3).
         apply_envelope_to_document(&mut self.document, &envelope);
-        self.sync.add_local_op(Operation { id: op_id, payload });
+        self.sync.add_local_op(Operation {
+            id: op_id,
+            payload: payload.into(),
+        });
         // Advance past the whole reserved range so later ids never collide with the units.
         self.next_counter = op_id.counter + 1;
         Ok(block_elem)
@@ -246,7 +249,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         apply_envelope_to_document(&mut self.document, &envelope);
         self.sync.add_local_op(Operation {
             id: delete_id,
-            payload,
+            payload: payload.into(),
         });
         self.next_counter = b + 1;
         Ok(delete_id)
@@ -393,7 +396,10 @@ impl<C: OpCodec> CollaborativeDocument<C> {
     fn commit_single_id(&mut self, envelope: Envelope, id: OpId) -> Result<OpId, SessionError> {
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
         apply_envelope_to_document(&mut self.document, &envelope);
-        self.sync.add_local_op(Operation { id, payload });
+        self.sync.add_local_op(Operation {
+            id,
+            payload: payload.into(),
+        });
         self.next_counter = id.counter + 1;
         Ok(id)
     }
@@ -466,7 +472,10 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         let (op_id, _span) = operation_extent(&envelope);
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
         apply_envelope_to_document(&mut self.document, &envelope);
-        self.sync.add_local_op(Operation { id: op_id, payload });
+        self.sync.add_local_op(Operation {
+            id: op_id,
+            payload: payload.into(),
+        });
         self.next_counter = op_id.counter + 1;
         Ok(Some(op_id))
     }
@@ -521,7 +530,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         apply_envelope_to_document(&mut self.document, &envelope);
         self.sync.add_local_op(Operation {
             id: delete_id,
-            payload,
+            payload: payload.into(),
         });
         self.next_counter = delete_id.counter + 1;
         Ok(Some(delete_id))
@@ -701,7 +710,10 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         let (op_id, _) = operation_extent(&envelope);
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
         apply_envelope_to_document(&mut self.document, &envelope);
-        self.sync.add_local_op(Operation { id: op_id, payload });
+        self.sync.add_local_op(Operation {
+            id: op_id,
+            payload: payload.into(),
+        });
         self.next_counter = op_id.counter.saturating_add(1);
         Ok(op_id)
     }
@@ -785,7 +797,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             .sync
             .pending()
             .into_iter()
-            .map(|op| (op.id, op.payload))
+            .map(|op| (op.id, op.payload.to_vec()))
             .collect();
         Ok(SessionSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
@@ -851,7 +863,13 @@ impl CollaborativeDocument<JsonOpCodec> {
             .into_iter()
             .map(|(id, payload)| {
                 let span = span_of_payload(&payload);
-                (Operation { id, payload }, span)
+                (
+                    Operation {
+                        id,
+                        payload: payload.into(),
+                    },
+                    span,
+                )
             })
             .collect();
         sync.restore_pending(pending_ops);
@@ -890,7 +908,13 @@ impl CollaborativeDocument<JsonOpCodec> {
             .into_iter()
             .map(|(id, payload)| {
                 let span = span_of_payload(&payload);
-                (Operation { id, payload }, span)
+                (
+                    Operation {
+                        id,
+                        payload: payload.into(),
+                    },
+                    span,
+                )
             })
             .collect();
         sync.restore_pending(pending_ops);

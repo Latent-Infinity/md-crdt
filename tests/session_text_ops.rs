@@ -372,7 +372,7 @@ fn remote_insert_text_peer_mismatch_rejected() {
                 counter: 11,
                 peer: 1,
             },
-            payload,
+            payload: payload.into(),
         }],
     };
     let err = b

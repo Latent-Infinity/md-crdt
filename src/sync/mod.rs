@@ -6,11 +6,12 @@
 use crate::core::{OpId, StateVector};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Operation {
     pub id: OpId,
-    pub payload: Vec<u8>,
+    pub payload: Arc<[u8]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,7 +176,8 @@ pub enum IntegrateResult {
 /// `SyncState` to avoid collision with `doc::Document`.
 #[derive(Debug, Clone)]
 pub struct SyncState {
-    ops: BTreeMap<OpId, Vec<u8>>,
+    ops: BTreeMap<OpId, Arc<[u8]>>,
+    state_vector: StateVector,
     /// Operations waiting for causal dependencies, with the counter span each covers.
     /// An op with id counter `e` and span `n` covers `[e - n + 1, e]`.
     pending: BTreeMap<OpId, (Operation, u64)>,
@@ -189,6 +191,7 @@ impl SyncState {
     pub fn new() -> Self {
         Self {
             ops: BTreeMap::new(),
+            state_vector: StateVector::new(),
             pending: BTreeMap::new(),
             outbox: BTreeSet::new(),
             sent: BTreeSet::new(),
@@ -197,7 +200,10 @@ impl SyncState {
 
     /// Apply a single operation (internal use)
     pub fn apply_op(&mut self, op: Operation) {
-        self.ops.entry(op.id).or_insert(op.payload);
+        if !self.ops.contains_key(&op.id) {
+            self.observe(op.id);
+            self.ops.insert(op.id, op.payload);
+        }
     }
 
     /// Whether this op id is already in the applied log.
@@ -207,31 +213,33 @@ impl SyncState {
 
     /// Payload for an applied op, if present.
     pub fn get(&self, id: OpId) -> Option<&[u8]> {
-        self.ops.get(&id).map(|p| p.as_slice())
+        self.ops.get(&id).map(AsRef::as_ref)
     }
 
     /// Snapshot of all applied (id, payload) pairs for persistence.
     pub fn applied_ops(&self) -> Vec<(OpId, Vec<u8>)> {
         self.ops
             .iter()
-            .map(|(id, payload)| (*id, payload.clone()))
+            .map(|(id, payload)| (*id, payload.to_vec()))
             .collect()
     }
 
     /// Restore applied ops from a snapshot (does not touch pending/outbox).
     pub fn restore_applied(&mut self, ops: Vec<(OpId, Vec<u8>)>) {
         for (id, payload) in ops {
-            self.ops.insert(id, payload);
+            self.observe(id);
+            self.ops.insert(id, payload.into());
+        }
+    }
+
+    fn observe(&mut self, id: OpId) {
+        if id.counter > self.state_vector.get(id.peer).unwrap_or(0) {
+            self.state_vector.set(id.peer, id.counter);
         }
     }
 
     fn max_applied_counter(&self, peer: crate::core::PeerId) -> u64 {
-        self.ops
-            .keys()
-            .filter(|id| id.peer == peer)
-            .map(|id| id.counter)
-            .max()
-            .unwrap_or(0)
+        self.state_vector.get(peer).unwrap_or(0)
     }
 
     /// First counter covered by an operation whose id counter is `e` and span is `n`.
@@ -257,6 +265,7 @@ impl SyncState {
             self.pending.insert(op.id, (op, span));
             IntegrateResult::Buffered
         } else {
+            self.observe(op.id);
             self.ops.insert(op.id, op.payload);
             IntegrateResult::Applied
         }
@@ -278,6 +287,7 @@ impl SyncState {
                 if Self::span_start(op_id.counter, span) <= frontier + 1
                     && let Some((op, _)) = self.pending.remove(&op_id)
                 {
+                    self.observe(op.id);
                     self.ops.insert(op.id, op.payload.clone());
                     promoted.push(op);
                     made_progress = true;
@@ -289,14 +299,7 @@ impl SyncState {
 
     /// Get the state vector representing all applied operations
     pub fn state_vector(&self) -> StateVector {
-        let mut sv = StateVector::new();
-        for op_id in self.ops.keys() {
-            let current = sv.get(op_id.peer).unwrap_or(0);
-            if op_id.counter > current {
-                sv.set(op_id.peer, op_id.counter);
-            }
-        }
-        sv
+        self.state_vector.clone()
     }
 
     /// Encode all operations since a given state vector
@@ -364,6 +367,7 @@ impl SyncState {
     /// Add a local operation to the outbox
     pub fn add_local_op(&mut self, op: Operation) {
         let op_id = op.id;
+        self.observe(op.id);
         self.ops.insert(op.id, op.payload);
         self.outbox.insert(op_id);
     }
@@ -425,21 +429,21 @@ mod tests {
                 counter: 1,
                 peer: 1,
             },
-            payload: vec![1],
+            payload: vec![1].into(),
         });
         doc.apply_op(Operation {
             id: OpId {
                 counter: 3,
                 peer: 1,
             },
-            payload: vec![2],
+            payload: vec![2].into(),
         });
         doc.apply_op(Operation {
             id: OpId {
                 counter: 2,
                 peer: 2,
             },
-            payload: vec![3],
+            payload: vec![3].into(),
         });
 
         let sv = doc.state_vector();
@@ -455,21 +459,21 @@ mod tests {
                 counter: 1,
                 peer: 1,
             },
-            payload: vec![1],
+            payload: vec![1].into(),
         });
         doc.apply_op(Operation {
             id: OpId {
                 counter: 2,
                 peer: 1,
             },
-            payload: vec![2],
+            payload: vec![2].into(),
         });
         doc.apply_op(Operation {
             id: OpId {
                 counter: 1,
                 peer: 2,
             },
-            payload: vec![3],
+            payload: vec![3].into(),
         });
 
         let mut sv = StateVector::new();
@@ -498,7 +502,7 @@ mod tests {
                     counter: 1,
                     peer: 1,
                 },
-                payload: vec![], // Empty payload is malformed
+                payload: vec![].into(), // Empty payload is malformed
             }],
         };
         let limits = ValidationLimits::default();
@@ -519,7 +523,7 @@ mod tests {
                     counter: 0,
                     peer: 1,
                 }, // Zero counter is invalid
-                payload: vec![1],
+                payload: vec![1].into(),
             }],
         };
         let limits = ValidationLimits::default();
@@ -541,7 +545,7 @@ mod tests {
                         counter: i,
                         peer: 1,
                     },
-                    payload: vec![1],
+                    payload: vec![1].into(),
                 })
                 .collect(),
         };
@@ -566,7 +570,7 @@ mod tests {
                     counter: 1,
                     peer: 1,
                 },
-                payload: vec![0; 1001], // 1001 bytes
+                payload: vec![0; 1001].into(), // 1001 bytes
             }],
         };
         let limits = ValidationLimits {
@@ -590,7 +594,7 @@ mod tests {
                     counter: 1,
                     peer: 1,
                 },
-                payload: vec![1],
+                payload: vec![1].into(),
             }],
         };
         let limits = ValidationLimits {
@@ -615,7 +619,7 @@ mod tests {
                     counter: 1,
                     peer: 1,
                 },
-                payload: vec![1, 2, 3],
+                payload: vec![1, 2, 3].into(),
             }],
         };
         let limits = ValidationLimits::default();
@@ -636,14 +640,14 @@ mod tests {
                         counter: 1,
                         peer: 1,
                     },
-                    payload: vec![1],
+                    payload: vec![1].into(),
                 },
                 Operation {
                     id: OpId {
                         counter: 2,
                         peer: 1,
                     },
-                    payload: vec![2],
+                    payload: vec![2].into(),
                 },
             ],
         };
@@ -664,7 +668,7 @@ mod tests {
                 counter: 1,
                 peer: 1,
             },
-            payload: vec![1],
+            payload: vec![1].into(),
         });
 
         // Now try to apply counter=3 (missing counter=2)
@@ -675,7 +679,7 @@ mod tests {
                     counter: 3,
                     peer: 1,
                 },
-                payload: vec![3],
+                payload: vec![3].into(),
             }],
         };
 
@@ -695,7 +699,7 @@ mod tests {
                 counter: 1,
                 peer: 1,
             },
-            payload: vec![1],
+            payload: vec![1].into(),
         });
 
         // Apply counter=3 (gets buffered)
@@ -706,7 +710,7 @@ mod tests {
                     counter: 3,
                     peer: 1,
                 },
-                payload: vec![3],
+                payload: vec![3].into(),
             }],
         };
         doc.apply_changes(message1);
@@ -720,7 +724,7 @@ mod tests {
                     counter: 2,
                     peer: 1,
                 },
-                payload: vec![2],
+                payload: vec![2].into(),
             }],
         };
         let result = doc.apply_changes(message2);
@@ -738,7 +742,7 @@ mod tests {
                 counter: 1,
                 peer: 1,
             },
-            payload: vec![1],
+            payload: vec![1].into(),
         };
 
         let message1 = ChangeMessage {
@@ -766,7 +770,7 @@ mod tests {
                 counter: 1,
                 peer: 1,
             },
-            payload: vec![1, 2, 3],
+            payload: vec![1, 2, 3].into(),
         };
 
         doc.add_local_op(op.clone());
@@ -784,7 +788,7 @@ mod tests {
                 counter: 1,
                 peer: 1,
             },
-            payload: vec![1],
+            payload: vec![1].into(),
         };
         doc.add_local_op(op.clone());
 
@@ -804,7 +808,7 @@ mod tests {
                 counter: 1,
                 peer: 1,
             },
-            payload: vec![1],
+            payload: vec![1].into(),
         });
 
         // Buffer counter=3 (missing counter=2)
@@ -815,7 +819,7 @@ mod tests {
                     counter: 3,
                     peer: 1,
                 },
-                payload: vec![3],
+                payload: vec![3].into(),
             }],
         };
         doc.apply_changes(message);
@@ -832,7 +836,7 @@ mod tests {
                 counter: 1,
                 peer: 1,
             },
-            payload: vec![1],
+            payload: vec![1].into(),
         });
         doc2.restore_pending(pending_ops.into_iter().map(|op| (op, 1)).collect());
         assert_eq!(doc2.pending_count(), 1);
@@ -845,7 +849,7 @@ mod tests {
                     counter: 2,
                     peer: 1,
                 },
-                payload: vec![2],
+                payload: vec![2].into(),
             }],
         };
         let result = doc2.apply_changes(message2);
@@ -865,7 +869,7 @@ mod tests {
                         counter: 1,
                         peer: 1,
                     },
-                    payload: vec![1],
+                    payload: vec![1].into(),
                 },
                 1
             ),
@@ -878,7 +882,7 @@ mod tests {
                         counter: 3,
                         peer: 1,
                     },
-                    payload: vec![3],
+                    payload: vec![3].into(),
                 },
                 1
             ),
@@ -897,7 +901,7 @@ mod tests {
                         counter: 2,
                         peer: 1,
                     },
-                    payload: vec![2],
+                    payload: vec![2].into(),
                 },
                 1
             ),
@@ -908,7 +912,7 @@ mod tests {
         let promoted = state.promote_ready_pending();
         assert_eq!(promoted.len(), 1);
         assert_eq!(promoted[0].id.counter, 3);
-        assert_eq!(promoted[0].payload, vec![3]);
+        assert_eq!(promoted[0].payload.as_ref(), [3]);
         assert!(state.contains(OpId {
             counter: 3,
             peer: 1
@@ -933,7 +937,7 @@ mod tests {
         assert!(state.get(id).is_none());
         state.apply_op(Operation {
             id,
-            payload: vec![9, 9],
+            payload: vec![9, 9].into(),
         });
         assert!(state.contains(id));
         assert_eq!(state.get(id), Some(&[9, 9][..]));

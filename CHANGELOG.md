@@ -93,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split preserves suffix text-unit IDs; merge preserves source IDs unless the destination already retains them as tombstones, then allocates collision-free replacements
 - Stable merge insertion anchors, mark-history transfer, snapshot recovery, and multi-peer convergence coverage
 
+#### Indexed document and sync frontiers (`md-crdt::doc` / `sync`)
+- Generation-invalidated `BlockId`/element path index for constant-time-average block lookup, including nested blockquotes and list items
+- Cached per-peer `StateVector` frontiers updated by local, remote, promoted, and restored operations
+- Immutable operation payloads now use `Arc<[u8]>`, so delta/outbox/pending encoding shares bytes instead of cloning buffers; serialized wire and snapshot shapes remain unchanged
+- Criterion baselines for block lookup, state-vector generation, and delta encoding in `benches/performance.rs`
+- `Document` remains `Send + Sync`; public top-level sequence mutation invalidates or self-repairs the index
+
 ## [0.1.0] - 2025-02-04
 
 ### Added

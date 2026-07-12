@@ -232,7 +232,7 @@ fn remote_merge_rejects_foreign_replacement_ids() {
         }
     }
     operation.id = *id;
-    operation.payload = JsonOpCodec.encode(&envelope).expect("encode merge");
+    operation.payload = JsonOpCodec.encode(&envelope).expect("encode merge").into();
 
     let error = b
         .apply_remote(

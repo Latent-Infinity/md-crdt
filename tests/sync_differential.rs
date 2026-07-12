@@ -14,7 +14,7 @@ fn gen_peer_ops(peer: u64, count: usize) -> Vec<Operation> {
     (1..=count as u64)
         .map(|counter| Operation {
             id: OpId { counter, peer },
-            payload: vec![peer as u8, counter as u8],
+            payload: vec![peer as u8, counter as u8].into(),
         })
         .collect()
 }
@@ -47,14 +47,14 @@ proptest! {
                 since: doc_a.state_vector(),
                 ops: vec![op.clone()],
             });
-            oracle_a.apply(op.id, op.payload.clone());
+            oracle_a.apply(op.id, op.payload.to_vec());
         }
         for op in &ops2 {
             doc_a.apply_changes(ChangeMessage {
                 since: doc_a.state_vector(),
                 ops: vec![op.clone()],
             });
-            oracle_a.apply(op.id, op.payload.clone());
+            oracle_a.apply(op.id, op.payload.to_vec());
         }
 
         // Document B applies peer2 ops first, then peer1
@@ -63,14 +63,14 @@ proptest! {
                 since: doc_b.state_vector(),
                 ops: vec![op.clone()],
             });
-            oracle_b.apply(op.id, op.payload.clone());
+            oracle_b.apply(op.id, op.payload.to_vec());
         }
         for op in &ops1 {
             doc_b.apply_changes(ChangeMessage {
                 since: doc_b.state_vector(),
                 ops: vec![op.clone()],
             });
-            oracle_b.apply(op.id, op.payload.clone());
+            oracle_b.apply(op.id, op.payload.to_vec());
         }
 
         // Both real documents should have the same state vector
@@ -117,7 +117,7 @@ proptest! {
                 since: doc.state_vector(),
                 ops: vec![op.clone()],
             });
-            oracle.apply(op.id, op.payload.clone());
+            oracle.apply(op.id, op.payload.to_vec());
         }
 
         // Create partial state vector (only peer1's first op)
@@ -160,7 +160,7 @@ proptest! {
                 since: md_crdt::core::StateVector::new(),
                 ops: vec![op.clone()],
             });
-            oracle.apply(op.id, op.payload.clone());
+            oracle.apply(op.id, op.payload.to_vec());
         }
 
         // State vectors should match
@@ -191,14 +191,14 @@ fn test_two_peer_sync_simulation() {
             counter: 1,
             peer: 1,
         },
-        payload: vec![1, 1],
+        payload: vec![1, 1].into(),
     };
     let peer1_op2 = Operation {
         id: OpId {
             counter: 2,
             peer: 1,
         },
-        payload: vec![1, 2],
+        payload: vec![1, 2].into(),
     };
 
     // Peer 2 generates operations
@@ -207,7 +207,7 @@ fn test_two_peer_sync_simulation() {
             counter: 1,
             peer: 2,
         },
-        payload: vec![2, 1],
+        payload: vec![2, 1].into(),
     };
 
     // Peer 1 applies its own operations

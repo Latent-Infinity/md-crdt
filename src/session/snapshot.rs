@@ -175,14 +175,14 @@ impl DocumentDto {
     pub fn from_document(doc: &Document) -> Self {
         Self {
             frontmatter: doc.frontmatter.clone(),
-            blocks: sequence_to_elements(&doc.blocks, block_to_dto),
+            blocks: sequence_to_elements(doc.blocks(), block_to_dto),
         }
     }
 
     pub fn into_document(self) -> Document {
         let mut doc = Document::new();
         doc.frontmatter = self.frontmatter;
-        doc.blocks = sequence_from_elements(self.blocks, block_from_dto);
+        *doc.blocks_mut() = sequence_from_elements(self.blocks, block_from_dto);
         doc
     }
 }
@@ -212,7 +212,7 @@ pub fn max_counter_for_peer(peer: PeerId, ops: &[(OpId, Vec<u8>)], doc: &Documen
             max = max.max(id.counter);
         }
     }
-    walk_block_seq_max_peer(peer, &doc.blocks, &mut max);
+    walk_block_seq_max_peer(peer, doc.blocks(), &mut max);
     max
 }
 

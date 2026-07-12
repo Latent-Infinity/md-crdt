@@ -5,7 +5,9 @@
 
 use crate::core::mark::{Anchor, MarkIntervalId, MarkKind, MarkSet, MarkValue};
 use crate::core::{OpId, Sequence, SequenceOp, StateVector};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::{Deref, DerefMut};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
@@ -27,12 +29,107 @@ pub fn block_id_from_op(op: OpId) -> BlockId {
     Uuid::from_u128(((op.peer as u128) << 64) | (op.counter as u128))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Document {
     pub frontmatter: Option<String>,
-    pub blocks: Sequence<Block>,
+    pub blocks: IndexedBlocks,
     raw_source: Option<String>,
+    block_index: RwLock<Option<CachedBlockIndex>>,
 }
+
+/// Top-level block sequence that invalidates the document index on mutation.
+#[derive(Debug)]
+pub struct IndexedBlocks {
+    sequence: Sequence<Block>,
+    generation: u64,
+}
+
+impl IndexedBlocks {
+    fn new(sequence: Sequence<Block>) -> Self {
+        Self {
+            sequence,
+            generation: 0,
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+impl Clone for IndexedBlocks {
+    fn clone(&self) -> Self {
+        Self::new(self.sequence.clone())
+    }
+}
+
+impl PartialEq for IndexedBlocks {
+    fn eq(&self, other: &Self) -> bool {
+        self.sequence == other.sequence
+    }
+}
+
+impl Eq for IndexedBlocks {}
+
+impl Deref for IndexedBlocks {
+    type Target = Sequence<Block>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.sequence
+    }
+}
+
+impl DerefMut for IndexedBlocks {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.generation = self.generation.wrapping_add(1);
+        &mut self.sequence
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BlockContainerPath {
+    BlockQuote(OpId),
+    ListItem { list: OpId, item: OpId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BlockPath {
+    containers: Vec<BlockContainerPath>,
+    elem_id: OpId,
+}
+
+#[derive(Debug, Default)]
+struct BlockIndex {
+    by_block_id: HashMap<BlockId, BlockPath>,
+    by_elem_id: HashMap<OpId, BlockPath>,
+}
+
+#[derive(Debug)]
+struct CachedBlockIndex {
+    generation: u64,
+    index: BlockIndex,
+}
+
+impl Clone for Document {
+    fn clone(&self) -> Self {
+        Self {
+            frontmatter: self.frontmatter.clone(),
+            blocks: self.blocks.clone(),
+            raw_source: self.raw_source.clone(),
+            block_index: RwLock::new(None),
+        }
+    }
+}
+
+impl PartialEq for Document {
+    fn eq(&self, other: &Self) -> bool {
+        self.frontmatter == other.frontmatter
+            && self.blocks == other.blocks
+            && self.raw_source == other.raw_source
+    }
+}
+
+impl Eq for Document {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
@@ -115,12 +212,96 @@ pub fn block_text_seq(kind: &BlockKind) -> Option<&Sequence<TextUnit>> {
     }
 }
 
-/// Child block sequences a kind contains (blockquote children, or each list item's children).
-fn child_seqs(kind: &BlockKind) -> Vec<&Sequence<Block>> {
-    match kind {
-        BlockKind::BlockQuote { children } => vec![children],
-        BlockKind::List { items, .. } => items.iter().map(|it| &it.children).collect(),
-        _ => Vec::new(),
+fn index_block_sequence(
+    sequence: &Sequence<Block>,
+    containers: &[BlockContainerPath],
+    index: &mut BlockIndex,
+) {
+    for element in sequence.iter_all() {
+        let Some(block) = element.value.as_ref() else {
+            continue;
+        };
+        let path = BlockPath {
+            containers: containers.to_vec(),
+            elem_id: element.id,
+        };
+        index
+            .by_block_id
+            .entry(block.id)
+            .or_insert_with(|| path.clone());
+        index.by_elem_id.entry(element.id).or_insert(path);
+
+        match &block.kind {
+            BlockKind::BlockQuote { children } => {
+                let mut nested = containers.to_vec();
+                nested.push(BlockContainerPath::BlockQuote(element.id));
+                index_block_sequence(children, &nested, index);
+            }
+            BlockKind::List { items, .. } => {
+                for item_element in items.iter_all() {
+                    let Some(item) = item_element.value.as_ref() else {
+                        continue;
+                    };
+                    let mut nested = containers.to_vec();
+                    nested.push(BlockContainerPath::ListItem {
+                        list: element.id,
+                        item: item_element.id,
+                    });
+                    index_block_sequence(&item.children, &nested, index);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn block_at_path<'a>(sequence: &'a Sequence<Block>, path: &BlockPath) -> Option<&'a Block> {
+    let mut current = sequence;
+    for container in &path.containers {
+        match *container {
+            BlockContainerPath::BlockQuote(id) => {
+                let block = current.get_element(&id)?.value.as_ref()?;
+                let BlockKind::BlockQuote { children } = &block.kind else {
+                    return None;
+                };
+                current = children;
+            }
+            BlockContainerPath::ListItem { list, item } => {
+                let block = current.get_element(&list)?.value.as_ref()?;
+                let BlockKind::List { items, .. } = &block.kind else {
+                    return None;
+                };
+                current = &items.get_element(&item)?.value.as_ref()?.children;
+            }
+        }
+    }
+    current.get_element(&path.elem_id)?.value.as_ref()
+}
+
+fn block_at_path_mut<'a>(
+    sequence: &'a mut Sequence<Block>,
+    containers: &[BlockContainerPath],
+    elem_id: OpId,
+) -> Option<&'a mut Block> {
+    let Some((container, rest)) = containers.split_first() else {
+        return sequence.value_mut(elem_id);
+    };
+    match *container {
+        BlockContainerPath::BlockQuote(id) => {
+            let block = sequence.value_mut(id)?;
+            let BlockKind::BlockQuote { children } = &mut block.kind else {
+                return None;
+            };
+            block_at_path_mut(children, rest, elem_id)
+        }
+        BlockContainerPath::ListItem { list, item } => {
+            let block = sequence.value_mut(list)?;
+            let BlockKind::List { items, .. } = &mut block.kind else {
+                return None;
+            };
+            let item = items.value_mut(item)?;
+            block_at_path_mut(&mut item.children, rest, elem_id)
+        }
     }
 }
 
@@ -300,9 +481,56 @@ impl Document {
     pub fn new() -> Self {
         Self {
             frontmatter: None,
-            blocks: Sequence::new(),
+            blocks: IndexedBlocks::new(Sequence::new()),
             raw_source: None,
+            block_index: RwLock::new(None),
         }
+    }
+
+    /// Read-only access to the top-level block sequence.
+    pub fn blocks(&self) -> &Sequence<Block> {
+        &self.blocks
+    }
+
+    /// Mutable access to the top-level block sequence, invalidating the BlockId index.
+    pub fn blocks_mut(&mut self) -> &mut Sequence<Block> {
+        &mut self.blocks
+    }
+
+    fn block_index_read(&self) -> RwLockReadGuard<'_, Option<CachedBlockIndex>> {
+        self.block_index
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn block_index_write(&self) -> RwLockWriteGuard<'_, Option<CachedBlockIndex>> {
+        self.block_index
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn rebuild_block_index(&self) {
+        let generation = self.blocks.generation();
+        let mut index = BlockIndex::default();
+        index_block_sequence(&self.blocks, &[], &mut index);
+        *self.block_index_write() = Some(CachedBlockIndex { generation, index });
+    }
+
+    fn ensure_block_index(&self) {
+        let generation = self.blocks.generation();
+        if self
+            .block_index_read()
+            .as_ref()
+            .is_some_and(|cached| cached.generation == generation)
+        {
+            return;
+        }
+        self.rebuild_block_index();
+    }
+
+    /// Resolve a stable block id to its sequence element id in O(1) average time.
+    pub fn block_elem_id(&self, block_id: BlockId) -> Option<OpId> {
+        self.find_block_by_id(block_id).map(|block| block.elem_id)
     }
 
     pub fn set_raw_source(&mut self, source: String) {
@@ -319,20 +547,29 @@ impl Document {
 
     /// Find a block by `elem_id` anywhere in the tree (nested in blockquotes or list items).
     pub fn find_block(&self, elem_id: OpId) -> Option<&Block> {
-        fn walk(seq: &Sequence<Block>, id: OpId) -> Option<&Block> {
-            for e in seq.iter_all() {
-                if let Some(b) = e.value.as_ref() {
-                    if b.elem_id == id {
-                        return Some(b);
-                    }
-                    if let Some(found) = child_seqs(&b.kind).into_iter().find_map(|c| walk(c, id)) {
-                        return Some(found);
-                    }
-                }
-            }
-            None
+        self.ensure_block_index();
+        let path = self
+            .block_index_read()
+            .as_ref()?
+            .index
+            .by_elem_id
+            .get(&elem_id)
+            .cloned();
+        if let Some(path) = path
+            && let Some(block) = block_at_path(&self.blocks, &path)
+            && block.elem_id == elem_id
+        {
+            return Some(block);
         }
-        walk(&self.blocks, elem_id)
+        self.rebuild_block_index();
+        let path = self
+            .block_index_read()
+            .as_ref()?
+            .index
+            .by_elem_id
+            .get(&elem_id)
+            .cloned()?;
+        block_at_path(&self.blocks, &path).filter(|block| block.elem_id == elem_id)
     }
 
     /// Find a list item by its `elem_id` anywhere in the tree.
@@ -369,42 +606,15 @@ impl Document {
         elem_id: OpId,
         f: impl FnOnce(&mut Block) -> R,
     ) -> Option<R> {
-        fn walk<R, F: FnOnce(&mut Block) -> R>(
-            seq: &mut Sequence<Block>,
-            id: OpId,
-            f: &mut Option<F>,
-        ) -> Option<R> {
-            for bid in seq.ids() {
-                if seq.value_mut(bid).is_some_and(|b| b.elem_id == id) {
-                    let func = f.take()?;
-                    return seq.value_mut(bid).map(func);
-                }
-            }
-            for bid in seq.ids() {
-                if let Some(b) = seq.value_mut(bid) {
-                    match &mut b.kind {
-                        BlockKind::BlockQuote { children } => {
-                            if let Some(r) = walk(children, id, f) {
-                                return Some(r);
-                            }
-                        }
-                        BlockKind::List { items, .. } => {
-                            for iid in items.ids() {
-                                if let Some(item) = items.value_mut(iid)
-                                    && let Some(r) = walk(&mut item.children, id, f)
-                                {
-                                    return Some(r);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            None
-        }
-        let mut f = Some(f);
-        walk(&mut self.blocks, elem_id, &mut f)
+        self.find_block(elem_id)?;
+        let path = self
+            .block_index_read()
+            .as_ref()?
+            .index
+            .by_elem_id
+            .get(&elem_id)
+            .cloned()?;
+        block_at_path_mut(&mut self.blocks, &path.containers, path.elem_id).map(f)
     }
 
     /// Apply `f` to the children of the container with `container_elem` (a blockquote block
@@ -553,20 +763,29 @@ impl Document {
 
     /// Find a block by its stable `BlockId` anywhere in the tree.
     pub fn find_block_by_id(&self, block_id: BlockId) -> Option<&Block> {
-        fn walk(seq: &Sequence<Block>, id: BlockId) -> Option<&Block> {
-            for e in seq.iter_all() {
-                if let Some(b) = e.value.as_ref() {
-                    if b.id == id {
-                        return Some(b);
-                    }
-                    if let Some(found) = child_seqs(&b.kind).into_iter().find_map(|c| walk(c, id)) {
-                        return Some(found);
-                    }
-                }
-            }
-            None
+        self.ensure_block_index();
+        let path = self
+            .block_index_read()
+            .as_ref()?
+            .index
+            .by_block_id
+            .get(&block_id)
+            .cloned();
+        if let Some(path) = path
+            && let Some(block) = block_at_path(&self.blocks, &path)
+            && block.id == block_id
+        {
+            return Some(block);
         }
-        walk(&self.blocks, block_id)
+        self.rebuild_block_index();
+        let path = self
+            .block_index_read()
+            .as_ref()?
+            .index
+            .by_block_id
+            .get(&block_id)
+            .cloned()?;
+        block_at_path(&self.blocks, &path).filter(|block| block.id == block_id)
     }
 
     pub fn insert_text(
@@ -576,12 +795,8 @@ impl Document {
         text: &str,
         op_id: OpId,
     ) -> Result<Vec<EditOp>, EditError> {
-        // Find block's elem_id by block_id (O(n) search, unavoidable without block_id index)
         let elem_id = self
-            .blocks
-            .iter_asc()
-            .find(|block| block.id == block_id)
-            .map(|block| block.elem_id)
+            .block_elem_id(block_id)
             .ok_or(EditError::BlockNotFound)?;
 
         // Get element via O(1) lookup and clone block for modification
@@ -672,10 +887,7 @@ impl Document {
                 op_id,
             } => {
                 let elem_id = self
-                    .blocks
-                    .iter_asc()
-                    .find(|block| block.id == block_id)
-                    .map(|block| block.elem_id)
+                    .block_elem_id(block_id)
                     .ok_or(EditError::BlockNotFound)?;
                 let Some(existing) = self.blocks.get_element(&elem_id) else {
                     return Err(EditError::BlockNotFound);
@@ -698,10 +910,7 @@ impl Document {
                 op_id,
             } => {
                 let elem_id = self
-                    .blocks
-                    .iter_asc()
-                    .find(|block| block.id == block_id)
-                    .map(|block| block.elem_id)
+                    .block_elem_id(block_id)
                     .ok_or(EditError::BlockNotFound)?;
                 let Some(existing) = self.blocks.get_element(&elem_id) else {
                     return Err(EditError::BlockNotFound);
@@ -754,10 +963,7 @@ impl Document {
         remove_end: Anchor,
     ) -> Result<Vec<EditOp>, EditError> {
         let elem_id = self
-            .blocks
-            .iter_asc()
-            .find(|block| block.id == block_id)
-            .map(|block| block.elem_id)
+            .block_elem_id(block_id)
             .ok_or(EditError::BlockNotFound)?;
 
         let Some(existing) = self.blocks.get_element(&elem_id) else {
@@ -940,8 +1146,9 @@ impl Parser {
 
         Document {
             frontmatter,
-            blocks: sequence,
+            blocks: IndexedBlocks::new(sequence),
             raw_source: Some(text.to_string()),
+            block_index: RwLock::new(None),
         }
     }
 }

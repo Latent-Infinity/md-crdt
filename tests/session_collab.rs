@@ -168,7 +168,7 @@ fn unknown_wire_version_rejected_without_mutation() {
                 counter: 1,
                 peer: 1,
             },
-            payload,
+            payload: payload.into(),
         }],
     };
     let err = b
@@ -225,7 +225,7 @@ fn unit_mode_rejects_non_empty_paragraph_on_insert_block() {
                 counter: 1,
                 peer: 9,
             },
-            payload,
+            payload: payload.into(),
         }],
     };
     let err = b
@@ -290,7 +290,7 @@ fn remote_operation_id_not_max_rejected() {
                 counter: 5,
                 peer: 1,
             },
-            payload,
+            payload: payload.into(),
         }],
     };
     let err = b
@@ -340,7 +340,10 @@ fn remote_peer_mismatch_in_nested_child_rejected() {
     let payload = JsonOpCodec.encode(&env).expect("enc");
     let msg = ChangeMessage {
         since: md_crdt::core::StateVector::new(),
-        ops: vec![Operation { id: top, payload }],
+        ops: vec![Operation {
+            id: top,
+            payload: payload.into(),
+        }],
     };
     let err = b
         .apply_remote(msg, &ValidationLimits::default())

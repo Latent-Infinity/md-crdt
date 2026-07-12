@@ -28,7 +28,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-11** Headings and lists | **done** | Structured model; ATX/setext parse; ordered/unordered nested lists; canonical serialization; wire/snapshot round trips. Audit fixed silent list-ingest text loss (nested item children now ingested). |
 | **PR-12** Table parse and row ops | **done** | GFM parse/alignment; table block skeleton; Insert/Set/Delete row DocOps; concurrent row convergence |
 | **PR-13** SplitBlock / MergeBlocks | **done** | Atomic text-unit transfer for paragraph/heading siblings; nested APIs; identity-preserving split/merge with collision fallback |
-| PR-14+ | pending | Indices, sequence performance, … |
+| **PR-14** Block index / cached state vector / shared payloads | **done** | Nested BlockId path index; O(peers) state vector; `Arc<[u8]>` operation payloads; Criterion before/after |
+| PR-15+ | pending | Incremental sequence order, storage durability, … |
 
 ## Phase B checklist
 
@@ -70,6 +71,10 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Split/merge wire shape | Atomic operation carries explicit source/destination unit ids and graphemes | Composing DeleteText + InsertBlock + InsertText always renumbers units and breaks mark anchors; persistent unit ownership would exceed this slice |
 | Merge id collisions | Preserve source unit ids unless the left sequence already retains the id (for example after split); allocate fresh contiguous ids only for collisions | Sequence tombstones intentionally prevent resurrection under an existing id; selective fallback preserves all identities that remain valid |
 | Split/merge block kinds | Paragraphs and headings; split retains heading level and merge retains the left kind | These are the existing text-unit block kinds; code/raw/table/list semantics require separately designed operations |
+| Block index invalidation | Public `IndexedBlocks` wrapper tracks a mutation generation; lookups validate cached paths and self-repair after direct field replacement | Preserves the existing `document.blocks.*` source shape while preventing stale-index results; clone/equality ignore cache state |
+| Block index path shape | `BlockId` and `elem_id` map to container paths through blockquotes/list items | Raw references cannot survive sequence mutation safely; paths make lookup O(depth), bounded by structural depth rather than document size |
+| Payload sharing ablation | `Arc<[u8]>` over `Bytes` | Both make clone O(1); `Arc` adds no dependency and payload slicing is unused. Serde `rc` preserves the existing byte-array JSON shape. |
+| State-vector cache | Store the per-peer maximum beside the op map and update it on every applied/restore path | Append-only applied ops make invalidation unnecessary; `state_vector()` becomes O(peers) clone instead of O(ops) rescan |
 
 ## Phase C checklist
 
@@ -101,6 +106,15 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Table block metadata and row insert/update/delete operations round-trip on the wire
 - [x] Concurrent table-row inserts converge; row updates use existing LWW semantics
 - [x] Collaborative split/merge block operations (PR-13)
+
+## Phase F checklist (partial)
+
+- [x] Criterion baselines: BlockId lookup, state vector, and change encoding (PR-14)
+- [x] BlockId/elem-id nested path index with mutation invalidation (PR-14)
+- [x] Cached state vector / per-peer applied frontier (PR-14)
+- [x] Shared immutable operation payloads; persistence converts to owned bytes only at snapshot boundary (PR-14)
+- [ ] Incremental sequence ordering behind a soakable flag (PR-15)
+- [ ] Optional run-length text only if profiling still demands it (PR-15 or later)
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -154,8 +168,35 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 **Audit (verified):** split/merge traced correct — `operation_extent(MergeBlocks)` reserves the replacement-id counter range so span-aware sync stays contiguous; `check_peer_consistency` rejects foreign replacement ids; split reuses preserved suffix ids in a *separate* sequence (no collision); nested APIs recurse through `container_children`. **Coverage gap closed:** every prior "converges" test was one-directional (A acts → B applies), leaving true concurrency unproven. Added `concurrent_splits_of_same_block_converge` (`tests/session_split_merge.rs`): two peers split the same paragraph at different offsets, exchange both ways → identical structural serialization + equal state vectors (original keeps the common prefix, both suffixes survive as siblings). **Forward-looking note (not a shippable bug):** `SplitBlock` clones the whole `MarkSet` to the new block and `MergeBlocks` uses `MarkSet::merge_from`, but `DocOp` carries no mark ops and session blocks are always created with `MarkSet::new()`, so these paths only ever act on empty sets today; when a mark wire op lands, split must partition intervals at the boundary (a straddling mark would otherwise render spurious spans in both halves via `resolve_anchor`'s `unwrap_or(0)`).
 
+## PR-14 indexed lookup and sync caches — **done**
+
+- `Document` lazily builds `BlockId` and element-id maps to bounded-depth container paths; successful lookup is independent of document length after the first build.
+- `IndexedBlocks` invalidates by mutation generation. Lookups validate their target and rebuild on a cache miss/mismatch, covering direct public sequence replacement without returning stale data.
+- `SyncState` stores the applied per-peer frontier and updates it through `apply_op`, `apply_one`, pending promotion, local add, and snapshot restore.
+- `Operation.payload` and the applied log use `Arc<[u8]>`; `encode_changes_since`, pending, and outbox clones share allocation. Snapshot APIs deliberately retain `Vec<u8>` as the owned persistence boundary.
+- Differential/oracle sync tests remain green. Index tests cover top-level, blockquote, list-item, deletion, mutation invalidation, direct sequence replacement, clone/equality, and `Document: Send + Sync`.
+
+### Criterion before/after (20 samples, 1 s measurement)
+
+| Benchmark | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| BlockId lookup, 1k blocks | 1.219 µs | 26.94 ns | -97.8% |
+| BlockId lookup, 10k blocks | 14.109 µs | 33.53 ns | -99.8% |
+| State vector, 10k ops / 10 peers | 50.125 µs | 21.47 ns | -99.96% |
+| State vector, 10k ops / 1k peers | 180.31 µs | 3.616 µs | -98.0% |
+| Encode 10k × 32-byte payloads | 174.69 µs | 35.23 µs | -79.8% |
+| Encode 10k × 1 KiB payloads | 455.64 µs | 56.01 µs | -87.7% |
+
+The index/cache/`Arc` alternatives all earned their complexity. Incremental RGA ordering and run-length text remain explicitly deferred to PR-15.
+
+**Audit (verified, fanned out over 3 slices):** All claims TRUE. Block index is correct via *two* independent defenses — a generation stamp (fast path) plus a per-lookup identity re-check that rebuilds on mismatch — so even a generation *collision* (whole-`IndexedBlocks` swap, exercised by `block_index_repairs_after_public_sequence_replacement`) cannot return a wrong block; the private `sequence` field forces every mutation through the generation-bumping `DerefMut`. State-vector cache is sound: applied ops are strictly append-only (an incremental max is valid) and all five insertion paths (`apply_op`, `apply_one`, `promote_ready_pending`, `add_local_op`, `restore_applied`) call `observe`. `Arc<[u8]>` change is behavior-preserving (`ptr_eq` sharing test + JSON byte-array wire-shape test; serde `rc` enabled). Benchmarks measure the right operations with no timing-bound assertions (no CI flakiness); no phase language leaked into code. **TDD gap closed:** the state-vector test compared the cache only to explicit expected values and to a restore that reuses the same cache, so a systematic `observe` bug would pass both sides; added `cached_state_vector_matches_independent_recompute` (`tests/performance_indices.rs`) pinning the cache to a from-scratch max-per-peer recompute over `applied_ops()`. **Non-blocking notes:** split/merge index re-lookups are already covered transitively (`merge_blocks_preserves_right_unit_ids_and_converges` asserts the tombstoned right block is unfindable; the split test finds the new suffix block); the committed bench measures only the "after" state (before column requires the standard Criterion baseline checkout). **Out-of-scope pre-existing observation (not PR-14):** `raw_apply_op` mark arms resolve `block_elem_id` tree-wide but then call top-level-only `blocks.get_element`, so marks on *nested* blocks would return `BlockNotFound` — a latent mark limitation, harmless today since marks have no collaborative wire op.
+
 ## Gate
 
+- `just check` — **passed** after PR-14 audit (359 tests, 0 warnings; added independent state-vector recompute oracle)
+- `just check` — **passed** for PR-14 (358 tests, 0 warnings; differential/oracle green)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 90.52% repository line coverage / 89.04% region coverage, both above the PR-13 baseline, with >90% coverage on PR-14 changed source lines
+- `cargo bench --bench performance -- --sample-size 20 --measurement-time 1 --warm-up-time 0.5` — **passed**; all PR-14 target benchmarks improved materially from baseline
 - `just check` — **passed** after PR-13 audit (350 tests, 0 warnings)
 - `just check` — **passed** for PR-13 (349 tests, 0 warnings)
 - `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 90.36% repository line coverage / 88.94% region coverage, no global regression, with >90% coverage on PR-13 changed source lines
