@@ -1032,6 +1032,30 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
             continue;
         }
 
+        if index + 1 < lines.len()
+            && let Some(columns) = parse_table_delimiter(lines[index + 1])
+            && let Some(header) = parse_table_cells(line)
+            && header.len() == columns.len()
+        {
+            let elem_id = next_op_id(counter);
+            let mut table =
+                Table::new(block_id_from_op(elem_id), elem_id, columns, header, elem_id);
+            let mut after = None;
+            let mut end_index = index + 2;
+            while end_index < lines.len() {
+                let Some(cells) = parse_table_cells(lines[end_index]) else {
+                    break;
+                };
+                let row_id = next_op_id(counter);
+                table.insert_row(after, cells, row_id);
+                after = Some(row_id);
+                end_index += 1;
+            }
+            out.push(Block::new(BlockKind::Table { table }, elem_id));
+            index = end_index;
+            continue;
+        }
+
         // ATX heading: # .. ######
         if let Some((level, title)) = parse_atx_heading(trimmed) {
             let elem_id = next_op_id(counter);
@@ -1085,6 +1109,43 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
         out.push(Block::new(BlockKind::Paragraph { text }, elem_id));
         index = end_index;
     }
+}
+
+fn parse_table_cells(line: &str) -> Option<Vec<CellContent>> {
+    let trimmed = line.trim();
+    if !trimmed.contains('|') {
+        return None;
+    }
+    let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let cells: Vec<_> = inner
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect();
+    (!cells.is_empty()).then_some(cells)
+}
+
+fn parse_table_delimiter(line: &str) -> Option<Vec<ColumnDef>> {
+    let cells = parse_table_cells(line)?;
+    cells
+        .into_iter()
+        .map(|cell| {
+            let marker = cell.trim();
+            let left = marker.starts_with(':');
+            let right = marker.ends_with(':');
+            let dashes = marker.trim_matches(':');
+            if dashes.len() < 3 || !dashes.chars().all(|c| c == '-') {
+                return None;
+            }
+            Some(ColumnDef {
+                alignment: match (left, right) {
+                    (true, true) => ColumnAlignment::Center,
+                    (_, true) => ColumnAlignment::Right,
+                    _ => ColumnAlignment::Left,
+                },
+            })
+        })
+        .collect()
 }
 
 fn indent_of(line: &str) -> usize {

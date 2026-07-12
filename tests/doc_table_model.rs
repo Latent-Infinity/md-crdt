@@ -1,5 +1,7 @@
 use md_crdt::core::OpId;
-use md_crdt::doc::{CellContent, ColumnAlignment, ColumnDef, Table};
+use md_crdt::doc::{
+    BlockKind, CellContent, ColumnAlignment, ColumnDef, EquivalenceMode, Parser, Table,
+};
 use uuid::Uuid;
 
 fn op(counter: u64) -> OpId {
@@ -85,4 +87,53 @@ fn fr15_cell_content_is_text() {
     table.insert_row(None, vec![text.clone()], op(2));
     let rows = table.rows_in_order();
     assert_eq!(rows[0].cells.get(), vec![text]);
+}
+
+#[test]
+fn parser_emits_gfm_table_with_alignment_and_rows() {
+    let input =
+        "| Name | Score | Rank |\n| :--- | ---: | :---: |\n| Alice | 10 | 1 |\n| Bob | 8 | 2 |";
+    let document = Parser::parse(input);
+    let blocks = document.blocks_in_order();
+    let BlockKind::Table { table } = &blocks[0].kind else {
+        panic!("expected a structured table");
+    };
+
+    assert_eq!(table.header.get(), vec!["Name", "Score", "Rank"]);
+    assert_eq!(
+        table
+            .columns
+            .get()
+            .into_iter()
+            .map(|column| column.alignment)
+            .collect::<Vec<_>>(),
+        vec![
+            ColumnAlignment::Left,
+            ColumnAlignment::Right,
+            ColumnAlignment::Center
+        ]
+    );
+    assert_eq!(
+        table
+            .rows_in_order()
+            .into_iter()
+            .map(|row| row.cells.get())
+            .collect::<Vec<_>>(),
+        vec![vec!["Alice", "10", "1"], vec!["Bob", "8", "2"]]
+    );
+
+    let normalized = document.serialize(EquivalenceMode::Structural);
+    assert_eq!(
+        normalized,
+        Parser::parse(&normalized).serialize(EquivalenceMode::Structural)
+    );
+}
+
+#[test]
+fn invalid_table_delimiter_stays_a_paragraph() {
+    let document = Parser::parse("| A | B |\n| -- | --- |");
+    assert!(matches!(
+        document.blocks_in_order()[0].kind,
+        BlockKind::Paragraph { .. }
+    ));
 }

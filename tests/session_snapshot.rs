@@ -32,6 +32,54 @@ fn save_restore_round_trip_preserves_document_and_sv() {
 }
 
 #[test]
+fn save_restore_round_trip_preserves_table_rows() {
+    use md_crdt::doc::{ColumnAlignment, ColumnDef, block_id_from_op};
+
+    let mut a = CollaborativeDocument::new(1);
+    let table_elem = a
+        .insert_table(
+            None,
+            vec![
+                ColumnDef {
+                    alignment: ColumnAlignment::Left,
+                },
+                ColumnDef {
+                    alignment: ColumnAlignment::Right,
+                },
+            ],
+            vec!["Name".into(), "Score".into()],
+        )
+        .expect("table");
+    let table_id = block_id_from_op(table_elem);
+    let row1 = a
+        .insert_table_row(table_id, None, vec!["Alice".into(), "10".into()])
+        .expect("row1");
+    a.insert_table_row(table_id, Some(row1), vec!["Bob".into(), "8".into()])
+        .expect("row2");
+    a.set_table_row_cells(table_id, row1, vec!["Alice".into(), "11".into()])
+        .expect("update row1");
+
+    let before = a.document().serialize(EquivalenceMode::Structural);
+    assert!(before.contains("| Alice | 11 |"), "sanity: {before}");
+
+    // Table DTO (columns/alignment/header + row RGA + LWW cells) survives snapshot.
+    let snap = a.save_snapshot().expect("save");
+    let mut b = CollaborativeDocument::restore_from_snapshot(snap).expect("restore");
+    assert_eq!(before, b.document().serialize(EquivalenceMode::Structural));
+    assert_eq!(a.state_vector(), b.state_vector());
+    // next_counter recovery must account for row OpIds, or a post-restore insert collides.
+    assert_eq!(a.peek_next_id().counter, b.peek_next_id().counter);
+
+    let fresh = b
+        .insert_table_row(table_id, None, vec!["Carol".into(), "7".into()])
+        .expect("post-restore row");
+    assert!(
+        fresh.counter >= a.peek_next_id().counter,
+        "restored clock must not reissue an existing counter"
+    );
+}
+
+#[test]
 fn restore_rejects_clock_behind_max_op() {
     let mut a = CollaborativeDocument::new(1);
     a.insert_paragraph(None, "x").expect("insert");

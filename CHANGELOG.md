@@ -81,6 +81,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Canonical heading/list serialization with stable multiline and tab-indented list normalization
 - Heading/list wire DTO and session snapshot round trips
 
+#### Structured tables (`md-crdt::doc` / `codec` / `session`)
+- GFM table parsing into the existing `Table` model, including left/center/right alignment
+- Canonical table serialization and stable parse/serialize round trips
+- Table block metadata on `InsertBlock`; rows use independent insert/update/delete wire operations
+- Collaborative table APIs with concurrent row-insert convergence and LWW row-cell updates
+
 ## [0.1.0] - 2025-02-04
 
 ### Added

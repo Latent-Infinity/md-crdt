@@ -26,7 +26,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **Follow-up: nested re-ingest matching** | **done** | Recursive `sync_tree`; quote containers content-agnostic; structure add/remove inside quotes; stricter match floor |
 | **PR-10** Vault ingest D2 | **done** | Grapheme LCS → InsertText/DeleteText; position-pair unmatched paragraphs; preserves BlockId + LCS unit OpIds |
 | **PR-11** Headings and lists | **done** | Structured model; ATX/setext parse; ordered/unordered nested lists; canonical serialization; wire/snapshot round trips. Audit fixed silent list-ingest text loss (nested item children now ingested). |
-| PR-12+ | pending | Tables, split/merge, … |
+| **PR-12** Table parse and row ops | **done** | GFM parse/alignment; table block skeleton; Insert/Set/Delete row DocOps; concurrent row convergence |
+| PR-13+ | pending | Split/merge, indices, … |
 
 ## Phase B checklist
 
@@ -62,6 +63,9 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Unmatched paragraph pairing | Zip remaining removed/added paragraphs by order | Lets full rewrite still keep BlockId via LCS |
 | List indentation | Expand tabs to CommonMark four-column tab stops | Counting a tab as one character made indented list continuations normalize differently on the second parse; column expansion is deterministic and fixture-compatible |
 | Structured serialization | Canonical ATX headings and `-` / `1.` list markers | The runtime model intentionally does not retain source marker style; structural serialization prioritizes stable semantics and idempotence |
+| Table creation wire shape | `InsertBlock` carries header + column alignment only; rows use separate row DocOps | Preserves independent row identity and RGA concurrency without embedding mutable row history in a block skeleton |
+| Table cell granularity | Whole-cell `String` through the existing LWW register | PR-12 calls for row operations; per-cell text CRDT would expand scope beyond the existing model and belongs in a separately designed slice |
+| GFM delimiter recognition | Header count must match delimiter count; delimiter cells require at least three hyphens with optional edge colons | Matches the core GFM table shape while keeping parsing deterministic and dependency-free |
 
 ## Phase C checklist
 
@@ -89,7 +93,9 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] List **ingest** preserves item children (text), not just the list container
 - [x] Structured headings and lists serialize idempotently across CommonMark fixtures
 - [x] Heading/list wire DTOs and session snapshots round-trip
-- [ ] GFM table parsing and collaborative row operations (PR-12)
+- [x] GFM table parsing with left/center/right alignment
+- [x] Table block metadata and row insert/update/delete operations round-trip on the wire
+- [x] Concurrent table-row inserts converge; row updates use existing LWW semantics
 - [ ] Collaborative split/merge block operations (PR-13)
 
 ## Nested re-ingest matching — **done** (structure)
@@ -123,10 +129,20 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 **Latent limitation (documented, same as blockquotes):** in-list-item *text* re-ingest LCS not yet exercised end-to-end; nested-list matching relies on the level-based `sync_tree`.
 
+## PR-12 tables — **done**
+
+- Parser recognizes GFM header/delimiter pairs, validates three-or-more-hyphen delimiters, maps edge colons to alignment, and materializes ordered `TableRow`s.
+- `BlockKindSkeleton::Table` carries immutable creation metadata (columns + header); non-empty runtime tables must be built through row operations.
+- `DocOp::{InsertTableRow,SetTableRowCells,DeleteTableRow}` integrate through the session with N3 encode-before-apply and N4 `right_origin` on row insertion.
+- Tests cover structured parsing, invalid delimiters, canonical round-trip, block/row codec round-trips, no-clock-burn validation, sequential row mutation, and concurrent row insertion convergence.
+- Deliberate limit: escaped-pipe tokenization and inline-mark parsing inside cells are not implemented; vault ingest continues to skip table files until table diff semantics are designed.
+
+**Audit (verified):** parse/serialize/wire/session/snapshot all trace correct; convergence + clock-safety tests present. **TDD gap closed:** snapshot had full `table_to_dto`/`table_from_dto` + row RGA/LWW DTOs and a `max_counter_for_peer` table arm, but **no test drove a table through save/restore**. Added `save_restore_round_trip_preserves_table_rows` (`tests/session_snapshot.rs`): table + two rows + cell update → snapshot → restore asserts serialize equality, equal state vectors, recovered `next_counter`, and a non-colliding post-restore row id. **Doc nit fixed:** `filesync/session.rs` skip comment reworded — tables *are* wire-ready; ingest simply doesn't yet emit `InsertBlock(empty)+InsertTableRow` from a parsed multi-row table (skip stays the correct scope boundary).
+
 ## Gate
 
-- `just check` — **passed** after PR-11 list-ingest fix (329 tests, 0 warnings)
-- `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 85.93% repository line coverage, with all PR-11 follow-up lines covered (existing global baseline remains below 90%)
+- `just check` — **passed** after PR-12 audit (338 tests, 0 warnings)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 88.36% repository line coverage (up from 85.93%), with >90% coverage on PR-12 changed lines
 - Prior notes: nested re-ingest structure; multi-quote sibling edge still untested
 - Prior audit notes retained (span-aware sync; mark visible-order split)
 

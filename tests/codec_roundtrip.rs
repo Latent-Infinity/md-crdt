@@ -3,8 +3,8 @@
 //! Covers Envelope / DocOp encode-decode, version rejection, and nest depth.
 
 use md_crdt::codec::{
-    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, CodecError, DocOp, Envelope,
-    JsonOpCodec, ListItemSkeleton, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, WIRE_VERSION,
+    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, CodecError, ColumnAlignmentWire, DocOp,
+    Envelope, JsonOpCodec, ListItemSkeleton, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, WIRE_VERSION,
     insert_block_paragraph_is_empty,
 };
 use md_crdt::core::OpId;
@@ -265,4 +265,64 @@ fn heading_and_list_kinds_round_trip() {
 
     let bytes = codec.encode(&env).expect("encode");
     assert_eq!(codec.decode(&bytes).expect("decode"), env);
+}
+
+#[test]
+fn table_row_ops_round_trip() {
+    let codec = JsonOpCodec;
+    let operations = [
+        DocOp::InsertTableRow {
+            table_elem: op(1, 1),
+            table_id: block_id(1),
+            after: None,
+            id: op(2, 1),
+            right_origin: None,
+            cells: vec!["a".into(), "b".into()],
+        },
+        DocOp::SetTableRowCells {
+            table_elem: op(1, 1),
+            table_id: block_id(1),
+            row: op(2, 1),
+            id: op(3, 1),
+            cells: vec!["updated".into()],
+        },
+        DocOp::DeleteTableRow {
+            table_elem: op(1, 1),
+            table_id: block_id(1),
+            target: op(2, 1),
+            id: op(4, 1),
+        },
+    ];
+
+    for operation in operations {
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(operation),
+        };
+        let bytes = codec.encode(&envelope).expect("encode");
+        assert_eq!(codec.decode(&bytes).expect("decode"), envelope);
+    }
+}
+
+#[test]
+fn table_block_skeleton_round_trip() {
+    let codec = JsonOpCodec;
+    let envelope = Envelope {
+        version: WIRE_VERSION,
+        body: OpBody::Doc(DocOp::InsertBlock {
+            parent: None,
+            after: None,
+            id: op(1, 1),
+            right_origin: None,
+            block: BlockSkeleton {
+                block_id: block_id(1),
+                kind: BlockKindSkeleton::Table {
+                    columns: vec![ColumnAlignmentWire::Left, ColumnAlignmentWire::Center],
+                    header: vec!["a".into(), "b".into()],
+                },
+            },
+        }),
+    };
+    let bytes = codec.encode(&envelope).expect("encode");
+    assert_eq!(codec.decode(&bytes).expect("decode"), envelope);
 }

@@ -350,9 +350,10 @@ fn remote_peer_mismatch_in_nested_child_rejected() {
 }
 
 #[test]
-fn insert_block_rejects_table_until_wire_ready() {
+fn insert_empty_table_propagates_over_wire() {
     use md_crdt::doc::{ColumnAlignment, ColumnDef, Table};
     let mut a = CollaborativeDocument::new(1);
+    let mut b = CollaborativeDocument::new(2);
     let table_op = OpId {
         counter: 1,
         peer: 1,
@@ -366,12 +367,15 @@ fn insert_block_rejects_table_until_wire_ready() {
         vec!["h".into()],
         table_op,
     );
-    let err = a
+    let elem = a
         .insert_block(None, BlockKind::Table { table })
-        .expect_err("table unsupported");
-    assert!(matches!(err, SessionError::UnsupportedBlockKind("table")));
-    assert!(a.document().blocks_in_order().is_empty());
-    assert_eq!(a.peek_next_id().counter, 1);
+        .expect("table supported");
+    assert_eq!(elem, table_op);
+    exchange(&a, &mut b);
+    assert_eq!(
+        a.document().serialize(EquivalenceMode::Structural),
+        b.document().serialize(EquivalenceMode::Structural)
+    );
 }
 
 // Regression: string-mode InsertBlock expands the paragraph body into units at b+1..b+G.

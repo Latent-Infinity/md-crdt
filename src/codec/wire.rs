@@ -42,6 +42,14 @@ pub struct TextUnitWire {
     pub grapheme: String,
 }
 
+/// Stable wire representation of table column alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColumnAlignmentWire {
+    Left,
+    Center,
+    Right,
+}
+
 /// Serializable document operations for the collaborative wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DocOp {
@@ -80,6 +88,30 @@ pub enum DocOp {
         /// Existing unit element ids to tombstone.
         targets: Vec<OpId>,
     },
+    /// Insert one row into a table's row RGA.
+    InsertTableRow {
+        table_elem: OpId,
+        table_id: BlockId,
+        after: Option<OpId>,
+        id: OpId,
+        right_origin: Option<OpId>,
+        cells: Vec<String>,
+    },
+    /// Update a row's cells through its LWW register.
+    SetTableRowCells {
+        table_elem: OpId,
+        table_id: BlockId,
+        row: OpId,
+        id: OpId,
+        cells: Vec<String>,
+    },
+    /// Tombstone one table row.
+    DeleteTableRow {
+        table_elem: OpId,
+        table_id: BlockId,
+        target: OpId,
+        id: OpId,
+    },
 }
 
 /// Serializable block creation payload — no Sequence maps.
@@ -113,6 +145,10 @@ pub enum BlockKindSkeleton {
     },
     RawBlock {
         raw: String,
+    },
+    Table {
+        columns: Vec<ColumnAlignmentWire>,
+        header: Vec<String>,
     },
 }
 
@@ -149,7 +185,12 @@ pub fn insert_block_paragraph_is_empty(envelope: &Envelope) -> bool {
             _ => true,
         },
         OpBody::Doc(
-            DocOp::DeleteBlock { .. } | DocOp::InsertText { .. } | DocOp::DeleteText { .. },
+            DocOp::DeleteBlock { .. }
+            | DocOp::InsertText { .. }
+            | DocOp::DeleteText { .. }
+            | DocOp::InsertTableRow { .. }
+            | DocOp::SetTableRowCells { .. }
+            | DocOp::DeleteTableRow { .. },
         ) => true,
     }
 }
@@ -161,7 +202,12 @@ pub(crate) fn validate_envelope_structure(envelope: &Envelope) -> Result<(), sup
             check_kind_depth(&block.kind, 0)?;
         }
         OpBody::Doc(
-            DocOp::DeleteBlock { .. } | DocOp::InsertText { .. } | DocOp::DeleteText { .. },
+            DocOp::DeleteBlock { .. }
+            | DocOp::InsertText { .. }
+            | DocOp::DeleteText { .. }
+            | DocOp::InsertTableRow { .. }
+            | DocOp::SetTableRowCells { .. }
+            | DocOp::DeleteTableRow { .. },
         ) => {}
     }
     Ok(())
@@ -190,7 +236,8 @@ fn check_kind_depth(kind: &BlockKindSkeleton, depth: u32) -> Result<(), super::C
         BlockKindSkeleton::Paragraph { .. }
         | BlockKindSkeleton::Heading { .. }
         | BlockKindSkeleton::CodeFence { .. }
-        | BlockKindSkeleton::RawBlock { .. } => Ok(()),
+        | BlockKindSkeleton::RawBlock { .. }
+        | BlockKindSkeleton::Table { .. } => Ok(()),
     }
 }
 

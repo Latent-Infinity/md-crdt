@@ -153,8 +153,9 @@ impl VaultSession {
         }
 
         let parsed = Parser::parse(&content);
-        // Tables aren't wire-ready yet: skip the whole file (don't record its hash, so it
-        // gets picked up once table support lands). No silent flatten, no vault-wide abort.
+        // Table row ops are wire-ready, but ingest doesn't yet turn a parsed multi-row table
+        // into InsertBlock(empty) + InsertTableRow ops, so skip the whole file (don't record its
+        // hash, so it gets picked up once table diff lands). No silent flatten, no vault-wide abort.
         if document_contains_table(&parsed) {
             return Ok(IngestOutcome::Skipped);
         }

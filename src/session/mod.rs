@@ -10,15 +10,16 @@ pub use snapshot::{
 };
 
 use crate::codec::{
-    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, DocOp, Envelope, JsonOpCodec,
-    ListItemSkeleton, OpBody, OpCodec, TextUnitWire, WIRE_VERSION, insert_block_paragraph_is_empty,
+    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, ColumnAlignmentWire, DocOp, Envelope,
+    JsonOpCodec, ListItemSkeleton, OpBody, OpCodec, TextUnitWire, WIRE_VERSION,
+    insert_block_paragraph_is_empty,
 };
 use crate::core::mark::MarkSet;
 use crate::core::{OpId, PeerId, Sequence, SequenceOp, StateVector};
 use crate::doc::{
-    Block, BlockId, BlockKind, Document, ListItem, TextUnit, after_for_grapheme_offset,
-    block_id_from_op, grapheme_count, paragraph_visible_ids, paragraph_visible_string,
-    units_from_str,
+    Block, BlockId, BlockKind, ColumnAlignment, ColumnDef, Document, ListItem, Table, TextUnit,
+    after_for_grapheme_offset, block_id_from_op, grapheme_count, paragraph_visible_ids,
+    paragraph_visible_string, units_from_str,
 };
 use crate::sync::{
     ChangeMessage, IntegrateResult, Operation, SyncState, ValidationError, ValidationLimits,
@@ -46,12 +47,16 @@ pub enum SessionError {
     MissingAfterAnchor,
     #[error("delete target not found")]
     MissingDeleteTarget,
-    #[error("unsupported block kind on the collaborative wire: {0}")]
-    UnsupportedBlockKind(&'static str),
+    #[error("table InsertBlock must not contain rows; use InsertTableRow")]
+    NonEmptyTableOnInsertBlock,
     #[error("block not found")]
     BlockNotFound,
     #[error("target is not a paragraph")]
     NotParagraph,
+    #[error("target is not a table")]
+    NotTable,
+    #[error("table row not found")]
+    TableRowNotFound,
     #[error("grapheme offset out of range")]
     InvalidOffset,
 }
@@ -278,6 +283,117 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         let block_id = block_id_from_op(block_elem);
         self.insert_text(block_id, 0, text)?;
         Ok(block_elem)
+    }
+
+    /// Insert an empty table block. Rows are added with [`Self::insert_table_row`].
+    pub fn insert_table(
+        &mut self,
+        after: Option<OpId>,
+        columns: Vec<ColumnDef>,
+        header: Vec<String>,
+    ) -> Result<OpId, SessionError> {
+        let elem_id = self.peek_next_id();
+        let table = Table::new(block_id_from_op(elem_id), elem_id, columns, header, elem_id);
+        self.insert_block(after, BlockKind::Table { table })
+    }
+
+    /// Insert a row into a table's row sequence.
+    pub fn insert_table_row(
+        &mut self,
+        table_id: BlockId,
+        after: Option<OpId>,
+        cells: Vec<String>,
+    ) -> Result<OpId, SessionError> {
+        let (table_elem, right_origin) = {
+            let block = self
+                .document
+                .find_block_by_id(table_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            let BlockKind::Table { table } = &block.kind else {
+                return Err(SessionError::NotTable);
+            };
+            if after.is_some_and(|id| table.rows.get_element(&id).is_none()) {
+                return Err(SessionError::TableRowNotFound);
+            }
+            (block.elem_id, table.rows.compute_right_origin(after))
+        };
+        let id = self.peek_next_id();
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::InsertTableRow {
+                table_elem,
+                table_id,
+                after,
+                id,
+                right_origin,
+                cells,
+            }),
+        };
+        self.commit_single_id(envelope, id)
+    }
+
+    /// Replace a row's cells using its LWW register.
+    pub fn set_table_row_cells(
+        &mut self,
+        table_id: BlockId,
+        row: OpId,
+        cells: Vec<String>,
+    ) -> Result<OpId, SessionError> {
+        let table_elem = self.table_elem_with_row(table_id, row)?;
+        let id = self.peek_next_id();
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::SetTableRowCells {
+                table_elem,
+                table_id,
+                row,
+                id,
+                cells,
+            }),
+        };
+        self.commit_single_id(envelope, id)
+    }
+
+    /// Tombstone a table row.
+    pub fn delete_table_row(
+        &mut self,
+        table_id: BlockId,
+        target: OpId,
+    ) -> Result<OpId, SessionError> {
+        let table_elem = self.table_elem_with_row(table_id, target)?;
+        let id = self.peek_next_id();
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::DeleteTableRow {
+                table_elem,
+                table_id,
+                target,
+                id,
+            }),
+        };
+        self.commit_single_id(envelope, id)
+    }
+
+    fn table_elem_with_row(&self, table_id: BlockId, row: OpId) -> Result<OpId, SessionError> {
+        let block = self
+            .document
+            .find_block_by_id(table_id)
+            .ok_or(SessionError::BlockNotFound)?;
+        let BlockKind::Table { table } = &block.kind else {
+            return Err(SessionError::NotTable);
+        };
+        if table.rows.get_element(&row).is_none() {
+            return Err(SessionError::TableRowNotFound);
+        }
+        Ok(block.elem_id)
+    }
+
+    fn commit_single_id(&mut self, envelope: Envelope, id: OpId) -> Result<OpId, SessionError> {
+        let payload = self.codec.encode(&envelope).map_err(codec_err)?;
+        apply_envelope_to_document(&mut self.document, &envelope);
+        self.sync.add_local_op(Operation { id, payload });
+        self.next_counter = id.counter + 1;
+        Ok(id)
     }
 
     /// Insert grapheme units into a paragraph. Returns the max unit `OpId` (N1).
@@ -676,6 +792,11 @@ fn operation_extent(env: &Envelope) -> (OpId, u64) {
             (OpId { counter: hi, peer }, span)
         }
         OpBody::Doc(DocOp::DeleteText { id, .. }) => (*id, 1),
+        OpBody::Doc(
+            DocOp::InsertTableRow { id, .. }
+            | DocOp::SetTableRowCells { id, .. }
+            | DocOp::DeleteTableRow { id, .. },
+        ) => (*id, 1),
     }
 }
 
@@ -707,7 +828,9 @@ fn max_counter_in_kind(kind: &BlockKindSkeleton, parent: OpId) -> u64 {
             }
             hi
         }
-        BlockKindSkeleton::CodeFence { .. } | BlockKindSkeleton::RawBlock { .. } => parent.counter,
+        BlockKindSkeleton::CodeFence { .. }
+        | BlockKindSkeleton::RawBlock { .. }
+        | BlockKindSkeleton::Table { .. } => parent.counter,
     }
 }
 
@@ -733,6 +856,15 @@ fn check_peer_consistency(op: &Operation, env: &Envelope) -> Result<(), SessionE
             }
         }
         OpBody::Doc(DocOp::DeleteText { id, .. }) => {
+            if id.peer != peer {
+                return Err(SessionError::PeerMismatch);
+            }
+        }
+        OpBody::Doc(
+            DocOp::InsertTableRow { id, .. }
+            | DocOp::SetTableRowCells { id, .. }
+            | DocOp::DeleteTableRow { id, .. },
+        ) => {
             if id.peer != peer {
                 return Err(SessionError::PeerMismatch);
             }
@@ -845,10 +977,20 @@ fn block_kind_to_skeleton(
                 children: wire_children,
             })
         }
-        // Tables are not wire-ready until the table PR. Reject rather than silently
-        // degrade to an empty block, which would drop the table from both the local
-        // document and the wire.
-        BlockKind::Table { .. } => Err(SessionError::UnsupportedBlockKind("table")),
+        BlockKind::Table { table } => {
+            if table.rows.iter().next().is_some() {
+                return Err(SessionError::NonEmptyTableOnInsertBlock);
+            }
+            Ok(BlockKindSkeleton::Table {
+                columns: table
+                    .columns
+                    .get()
+                    .into_iter()
+                    .map(|column| alignment_to_wire(&column.alignment))
+                    .collect(),
+                header: table.header.get(),
+            })
+        }
     }
 }
 
@@ -902,6 +1044,56 @@ fn apply_envelope_to_document(document: &mut Document, envelope: &Envelope) {
                         target: *target,
                         id: *id,
                     });
+                }
+            });
+        }
+        OpBody::Doc(DocOp::InsertTableRow {
+            table_elem,
+            after,
+            id,
+            right_origin,
+            cells,
+            ..
+        }) => {
+            let _ = document.with_block_mut(*table_elem, |block| {
+                if let BlockKind::Table { table } = &mut block.kind {
+                    let row = crate::doc::TableRow {
+                        id: block_id_from_op(*id),
+                        elem_id: *id,
+                        deleted: crate::core::LwwRegister::new(false, *id),
+                        cells: crate::core::LwwRegister::new(cells.clone(), *id),
+                    };
+                    table.rows.apply(SequenceOp::Insert {
+                        after: *after,
+                        id: *id,
+                        value: row,
+                        right_origin: *right_origin,
+                    });
+                }
+            });
+        }
+        OpBody::Doc(DocOp::SetTableRowCells {
+            table_elem,
+            row,
+            id,
+            cells,
+            ..
+        }) => {
+            let _ = document.with_block_mut(*table_elem, |block| {
+                if let BlockKind::Table { table } = &mut block.kind {
+                    table.set_row_cells(*row, cells.clone(), *id);
+                }
+            });
+        }
+        OpBody::Doc(DocOp::DeleteTableRow {
+            table_elem,
+            target,
+            id,
+            ..
+        }) => {
+            let _ = document.with_block_mut(*table_elem, |block| {
+                if let BlockKind::Table { table } = &mut block.kind {
+                    table.remove_row(*target, *id);
                 }
             });
         }
@@ -991,5 +1183,35 @@ fn kind_from_skeleton(kind: &BlockKindSkeleton, parent_elem: OpId) -> BlockKind 
             }
             BlockKind::BlockQuote { children: seq }
         }
+        BlockKindSkeleton::Table { columns, header } => BlockKind::Table {
+            table: Table::new(
+                block_id_from_op(parent_elem),
+                parent_elem,
+                columns
+                    .iter()
+                    .map(|alignment| ColumnDef {
+                        alignment: alignment_from_wire(*alignment),
+                    })
+                    .collect(),
+                header.clone(),
+                parent_elem,
+            ),
+        },
+    }
+}
+
+fn alignment_to_wire(alignment: &ColumnAlignment) -> ColumnAlignmentWire {
+    match alignment {
+        ColumnAlignment::Left => ColumnAlignmentWire::Left,
+        ColumnAlignment::Center => ColumnAlignmentWire::Center,
+        ColumnAlignment::Right => ColumnAlignmentWire::Right,
+    }
+}
+
+fn alignment_from_wire(alignment: ColumnAlignmentWire) -> ColumnAlignment {
+    match alignment {
+        ColumnAlignmentWire::Left => ColumnAlignment::Left,
+        ColumnAlignmentWire::Center => ColumnAlignment::Center,
+        ColumnAlignmentWire::Right => ColumnAlignment::Right,
     }
 }
