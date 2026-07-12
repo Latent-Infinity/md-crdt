@@ -80,6 +80,32 @@ fn save_restore_round_trip_preserves_table_rows() {
 }
 
 #[test]
+fn save_restore_round_trip_preserves_split_merge_history() {
+    use md_crdt::doc::block_id_from_op;
+
+    let mut a = CollaborativeDocument::new(2);
+    let left = a.insert_paragraph(None, "abcd").expect("paragraph");
+    let left_id = block_id_from_op(left);
+    let right = a.split_block(left_id, 2).expect("split");
+    a.merge_blocks(left_id, block_id_from_op(right))
+        .expect("merge");
+
+    let snapshot = a.save_snapshot().expect("save");
+    let mut restored = CollaborativeDocument::restore_from_snapshot(snapshot).expect("restore");
+    assert_eq!(
+        a.document().serialize(EquivalenceMode::Structural),
+        restored.document().serialize(EquivalenceMode::Structural)
+    );
+    assert_eq!(a.state_vector(), restored.state_vector());
+    assert_eq!(a.peek_next_id(), restored.peek_next_id());
+
+    restored
+        .insert_text(left_id, 4, "!")
+        .expect("post-restore edit");
+    assert!(restored.peek_next_id().counter > a.peek_next_id().counter);
+}
+
+#[test]
 fn restore_rejects_clock_behind_max_op() {
     let mut a = CollaborativeDocument::new(1);
     a.insert_paragraph(None, "x").expect("insert");

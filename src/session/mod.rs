@@ -11,8 +11,8 @@ pub use snapshot::{
 
 use crate::codec::{
     BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, ColumnAlignmentWire, DocOp, Envelope,
-    JsonOpCodec, ListItemSkeleton, OpBody, OpCodec, TextUnitWire, WIRE_VERSION,
-    insert_block_paragraph_is_empty,
+    JsonOpCodec, ListItemSkeleton, MovedTextUnitWire, OpBody, OpCodec, TextBlockKindWire,
+    TextUnitWire, WIRE_VERSION, insert_block_paragraph_is_empty,
 };
 use crate::core::mark::MarkSet;
 use crate::core::{OpId, PeerId, Sequence, SequenceOp, StateVector};
@@ -57,6 +57,8 @@ pub enum SessionError {
     NotTable,
     #[error("table row not found")]
     TableRowNotFound,
+    #[error("blocks must be adjacent siblings")]
+    BlocksNotAdjacent,
     #[error("grapheme offset out of range")]
     InvalidOffset,
 }
@@ -525,6 +527,185 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         Ok(Some(delete_id))
     }
 
+    /// Split a top-level paragraph or heading at a grapheme offset.
+    pub fn split_block(
+        &mut self,
+        block_id: BlockId,
+        grapheme_offset: usize,
+    ) -> Result<OpId, SessionError> {
+        self.split_block_in(None, block_id, grapheme_offset)
+    }
+
+    /// Split a paragraph or heading inside `parent`, preserving suffix unit ids.
+    pub fn split_block_in(
+        &mut self,
+        parent: Option<OpId>,
+        block_id: BlockId,
+        grapheme_offset: usize,
+    ) -> Result<OpId, SessionError> {
+        let (target, kind, units) = {
+            let children = self
+                .document
+                .container_children(parent)
+                .ok_or(SessionError::BlockNotFound)?;
+            let block = children
+                .iter()
+                .find(|block| block.id == block_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            let (body, kind) = match &block.kind {
+                BlockKind::Paragraph { text } => (text, TextBlockKindWire::Paragraph),
+                BlockKind::Heading { level, text } => {
+                    (text, TextBlockKindWire::Heading { level: *level })
+                }
+                _ => return Err(SessionError::NotParagraph),
+            };
+            if grapheme_offset > body.len_visible() {
+                return Err(SessionError::InvalidOffset);
+            }
+            let units = body
+                .iter_all()
+                .filter_map(|element| {
+                    element
+                        .value
+                        .as_ref()
+                        .map(|unit| (element.id, unit.grapheme.clone()))
+                })
+                .skip(grapheme_offset)
+                .map(|(id, grapheme)| MovedTextUnitWire {
+                    source_id: id,
+                    id,
+                    grapheme,
+                })
+                .collect();
+            (block.elem_id, kind, units)
+        };
+
+        let id = self.peek_next_id();
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::SplitBlock {
+                parent,
+                target,
+                id,
+                new_block_id: block_id_from_op(id),
+                right_origin: self
+                    .document
+                    .compute_child_right_origin(parent, Some(target)),
+                kind,
+                units,
+            }),
+        };
+        self.commit_single_id(envelope, id)
+    }
+
+    /// Merge two adjacent top-level paragraphs or headings into the left block.
+    pub fn merge_blocks(
+        &mut self,
+        left_id: BlockId,
+        right_id: BlockId,
+    ) -> Result<OpId, SessionError> {
+        self.merge_blocks_in(None, left_id, right_id)
+    }
+
+    /// Merge two adjacent text-bearing siblings inside `parent`.
+    pub fn merge_blocks_in(
+        &mut self,
+        parent: Option<OpId>,
+        left_id: BlockId,
+        right_id: BlockId,
+    ) -> Result<OpId, SessionError> {
+        let action_id = self.peek_next_id();
+        let (left, right, after, right_origin, source_units, occupied) = {
+            let children = self
+                .document
+                .container_children(parent)
+                .ok_or(SessionError::BlockNotFound)?;
+            let visible: Vec<_> = children.iter().collect();
+            let left_pos = visible
+                .iter()
+                .position(|block| block.id == left_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            let right_pos = visible
+                .iter()
+                .position(|block| block.id == right_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            if right_pos != left_pos + 1 {
+                return Err(SessionError::BlocksNotAdjacent);
+            }
+            let left_block = visible[left_pos];
+            let right_block = visible[right_pos];
+            let Some(left_body) = crate::doc::block_text_seq(&left_block.kind) else {
+                return Err(SessionError::NotParagraph);
+            };
+            let Some(right_body) = crate::doc::block_text_seq(&right_block.kind) else {
+                return Err(SessionError::NotParagraph);
+            };
+            let after = paragraph_visible_ids(left_body).last().copied();
+            let right_origin = left_body.compute_right_origin(after);
+            let source_units = right_body
+                .iter_all()
+                .filter_map(|element| {
+                    element
+                        .value
+                        .as_ref()
+                        .map(|unit| (element.id, unit.grapheme.clone()))
+                })
+                .collect::<Vec<_>>();
+            let occupied = left_body
+                .iter_all()
+                .map(|element| element.id)
+                .collect::<std::collections::BTreeSet<_>>();
+            (
+                left_block.elem_id,
+                right_block.elem_id,
+                after,
+                right_origin,
+                source_units,
+                occupied,
+            )
+        };
+
+        let mut replacement_counter = action_id.counter.saturating_add(1);
+        let units = source_units
+            .into_iter()
+            .map(|(source_id, grapheme)| {
+                let id = if occupied.contains(&source_id) {
+                    let replacement = OpId {
+                        counter: replacement_counter,
+                        peer: self.peer,
+                    };
+                    replacement_counter = replacement_counter.saturating_add(1);
+                    replacement
+                } else {
+                    source_id
+                };
+                MovedTextUnitWire {
+                    source_id,
+                    id,
+                    grapheme,
+                }
+            })
+            .collect();
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::MergeBlocks {
+                parent,
+                left,
+                right,
+                id: action_id,
+                after,
+                right_origin,
+                units,
+            }),
+        };
+        let (op_id, _) = operation_extent(&envelope);
+        let payload = self.codec.encode(&envelope).map_err(codec_err)?;
+        apply_envelope_to_document(&mut self.document, &envelope);
+        self.sync.add_local_op(Operation { id: op_id, payload });
+        self.next_counter = op_id.counter.saturating_add(1);
+        Ok(op_id)
+    }
+
     /// Apply remote changes: pre-decode all, then integrate with document apply.
     pub fn apply_remote(
         &mut self,
@@ -792,6 +973,21 @@ fn operation_extent(env: &Envelope) -> (OpId, u64) {
             (OpId { counter: hi, peer }, span)
         }
         OpBody::Doc(DocOp::DeleteText { id, .. }) => (*id, 1),
+        OpBody::Doc(DocOp::SplitBlock { id, .. }) => (*id, 1),
+        OpBody::Doc(DocOp::MergeBlocks { id, units, .. }) => {
+            let hi = units
+                .iter()
+                .filter(|unit| unit.id != unit.source_id && unit.id.peer == id.peer)
+                .map(|unit| unit.id.counter)
+                .fold(id.counter, u64::max);
+            (
+                OpId {
+                    counter: hi,
+                    peer: id.peer,
+                },
+                hi.saturating_sub(id.counter).saturating_add(1),
+            )
+        }
         OpBody::Doc(
             DocOp::InsertTableRow { id, .. }
             | DocOp::SetTableRowCells { id, .. }
@@ -857,6 +1053,15 @@ fn check_peer_consistency(op: &Operation, env: &Envelope) -> Result<(), SessionE
         }
         OpBody::Doc(DocOp::DeleteText { id, .. }) => {
             if id.peer != peer {
+                return Err(SessionError::PeerMismatch);
+            }
+        }
+        OpBody::Doc(DocOp::SplitBlock { .. }) => {}
+        OpBody::Doc(DocOp::MergeBlocks { units, .. }) => {
+            if units
+                .iter()
+                .any(|unit| unit.id != unit.source_id && unit.id.peer != peer)
+            {
                 return Err(SessionError::PeerMismatch);
             }
         }
@@ -1046,6 +1251,88 @@ fn apply_envelope_to_document(document: &mut Document, envelope: &Envelope) {
                     });
                 }
             });
+        }
+        OpBody::Doc(DocOp::SplitBlock {
+            parent,
+            target,
+            id,
+            new_block_id,
+            right_origin,
+            kind,
+            units,
+        }) => {
+            let marks = document.with_block_mut(*target, |block| {
+                let marks = block.marks.clone();
+                if let Some(body) = crate::doc::block_text_seq_mut(&mut block.kind) {
+                    for unit in units {
+                        body.apply(SequenceOp::Delete {
+                            target: unit.source_id,
+                            id: *id,
+                        });
+                    }
+                }
+                marks
+            });
+            if let Some(marks) = marks {
+                let body = Sequence::from_ordered(
+                    units
+                        .iter()
+                        .map(|unit| {
+                            (
+                                unit.id,
+                                TextUnit {
+                                    grapheme: unit.grapheme.clone(),
+                                },
+                            )
+                        })
+                        .collect(),
+                );
+                let block_kind = match kind {
+                    TextBlockKindWire::Paragraph => BlockKind::Paragraph { text: body },
+                    TextBlockKindWire::Heading { level } => BlockKind::Heading {
+                        level: *level,
+                        text: body,
+                    },
+                };
+                let block = Block {
+                    id: *new_block_id,
+                    elem_id: *id,
+                    kind: block_kind,
+                    marks,
+                };
+                document.insert_block_at(*parent, Some(*target), *id, block, *right_origin);
+            }
+        }
+        OpBody::Doc(DocOp::MergeBlocks {
+            parent,
+            left,
+            right,
+            id,
+            after,
+            right_origin,
+            units,
+        }) => {
+            let right_marks = document.find_block(*right).map(|block| block.marks.clone());
+            let _ = document.with_block_mut(*left, |block| {
+                if let Some(body) = crate::doc::block_text_seq_mut(&mut block.kind) {
+                    let mut anchor = *after;
+                    for (index, unit) in units.iter().enumerate() {
+                        body.apply(SequenceOp::Insert {
+                            after: anchor,
+                            id: unit.id,
+                            value: TextUnit {
+                                grapheme: unit.grapheme.clone(),
+                            },
+                            right_origin: if index == 0 { *right_origin } else { None },
+                        });
+                        anchor = Some(unit.id);
+                    }
+                }
+                if let Some(marks) = &right_marks {
+                    block.marks.merge_from(marks);
+                }
+            });
+            document.delete_block_at(*parent, *right, *id);
         }
         OpBody::Doc(DocOp::InsertTableRow {
             table_elem,

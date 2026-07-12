@@ -42,6 +42,24 @@ pub struct TextUnitWire {
     pub grapheme: String,
 }
 
+/// A text unit transferred between blocks without changing its identity when possible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MovedTextUnitWire {
+    /// Unit id in the source block.
+    pub source_id: OpId,
+    /// Unit id in the destination block. Usually equal to `source_id`; a merge may
+    /// allocate a replacement when the destination retains that id as a tombstone.
+    pub id: OpId,
+    pub grapheme: String,
+}
+
+/// Text-bearing block metadata needed to materialize the second half of a split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextBlockKindWire {
+    Paragraph,
+    Heading { level: u8 },
+}
+
 /// Stable wire representation of table column alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnAlignmentWire {
@@ -87,6 +105,30 @@ pub enum DocOp {
         id: OpId,
         /// Existing unit element ids to tombstone.
         targets: Vec<OpId>,
+    },
+    /// Split one text-bearing block, transferring the visible suffix to a new sibling.
+    SplitBlock {
+        #[serde(default)]
+        parent: Option<OpId>,
+        target: OpId,
+        id: OpId,
+        new_block_id: BlockId,
+        right_origin: Option<OpId>,
+        kind: TextBlockKindWire,
+        units: Vec<MovedTextUnitWire>,
+    },
+    /// Append one text-bearing sibling to another and tombstone the right block.
+    MergeBlocks {
+        #[serde(default)]
+        parent: Option<OpId>,
+        left: OpId,
+        right: OpId,
+        /// Fresh operation id used for the structural delete.
+        id: OpId,
+        /// Stable insertion anchor in the left block's text sequence.
+        after: Option<OpId>,
+        right_origin: Option<OpId>,
+        units: Vec<MovedTextUnitWire>,
     },
     /// Insert one row into a table's row RGA.
     InsertTableRow {
@@ -188,6 +230,8 @@ pub fn insert_block_paragraph_is_empty(envelope: &Envelope) -> bool {
             DocOp::DeleteBlock { .. }
             | DocOp::InsertText { .. }
             | DocOp::DeleteText { .. }
+            | DocOp::SplitBlock { .. }
+            | DocOp::MergeBlocks { .. }
             | DocOp::InsertTableRow { .. }
             | DocOp::SetTableRowCells { .. }
             | DocOp::DeleteTableRow { .. },
@@ -205,6 +249,8 @@ pub(crate) fn validate_envelope_structure(envelope: &Envelope) -> Result<(), sup
             DocOp::DeleteBlock { .. }
             | DocOp::InsertText { .. }
             | DocOp::DeleteText { .. }
+            | DocOp::SplitBlock { .. }
+            | DocOp::MergeBlocks { .. }
             | DocOp::InsertTableRow { .. }
             | DocOp::SetTableRowCells { .. }
             | DocOp::DeleteTableRow { .. },

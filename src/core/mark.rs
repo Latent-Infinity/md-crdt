@@ -119,6 +119,26 @@ impl MarkSet {
         }
     }
 
+    /// Merge mark history from another text block when its units are appended here.
+    pub(crate) fn merge_from(&mut self, other: &Self) {
+        for (id, interval) in &other.intervals {
+            match self.intervals.get(id) {
+                Some(existing) if existing.op_id >= interval.op_id => {}
+                _ => {
+                    self.intervals.insert(*id, interval.clone());
+                }
+            }
+        }
+        for (id, remove) in &other.removes {
+            match self.removes.get(id) {
+                Some(existing) if existing.op_id >= remove.op_id => {}
+                _ => {
+                    self.removes.insert(*id, remove.clone());
+                }
+            }
+        }
+    }
+
     /// Look up an interval by id (active or not).
     pub fn interval(&self, interval_id: &MarkIntervalId) -> Option<&MarkInterval> {
         self.intervals.get(interval_id)
@@ -211,5 +231,74 @@ fn resolve_anchor(anchor: &Anchor, index_map: &BTreeMap<OpId, usize>, len: usize
     match anchor.bias {
         AnchorBias::Before => base,
         AnchorBias::After => (base + 1).min(len),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn op(counter: u64) -> OpId {
+        OpId { counter, peer: 1 }
+    }
+
+    fn anchor(counter: u64) -> Anchor {
+        Anchor {
+            elem_id: op(counter),
+            bias: AnchorBias::Before,
+        }
+    }
+
+    #[test]
+    fn merge_from_keeps_newest_mark_and_remove_history() {
+        let mut left = MarkSet::new();
+        left.set_mark(
+            op(1),
+            MarkKind::Bold,
+            anchor(10),
+            anchor(11),
+            BTreeMap::new(),
+            op(9),
+        );
+        left.remove_mark(op(1), StateVector::new(), op(9));
+
+        let mut right = MarkSet::new();
+        right.set_mark(
+            op(1),
+            MarkKind::Italic,
+            anchor(10),
+            anchor(11),
+            BTreeMap::new(),
+            op(8),
+        );
+        right.remove_mark(op(1), StateVector::new(), op(8));
+        right.set_mark(
+            op(2),
+            MarkKind::Code,
+            anchor(12),
+            anchor(13),
+            BTreeMap::new(),
+            op(10),
+        );
+        right.remove_mark(op(2), StateVector::new(), op(10));
+
+        left.merge_from(&right);
+
+        assert_eq!(
+            left.interval(&op(1)).expect("existing mark").kind,
+            MarkKind::Bold
+        );
+        assert_eq!(
+            left.interval(&op(2)).expect("merged mark").kind,
+            MarkKind::Code
+        );
+        assert_eq!(
+            left.removes.get(&op(1)).expect("existing remove").op_id,
+            op(9)
+        );
+        assert_eq!(
+            left.removes.get(&op(2)).expect("merged remove").op_id,
+            op(10)
+        );
     }
 }

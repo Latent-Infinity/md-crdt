@@ -27,7 +27,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-10** Vault ingest D2 | **done** | Grapheme LCS → InsertText/DeleteText; position-pair unmatched paragraphs; preserves BlockId + LCS unit OpIds |
 | **PR-11** Headings and lists | **done** | Structured model; ATX/setext parse; ordered/unordered nested lists; canonical serialization; wire/snapshot round trips. Audit fixed silent list-ingest text loss (nested item children now ingested). |
 | **PR-12** Table parse and row ops | **done** | GFM parse/alignment; table block skeleton; Insert/Set/Delete row DocOps; concurrent row convergence |
-| PR-13+ | pending | Split/merge, indices, … |
+| **PR-13** SplitBlock / MergeBlocks | **done** | Atomic text-unit transfer for paragraph/heading siblings; nested APIs; identity-preserving split/merge with collision fallback |
+| PR-14+ | pending | Indices, sequence performance, … |
 
 ## Phase B checklist
 
@@ -66,6 +67,9 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Table creation wire shape | `InsertBlock` carries header + column alignment only; rows use separate row DocOps | Preserves independent row identity and RGA concurrency without embedding mutable row history in a block skeleton |
 | Table cell granularity | Whole-cell `String` through the existing LWW register | PR-12 calls for row operations; per-cell text CRDT would expand scope beyond the existing model and belongs in a separately designed slice |
 | GFM delimiter recognition | Header count must match delimiter count; delimiter cells require at least three hyphens with optional edge colons | Matches the core GFM table shape while keeping parsing deterministic and dependency-free |
+| Split/merge wire shape | Atomic operation carries explicit source/destination unit ids and graphemes | Composing DeleteText + InsertBlock + InsertText always renumbers units and breaks mark anchors; persistent unit ownership would exceed this slice |
+| Merge id collisions | Preserve source unit ids unless the left sequence already retains the id (for example after split); allocate fresh contiguous ids only for collisions | Sequence tombstones intentionally prevent resurrection under an existing id; selective fallback preserves all identities that remain valid |
+| Split/merge block kinds | Paragraphs and headings; split retains heading level and merge retains the left kind | These are the existing text-unit block kinds; code/raw/table/list semantics require separately designed operations |
 
 ## Phase C checklist
 
@@ -96,7 +100,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] GFM table parsing with left/center/right alignment
 - [x] Table block metadata and row insert/update/delete operations round-trip on the wire
 - [x] Concurrent table-row inserts converge; row updates use existing LWW semantics
-- [ ] Collaborative split/merge block operations (PR-13)
+- [x] Collaborative split/merge block operations (PR-13)
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -139,8 +143,22 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 **Audit (verified):** parse/serialize/wire/session/snapshot all trace correct; convergence + clock-safety tests present. **TDD gap closed:** snapshot had full `table_to_dto`/`table_from_dto` + row RGA/LWW DTOs and a `max_counter_for_peer` table arm, but **no test drove a table through save/restore**. Added `save_restore_round_trip_preserves_table_rows` (`tests/session_snapshot.rs`): table + two rows + cell update → snapshot → restore asserts serialize equality, equal state vectors, recovered `next_counter`, and a non-colliding post-restore row id. **Doc nit fixed:** `filesync/session.rs` skip comment reworded — tables *are* wire-ready; ingest simply doesn't yet emit `InsertBlock(empty)+InsertTableRow` from a parsed multi-row table (skip stays the correct scope boundary).
 
+## PR-13 collaborative split/merge — **done**
+
+- `DocOp::SplitBlock` transfers an explicit visible suffix into a new sibling, retaining text-unit ids and the paragraph/heading kind.
+- `DocOp::MergeBlocks` uses a stable left-body anchor, appends the right sibling's visible units, merges mark history, and tombstones the right block atomically.
+- Top-level and nested session APIs validate sibling membership, adjacency, text-bearing kinds, and grapheme offsets before allocating a clock id.
+- Split→merge detects ids retained as tombstones in the left sequence and assigns fresh contiguous ids only to those collisions; ordinary merges preserve every right-side unit id.
+- Tests cover codec round trips, ID preservation, collision fallback, nested headings, validation without clock burn, malicious replacement-peer rejection, multi-peer convergence, and snapshot/clock recovery.
+- Deliberate limit: code fences, raw blocks, tables, lists, and blockquotes are rejected; their split/merge semantics are not equivalent to text-unit movement.
+
+**Audit (verified):** split/merge traced correct — `operation_extent(MergeBlocks)` reserves the replacement-id counter range so span-aware sync stays contiguous; `check_peer_consistency` rejects foreign replacement ids; split reuses preserved suffix ids in a *separate* sequence (no collision); nested APIs recurse through `container_children`. **Coverage gap closed:** every prior "converges" test was one-directional (A acts → B applies), leaving true concurrency unproven. Added `concurrent_splits_of_same_block_converge` (`tests/session_split_merge.rs`): two peers split the same paragraph at different offsets, exchange both ways → identical structural serialization + equal state vectors (original keeps the common prefix, both suffixes survive as siblings). **Forward-looking note (not a shippable bug):** `SplitBlock` clones the whole `MarkSet` to the new block and `MergeBlocks` uses `MarkSet::merge_from`, but `DocOp` carries no mark ops and session blocks are always created with `MarkSet::new()`, so these paths only ever act on empty sets today; when a mark wire op lands, split must partition intervals at the boundary (a straddling mark would otherwise render spurious spans in both halves via `resolve_anchor`'s `unwrap_or(0)`).
+
 ## Gate
 
+- `just check` — **passed** after PR-13 audit (350 tests, 0 warnings)
+- `just check` — **passed** for PR-13 (349 tests, 0 warnings)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 90.36% repository line coverage / 88.94% region coverage, no global regression, with >90% coverage on PR-13 changed source lines
 - `just check` — **passed** after PR-12 audit (338 tests, 0 warnings)
 - `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 88.36% repository line coverage (up from 85.93%), with >90% coverage on PR-12 changed lines
 - Prior notes: nested re-ingest structure; multi-quote sibling edge still untested

@@ -87,6 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Table block metadata on `InsertBlock`; rows use independent insert/update/delete wire operations
 - Collaborative table APIs with concurrent row-insert convergence and LWW row-cell updates
 
+#### Collaborative block split and merge (`md-crdt::codec` / `session`)
+- Wire `DocOp::SplitBlock` / `MergeBlocks` operations for paragraph and heading siblings
+- Top-level and nested session APIs with adjacency and grapheme-offset validation
+- Split preserves suffix text-unit IDs; merge preserves source IDs unless the destination already retains them as tombstones, then allocates collision-free replacements
+- Stable merge insertion anchors, mark-history transfer, snapshot recovery, and multi-peer convergence coverage
+
 ## [0.1.0] - 2025-02-04
 
 ### Added

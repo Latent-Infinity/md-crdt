@@ -4,8 +4,8 @@
 
 use md_crdt::codec::{
     BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, CodecError, ColumnAlignmentWire, DocOp,
-    Envelope, JsonOpCodec, ListItemSkeleton, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, WIRE_VERSION,
-    insert_block_paragraph_is_empty,
+    Envelope, JsonOpCodec, ListItemSkeleton, MAX_WIRE_NEST_DEPTH, MovedTextUnitWire, OpBody,
+    OpCodec, TextBlockKindWire, WIRE_VERSION, insert_block_paragraph_is_empty,
 };
 use md_crdt::core::OpId;
 use md_crdt::doc::BlockId;
@@ -325,4 +325,43 @@ fn table_block_skeleton_round_trip() {
     };
     let bytes = codec.encode(&envelope).expect("encode");
     assert_eq!(codec.decode(&bytes).expect("decode"), envelope);
+}
+
+#[test]
+fn split_and_merge_block_ops_round_trip() {
+    let codec = JsonOpCodec;
+    let moved = MovedTextUnitWire {
+        source_id: op(2, 7),
+        id: op(2, 7),
+        grapheme: "x".into(),
+    };
+    let operations = [
+        DocOp::SplitBlock {
+            parent: Some(op(1, 9)),
+            target: op(1, 7),
+            id: op(4, 7),
+            new_block_id: block_id(44),
+            right_origin: Some(op(8, 9)),
+            kind: TextBlockKindWire::Heading { level: 2 },
+            units: vec![moved.clone()],
+        },
+        DocOp::MergeBlocks {
+            parent: None,
+            left: op(1, 7),
+            right: op(4, 7),
+            id: op(5, 7),
+            after: Some(op(3, 7)),
+            right_origin: None,
+            units: vec![moved],
+        },
+    ];
+
+    for operation in operations {
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(operation),
+        };
+        let bytes = codec.encode(&envelope).expect("encode");
+        assert_eq!(codec.decode(&bytes).expect("decode"), envelope);
+    }
 }
