@@ -66,7 +66,7 @@ This design proposes a phased architecture evolution that wires existing layers 
 | Component | Role | State |
 | --- | --- | --- |
 | `md-crdt` (root crate) | Library modules `core`, `doc`, `sync`; optional `storage`, `filesync`; binary `src/bin/md-crdt.rs` | Primary product surface |
-| `md-crdt-ffi` | FFI workspace member | Placeholder only (`add(left, right)`) |
+| `md-crdt-ffi` | Reserved FFI workspace member | Unpublished (`publish = false`); no C ABI or supported bindings |
 | `md-crdt-naive-oracle` | Differential testing oracle | Used by integration tests |
 | `md-crdt-ci` | CI helper | Minimal / smoke only |
 
@@ -1233,7 +1233,7 @@ Phase G **depends on** A′ only insofar as real payloads are useful in integrat
 ### Phase H — Developer experience
 
 1. [x] **Recreate** `benches/` (sequence, keystroke/insert_text, serialize)—not “uncomment missing files.”
-2. [ ] FFI real surface **or** `publish = false` + README honesty.
+2. [x] FFI real surface **or** `publish = false` + README honesty. (**Unpublished; no C ABI.**)
 3. [x] Module splits after churn settles.
 4. [ ] CLI + README session/vault multi-doc examples.
 

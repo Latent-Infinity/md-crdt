@@ -12,7 +12,7 @@ md-crdt is a Rust library and CLI for offline-first, deterministic collaboration
 
 **Workspace Layout**
 - `md-crdt`: Primary library crate (modules: `core`, `doc`, `sync`; features: `storage`, `filesync`) and bundled CLI binary (`src/bin/md-crdt.rs`).
-- `md-crdt-ffi`: FFI workspace crate (currently minimal placeholder surface).
+- `md-crdt-ffi`: Reserved workspace placeholder. It is not published and does not expose a C ABI or supported language bindings; Rust consumers should use `md-crdt` directly.
 - `md-crdt-naive-oracle`: Unpublished reference implementation used for differential testing.
 
 **Library Quickstart**

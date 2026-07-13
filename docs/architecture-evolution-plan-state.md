@@ -33,7 +33,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-16** Storage V2 generation protocol | **done** | Frozen V1 dual-read fixture; V2 CRC trailer; alternating metadata/payload slots; file + directory sync; crash fallback |
 | **PR-17** Criterion benchmark suite | **done** | Sequence, nested text, public `insert_text`, serialization, block index, state-vector, and change-encoding probes; default + incremental `just bench` |
 | **PR-18** Module splits | **done** | Document parser/serializer, session wire translation/application, and sync validation extracted behind unchanged module façades |
-| PR-19+ | pending | FFI/README honesty, CLI/session examples, … |
+| **PR-19** FFI publish decision | **done** | `md-crdt-ffi` remains unpublished and API-empty; placeholder function removed; manifest/README honesty enforced by test |
+| PR-20 | pending | CLI/session examples and README multi-document workflow polish |
 
 ## Phase B checklist
 
@@ -86,6 +87,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Benchmark configurations | Run the default rebuild control and `sequence_incremental` treatment | An all-features-only run loses the control measurement; two explicit invocations make performance regressions and feature value comparable |
 | Public text benchmark setup | Restore a prepared session snapshot outside the timed interval, then time one middle `insert_text` | Measures block lookup, unit construction, wire encoding, document apply, and sync-log integration without charging fixture construction |
 | Module split boundaries | Split by responsibility, not equal line counts | Parser/serializer, wire translation/application, and validation are cohesive seams with narrow parent access; arbitrary chunks would reduce file size while increasing cross-module coupling |
+| FFI release surface | Keep `md-crdt-ffi` unpublished and expose no placeholder API | A real C ABI needs explicit ownership, allocation, UTF-8, error, panic, and header contracts. No target language or consumer is defined, so publishing a token surface would create unsupported compatibility debt |
 
 ## Phase C checklist
 
@@ -143,7 +145,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Structural serialization at 1k/10k
 - [x] `just bench` runs default and incremental ordering configurations
 - [x] Module splits after churn settles (PR-18)
-- [ ] FFI implementation or explicit unpublish decision (PR-19)
+- [x] FFI implementation or explicit unpublish decision (PR-19: unpublish)
 - [ ] CLI and README multi-document workflow polish (PR-20)
 
 ## Nested re-ingest matching — **done** (structure)
@@ -284,8 +286,23 @@ The session result retains the same scaling signal as the lower-level sequence p
 
 **Audit (verified, fanned out over the three splits + a public-API-surface diff):** all extractions are faithful, behavior-preserving moves. Sync/validation: byte-identical, and the security-relevant default limits are unchanged (`max_ops_per_message=10_000`, `max_payload_bytes=10 MiB`, `max_pending_buffer=100_000`). Session/wire: byte-identical (one rustfmt reflow after adding `pub(super)`); convergence-critical `operation_extent` span math, `max_counter_in_kind`, split/merge/table-row apply arms, and `check_peer_consistency` all preserved; helpers are `pub(super)`, not `pub`. Doc/parser+serialize: `mod.rs` gains only `mod`/`use` plumbing plus one additive test (no production logic added), and moved bodies are byte-identical (spot-checked `parse_table_delimiter`). A diff of every `pub` symbol before/after confirms **no public item was dropped and none was newly exposed** beyond the `pub use` re-export plumbing. **Test quality fixed:** the original `module_boundaries.rs` only `include_str!`-grepped parent modules for `mod X;` substrings — it would pass even if a `pub use` re-export were deleted, and matched commented-out lines. Replaced it with a compile-level façade + delegation guard (`tests/module_boundaries.rs`): it references each split's public path (`Parser`, `EquivalenceMode`, `CollaborativeDocument`, `ValidationLimits`/`ValidationError`/`MalformedKind`/`validate_changes`), round-trips parse/serialize, applies a remote op through the wire helpers, and asserts the default validation limits — so a broken re-export or a loosened limit now fails the build/gate.
 
+## PR-19 FFI publish decision — **done**
+
+- `md-crdt-ffi` remains a workspace member with `publish = false`; its manifest description now identifies it as an unpublished placeholder and no longer advertises C-API metadata.
+- The template `add` function and test were removed. The crate-level documentation explicitly says there is no runtime or foreign-function API.
+- README and contributor-facing workspace descriptions state that no C ABI or supported language binding exists and direct Rust consumers to `md-crdt`.
+- `packaging_contract.rs` prevents accidental publication claims, native library artifact declarations, restoration of the fake API, or loss of README honesty.
+
+**Ablation:** implementing a nominal C API was rejected. Even a thin `CollaborativeDocument` wrapper must define handle ownership/destruction, allocator ownership for returned bytes, UTF-8 and null handling, stable error codes/messages, panic containment, thread-safety, and header generation. With no target language or consumer requirements, those choices would be speculative public ABI commitments. An explicit unpublished, API-empty placeholder is the smaller honest surface.
+
+**Audit (verified):** `md-crdt-ffi/Cargo.toml` has `publish = false`, an honest description, empty `[dependencies]`, and no `[lib] crate-type` (so no `cdylib`/`staticlib` native artifact); `src/lib.rs` is documentation-only with the placeholder `add` removed; README and CONTRIBUTING match the honesty strings the test pins. **Test-strength gap closed:** the contract only asserted `!source.contains("pub fn add")` — the *specific* old placeholder name — so a future `pub extern "C" fn …` or `#[no_mangle]` would slip past the very test meant to keep the crate API-empty. Generalized `packaging_contract.rs` to forbid any exported/foreign surface (`pub fn`/`pub struct`/`pub enum`/`pub extern`/`extern "C"`/`#[no_mangle]`/`#[unsafe(no_mangle)]`), so the "API-empty" claim is now actually enforced.
+
 ## Gate
 
+- `cargo test -p md-crdt-ffi --test packaging_contract` — **passed**; unpublished/no-native-artifact/no-placeholder/README contract enforced
+- `just check` — **passed** after PR-19 audit (374 tests, 0 warnings; generalized the API-empty contract assertion)
+- `just check` — **passed** for PR-19 (374 tests, 0 warnings)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed** for PR-19; 92.03% repository line coverage / 90.66% region coverage and the same 565 uncovered lines as PR-18. The 0.01-point rounded ratio change is solely the denominator effect of deleting seven fully covered template lines; no production line became uncovered
 - `just check` — **passed** after PR-18 audit (374 tests, 0 warnings; strengthened `module_boundaries.rs` into a compile-level façade guard)
 - `just check` — **passed** for PR-18 (372 tests, 0 warnings; format and all-target/all-feature Clippy green)
 - `cargo llvm-cov --workspace --all-features --summary-only` — **passed** for PR-18; 92.04% repository line coverage / 90.67% region coverage, with changed production files from 90.23% to 100% line coverage

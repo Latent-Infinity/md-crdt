@@ -128,7 +128,7 @@ md-crdt/
 ├── src/                # md-crdt library modules: core, doc, sync, storage, filesync
 ├── src/bin/            # bundled CLI binaries (md-crdt)
 ├── tests/              # Integration, property, differential, and fixture-based tests
-├── md-crdt-ffi/        # Foreign function interface workspace crate
+├── md-crdt-ffi/        # Unpublished placeholder; no C ABI or supported bindings
 ├── md-crdt-naive-oracle/ # Reference implementation for differential testing
 ├── md-crdt-ci/         # CI utilities
 └── fuzz/               # Fuzz testing targets

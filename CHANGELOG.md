@@ -107,6 +107,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Document` remains `Send + Sync`; public top-level sequence mutation invalidates or self-repairs the index
 - Responsibility-based module layout for document parsing/serialization, session wire handling, and sync validation; public API paths remain unchanged
 
+#### FFI workspace packaging (`md-crdt-ffi`)
+- Explicitly retained as an unpublished, API-empty workspace placeholder; removed the template `add` function and documented that no C ABI or supported language bindings exist
+
 ## [0.1.0] - 2025-02-04
 
 ### Added
@@ -158,7 +161,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sync` - Combined ingest and flush
 
 #### FFI Bindings (`md-crdt-ffi`)
-- Placeholder for C-compatible foreign function interface
+- Unpublished workspace placeholder; no C ABI or supported language bindings
 
 #### Testing & Quality
 - Property-based tests with proptest

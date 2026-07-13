@@ -1,14 +1,5 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+//! Reserved workspace crate for possible future foreign-language bindings.
+//!
+//! This crate intentionally exposes no runtime or foreign-function API. Consumers should use
+//! the Rust `md-crdt` crate until ownership, error, allocation, and panic-boundary contracts are
+//! designed for a specific target language.
