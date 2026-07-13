@@ -105,6 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Differential coverage for varied right origins and Criterion probes for top-level, nested-text, and serialization paths
 - Public `CollaborativeDocument::insert_text` benchmark at 1k/10k graphemes; `just bench` runs both default and incremental ordering strategies
 - `Document` remains `Send + Sync`; public top-level sequence mutation invalidates or self-repairs the index
+- Responsibility-based module layout for document parsing/serialization, session wire handling, and sync validation; public API paths remain unchanged
 
 ## [0.1.0] - 2025-02-04
 

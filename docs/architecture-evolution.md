@@ -1234,7 +1234,7 @@ Phase G **depends on** A′ only insofar as real payloads are useful in integrat
 
 1. [x] **Recreate** `benches/` (sequence, keystroke/insert_text, serialize)—not “uncomment missing files.”
 2. [ ] FFI real surface **or** `publish = false` + README honesty.
-3. [ ] Module splits after churn settles.
+3. [x] Module splits after churn settles.
 4. [ ] CLI + README session/vault multi-doc examples.
 
 ---

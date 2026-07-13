@@ -32,7 +32,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-15** Incremental sequence order | **done** | Sibling-local insertion behind default-off `sequence_incremental`; debug dual-path check; top-level/nested Criterion results |
 | **PR-16** Storage V2 generation protocol | **done** | Frozen V1 dual-read fixture; V2 CRC trailer; alternating metadata/payload slots; file + directory sync; crash fallback |
 | **PR-17** Criterion benchmark suite | **done** | Sequence, nested text, public `insert_text`, serialization, block index, state-vector, and change-encoding probes; default + incremental `just bench` |
-| PR-18+ | pending | Module splits, FFI/README honesty, CLI/session examples, … |
+| **PR-18** Module splits | **done** | Document parser/serializer, session wire translation/application, and sync validation extracted behind unchanged module façades |
+| PR-19+ | pending | FFI/README honesty, CLI/session examples, … |
 
 ## Phase B checklist
 
@@ -84,6 +85,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Durability boundary | Atomic temp write + file sync + rename + directory sync on Unix; same atomic sequence without directory sync elsewhere | Rust's portable filesystem API cannot guarantee directory fsync on every platform; the documented crash-safety claim is therefore explicit about the Unix durability boundary |
 | Benchmark configurations | Run the default rebuild control and `sequence_incremental` treatment | An all-features-only run loses the control measurement; two explicit invocations make performance regressions and feature value comparable |
 | Public text benchmark setup | Restore a prepared session snapshot outside the timed interval, then time one middle `insert_text` | Measures block lookup, unit construction, wire encoding, document apply, and sync-log integration without charging fixture construction |
+| Module split boundaries | Split by responsibility, not equal line counts | Parser/serializer, wire translation/application, and validation are cohesive seams with narrow parent access; arbitrary chunks would reduce file size while increasing cross-module coupling |
 
 ## Phase C checklist
 
@@ -140,7 +142,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Public `CollaborativeDocument::insert_text` at 1k/10k
 - [x] Structural serialization at 1k/10k
 - [x] `just bench` runs default and incremental ordering configurations
-- [ ] Module splits after churn settles (PR-18)
+- [x] Module splits after churn settles (PR-18)
 - [ ] FFI implementation or explicit unpublish decision (PR-19)
 - [ ] CLI and README multi-document workflow polish (PR-20)
 
@@ -271,8 +273,22 @@ The session result retains the same scaling signal as the lower-level sequence p
 
 **Audit (verified):** all seven probes present and wired into `criterion_group!`; the new `session_insert_text` correctly restores the snapshot *outside* the timed `Instant` window so only the insertion is measured. Beyond compile-checking (clippy `--all-targets --all-features`), both configurations were **executed** to confirm no runtime panic or ordering divergence: `cargo bench --bench performance` and `cargo bench --bench performance --features sequence_incremental` each ran all 14 parameterized cases to completion (EXIT 0). No phase language in bench code; `architecture-evolution.md` Phase H item 1 correctly flipped to done. No defects found — benchmark-only slice, no production behavior changed.
 
+## PR-18 module splits — **done**
+
+- `doc` delegates parsing to `parser.rs` and structural rendering/helpers to `serialize.rs`; `Parser` remains re-exported from `md_crdt::doc`.
+- `session` delegates envelope extent checks, peer validation, block skeleton conversion, and document application to private `wire.rs` helpers.
+- `sync` delegates validation errors, limits, and `validate_changes` to `validation.rs` while preserving every root-level public re-export.
+- A module-boundary regression test pins the four responsibility seams. Behavioral tests cover serializer edge cases, nested wire shape conversion, defensive span handling, validation messages, and table metadata updates.
+
+**Ablation:** equal-sized chunks and façade-only file renames were rejected. They reduce visible line counts without creating ownership boundaries. Responsibility-based extraction moves cohesive algorithms intact, requires only `pub(super)` for session helpers, and leaves all public paths and data formats unchanged.
+
+**Audit (verified, fanned out over the three splits + a public-API-surface diff):** all extractions are faithful, behavior-preserving moves. Sync/validation: byte-identical, and the security-relevant default limits are unchanged (`max_ops_per_message=10_000`, `max_payload_bytes=10 MiB`, `max_pending_buffer=100_000`). Session/wire: byte-identical (one rustfmt reflow after adding `pub(super)`); convergence-critical `operation_extent` span math, `max_counter_in_kind`, split/merge/table-row apply arms, and `check_peer_consistency` all preserved; helpers are `pub(super)`, not `pub`. Doc/parser+serialize: `mod.rs` gains only `mod`/`use` plumbing plus one additive test (no production logic added), and moved bodies are byte-identical (spot-checked `parse_table_delimiter`). A diff of every `pub` symbol before/after confirms **no public item was dropped and none was newly exposed** beyond the `pub use` re-export plumbing. **Test quality fixed:** the original `module_boundaries.rs` only `include_str!`-grepped parent modules for `mod X;` substrings — it would pass even if a `pub use` re-export were deleted, and matched commented-out lines. Replaced it with a compile-level façade + delegation guard (`tests/module_boundaries.rs`): it references each split's public path (`Parser`, `EquivalenceMode`, `CollaborativeDocument`, `ValidationLimits`/`ValidationError`/`MalformedKind`/`validate_changes`), round-trips parse/serialize, applies a remote op through the wire helpers, and asserts the default validation limits — so a broken re-export or a loosened limit now fails the build/gate.
+
 ## Gate
 
+- `just check` — **passed** after PR-18 audit (374 tests, 0 warnings; strengthened `module_boundaries.rs` into a compile-level façade guard)
+- `just check` — **passed** for PR-18 (372 tests, 0 warnings; format and all-target/all-feature Clippy green)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed** for PR-18; 92.04% repository line coverage / 90.67% region coverage, with changed production files from 90.23% to 100% line coverage
 - `cargo bench --bench performance --no-run` and `--features sequence_incremental --no-run` — **passed**; both complete Criterion configurations compile in the bench profile
 - Targeted `session_insert_text` Criterion run in both configurations — **passed**; 1k/10k results recorded above
 - `just check` — **passed** after PR-17 audit (365 tests, 0 warnings; benchmark target linted via `--all-targets`)
