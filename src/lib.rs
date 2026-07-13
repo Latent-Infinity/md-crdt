@@ -23,7 +23,7 @@
 //!
 //! # Features
 //!
-//! - `storage` - Enables crash-safe persistence with rkyv serialization
+//! - `storage` - Enables checksummed, generation-based persistence with rkyv serialization
 //! - `filesync` - Enables vault-based file system synchronization (requires `storage`)
 //! - `dhat-heap` - Enables heap profiling with dhat
 

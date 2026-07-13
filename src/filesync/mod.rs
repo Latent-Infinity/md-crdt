@@ -752,7 +752,7 @@ mod tests {
             .join(".mdcrdt")
             .join("state")
             .join("file1.mdcrdt")
-            .join("segment");
+            .join("segment_a");
         assert!(state_file.exists());
 
         let tmp_file = dir
@@ -760,7 +760,7 @@ mod tests {
             .join(".mdcrdt")
             .join("state")
             .join("file1.mdcrdt")
-            .join("segment.tmp");
+            .join("segment_a.tmp");
         assert!(!tmp_file.exists());
 
         let storage = Storage::open(

@@ -30,7 +30,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-13** SplitBlock / MergeBlocks | **done** | Atomic text-unit transfer for paragraph/heading siblings; nested APIs; identity-preserving split/merge with collision fallback |
 | **PR-14** Block index / cached state vector / shared payloads | **done** | Nested BlockId path index; O(peers) state vector; `Arc<[u8]>` operation payloads; Criterion before/after |
 | **PR-15** Incremental sequence order | **done** | Sibling-local insertion behind default-off `sequence_incremental`; debug dual-path check; top-level/nested Criterion results |
-| PR-16+ | pending | Storage durability, recreated bench coverage, … |
+| **PR-16** Storage V2 generation protocol | **done** | Frozen V1 dual-read fixture; V2 CRC trailer; alternating metadata/payload slots; file + directory sync; crash fallback |
+| PR-17+ | pending | Bench consolidation, module splits, FFI/README honesty, … |
 
 ## Phase B checklist
 
@@ -78,6 +79,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | State-vector cache | Store the per-peer maximum beside the op map and update it on every applied/restore path | Append-only applied ops make invalidation unnecessary; `state_vector()` becomes O(peers) clone instead of O(ops) rescan |
 | Sequence ordering ablation | Default full rebuild vs feature-gated sibling-local vector insertion | At 10k elements the incremental path reduced top-level insertion from 2.074 ms to 96.65 µs and nested text insertion from 2.165 ms to 96.69 µs; the flag stays default off for soak |
 | Run-length text | **Defer** | Incremental ordering removed about 95.4% of the measured insertion cost; 10k structural serialization was already 17.57 µs. No profile justified storage/wire/mark complexity or any OpId representation change |
+| V2 snapshot payload layout | Pair `segment_a`/`segment_b` with superblock A/B | A single replaced `segment` invalidates the older checksum, so metadata-only alternation cannot recover a previous generation. Two payload slots cost up to one extra active snapshot but make the crash/corruption fallback real |
+| Durability boundary | Atomic temp write + file sync + rename + directory sync on Unix; same atomic sequence without directory sync elsewhere | Rust's portable filesystem API cannot guarantee directory fsync on every platform; the documented crash-safety claim is therefore explicit about the Unix durability boundary |
 
 ## Phase C checklist
 
@@ -118,6 +121,14 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Shared immutable operation payloads; persistence converts to owned bytes only at snapshot boundary (PR-14)
 - [x] Incremental sequence ordering behind a soakable, default-off flag (PR-15)
 - [x] Run-length text evaluated and deferred because profiling did not demand it (PR-15)
+
+## Phase G checklist
+
+- [x] Dedicated V1 decoder exercised by frozen pre-V2 bytes
+- [x] V2 body uses generation metadata plus a little-endian CRC32 trailer
+- [x] Writes alternate a single metadata/payload slot and preserve the previous generation
+- [x] Payload and superblock temp files are synced before rename; containing directory is synced on Unix
+- [x] Missing/corrupt newest metadata and interrupted payload publication fall back to the prior valid generation
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -216,8 +227,25 @@ Run-length text was deliberately not implemented. The insertion profile no longe
 
 **Audit (verified):** `compare_siblings` is a faithful extraction of the prior rebuild comparator (identical right_origin / id tie-break logic), and `insert_incrementally` places a new child at the next-greater sibling's index (after that sibling's whole subtree) or at `subtree_end(after)`, matching the rebuild's tree order. Confirmed empirically: the upgraded differential proptest (now varies `right_origin`, compares against the naive oracle after *every* op) plus `debug_assert_incremental_order` (clones + full-rebuilds + compares element ids on every apply) pass with the feature enabled — 20k differential cases and the full 360-test workspace suite all green under `--features sequence_incremental`. **Gap found + fixed (gate coverage):** `sequence_incremental` is default-off, and neither `just check` (`cargo test --workspace`) nor CI's `just differential-test` enabled it, so the entire incremental algorithm and its debug dual-path check ran in *no* automated gate — a regression in `insert_incrementally`/`subtree_end`/`compare_siblings` would keep the gate green. Fixed by making the `differential-test` recipe run the oracle proptest in **both** configurations (default rebuild + `sequence_incremental`); CI already invokes this recipe in the PR and nightly jobs, so both ordering strategies are now covered with the debug assertion active. No production wire/snapshot/OpId behavior changed (feature is off by default).
 
+## PR-16 storage generation protocol — **done**
+
+- The pre-existing superblock layout is frozen as `SuperblockV1`; a fixed byte fixture proves old metadata and its legacy `segment` payload remain readable.
+- V2 metadata adds a monotonic generation and appends a little-endian CRC32 trailer over the archived body. Readers decode both slots independently, validate their paired payload length/checksum, and select the highest valid generation.
+- A write replaces only the lower-generation slot: its paired payload is durably published first, then its superblock. The other metadata/payload pair remains untouched as the rollback generation.
+- File contents are synced before atomic rename and the containing directory is synced after publication on Unix. Other platforms retain atomic replacement and file sync, but directory durability is not overclaimed.
+- Compaction copies active generations into the archive instead of moving them away before the replacement snapshot commits.
+- Op-segment checksums remain the plan's optional follow-up; this slice changes snapshot durability only.
+
+**Ablation:** alternating only V2 superblocks over one shared `segment` was rejected. The segment-before-metadata crash test demonstrates the invariant: replacing shared bytes makes the older superblock's checksum unusable, so there is no recoverable previous generation. Pairing one segment with each metadata slot passes the same test and newest-superblock corruption recovery, at the explicit cost of up to two active snapshot payloads.
+
+**Audit (verified):** crash-safety traced sound — writes target the lower-generation slot so the newer slot is always an intact fallback; `atomic_write_durable` fsyncs the temp file, renames, then fsyncs the directory (Unix), and the segment is durable before the superblock (the commit point); both superblock (CRC trailer) and segment (checksum-in-superblock) are integrity-checked; `decode_superblock` tries V2 (CRC + rkyv) then falls back to V1 (generation 0, so V2 always supersedes). Tests cover alternating slots + monotonic generations, corrupt-newest read fallback, crash-after-segment-before-superblock, and the frozen V1 fixture read+upgrade. **TDD gap closed:** `read_slot_generation` swallows a corrupt slot's decode error to `None`, making that slot the next write target (self-repair) — but only the *read-side* fallback was tested. Added `write_after_corruption_repairs_bad_slot_without_clobbering_good_fallback` (`src/storage/mod.rs`): corrupt the newest slot, write again, and assert the write repairs the bad slot while the sole surviving good slot keeps its original generation and the newest read is the repair. **Non-blocking notes:** after a V1→V2 upgrade the legacy `segment` file lingers indefinitely (harmless dead weight, never read once both slots are V2); double-buffering roughly doubles on-disk snapshot bytes (inherent crash-safety cost, and the `active_storage_bytes` overhead assertion was correctly relaxed to match). Op-segment checksums remain a documented follow-up.
+
 ## Gate
 
+- `just check` — **passed** after PR-16 audit (365 tests, 0 warnings; added write-side corrupt-slot repair test)
+- `just check` — **passed** for PR-16 (364 tests, 0 warnings)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 90.80% repository line coverage / 89.48% region coverage, above the PR-15 baseline; `src/storage/mod.rs` is 96.10% line-covered
+- Storage compatibility/crash ablation — **passed**; frozen V1 bytes upgrade to one V2 slot while retaining V1 fallback, and paired payload slots recover after newest-superblock corruption or segment-before-metadata interruption
 - `just check` — **passed** after PR-15 audit (360 tests, 0 warnings; default full-rebuild path)
 - `just differential-test` — **passed** after audit fix; now runs the oracle proptest in **both** default and `sequence_incremental` configurations (was default-only)
 - `cargo test --workspace --features sequence_incremental` — **passed** (360 tests; debug dual-path assertion active on every apply)

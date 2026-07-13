@@ -135,8 +135,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Semantic conflict detection and auto-resolution
 
 #### Persistent Storage (`md-crdt` `storage` feature)
-- Crash-safe dual-superblock design
-- CRC32 checksums for integrity verification
+- V1/V2 dual-read superblocks with monotonically increasing generations
+- Alternating metadata and payload slots retain the previous committed snapshot for recovery
+- V2 superblock CRC32 trailer plus payload length/checksum verification
+- Atomic temp-file publication with file sync and Unix directory sync
 - Incremental operation segments
 - Compaction with tombstone retention policies
 

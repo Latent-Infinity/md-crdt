@@ -1165,7 +1165,7 @@ Nested text inserts each trigger paragraph sequence rebuild—Phase F must basel
 
 ### Phase G — Storage durability protocol
 
-#### Reality check on today
+#### Reality check before PR-16
 
 - Segment bytes: CRC32.
 - Superblock: **no** self-CRC; **no** generation; both written same content.
@@ -1199,20 +1199,22 @@ struct SuperblockV2Body {
 
 **Read algorithm:**
 
-1. For each slot A/B: read file bytes.
+1. For each slot A/B: read file bytes; V2 slot A/B derives its payload path as `segment_a`/`segment_b`, while V1 uses legacy `segment`.
 2. If `len >= 4`, split `body = bytes[..len-4]`, `crc = u32::from_le_bytes(bytes[len-4..])`.
 3. If `crc32(body) == crc`, try `access::<ArchivedSuperblockV2Body>(body)`; if OK and `version == 2`, candidate with that generation.
 4. Else try full-file V1 decode (`SuperblockV1` / current layout, no trailer); if OK, synthesize `generation = 0`.
-5. Pick candidate with highest generation; if tie, prefer valid segment checksum.
-6. Verify segment length + segment CRC.
+5. Verify each candidate's paired segment length + CRC, then pick the highest valid generation.
+6. If the newest candidate is invalid, fall back to the previous valid generation.
 
 **Write algorithm:**
 
-1. Write `segment.tmp` → fsync file → rename → fsync directory.
-2. Choose slot with **lower** generation (alternate).
+1. Choose the slot with **lower** generation (alternate).
+2. Write that slot's `segment_a.tmp`/`segment_b.tmp` → fsync file → rename → fsync directory. Pairing payloads with metadata is required for the other generation to remain recoverable.
 3. Encode `SuperblockV2Body` with `generation = max+1` → `body`; `crc = crc32(body)`; write `body || crc.to_le_bytes()`.
 4. fsync superblock file → fsync directory.
 5. Do **not** write the other slot in the same commit (true dual-superblock: one slot always old generation).
+
+**Recorded deviation from the earlier single-`segment` sketch:** a shared mutable payload makes the older superblock unrecoverable as soon as the payload is replaced. V2 therefore retains one payload per slot. This bounds active snapshot storage at roughly two payloads plus metadata in exchange for genuine rollback after an interrupted publish or corrupt newest superblock.
 
 **Crash injection points (tests):** after segment rename before superblock; after first (only) superblock write; corrupt superblock CRC; missing one slot.
 
@@ -1222,9 +1224,9 @@ Phase G **depends on** A′ only insofar as real payloads are useful in integrat
 
 #### Success criteria
 
-- [ ] Dual-read V1→V2 upgrade path tested with fixtures of old bytes.
-- [ ] Crash between superblock writes recovers previous generation.
-- [ ] Docs no longer overclaim beyond protocol.
+- [x] Dual-read V1→V2 upgrade path tested with frozen old bytes.
+- [x] Interrupted publish or corrupt newest superblock recovers the previous generation.
+- [x] Docs describe the paired-payload durability and storage-cost boundary.
 
 ---
 
