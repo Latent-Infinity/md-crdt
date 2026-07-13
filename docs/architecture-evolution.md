@@ -5,7 +5,7 @@
 | **Document title** | Architecture Evolution Design for md-crdt |
 | **Author** | Travis Silvers |
 | **Date** | 2026-07-09 |
-| **Status** | Draft (revision 6 — consistency pass: N1 multi-op, A→B wire migration, ingest) |
+| **Status** | Draft (revision 8 — joint lossless-workspace roadmap for md-crdt + md-mcp) |
 | **Repository** | `/Users/firestrand/Projects/latenty-infinity/md-crdt` |
 | **Current version** | `0.1.0` (pre-1.0; breaking changes allowed with changelog discipline) |
 | **License** | MIT |
@@ -22,6 +22,8 @@
 | **6 (wire)** | Collab producers **MUST** send `Paragraph { text: "" }` on `InsertBlock`; codec/session **reject** non-empty (no ignored dead payload) | Trades leniency for a wire that cannot carry misleading bytes; Phase A still allows full string bodies |
 | **6 (consistency)** | N1 multi-envelope convenience APIs; A→B wire dual-read for non-empty skeletons; vault ingest N6-d; layout/`apply_remote` cleanup | Closes contradictions found in full-doc review |
 | **6 (review)** | Empty-paragraph rejection moved from `CodecError` → `SessionError` (codec stays pluggable per Decision D); codec keeps only a pure predicate | Layering fix — semantic rule lives at the layer that owns `unit_mode`, not in per-codec error types |
+| **7** | Added native move/reorder, parsed-table ingest, mark-preserving external replacement, safe V1 segment cleanup, and an adapter-facing efficiency phase for `md-mcp` | Closes known product gaps and lets agents locate, edit, and verify bounded Markdown regions without full-document serialization or rediscovery |
+| **8** | Rewrote all unfinished work after Phase H as a coordinated four-phase joint-release roadmap; added honest lossless editing, stable workspace identity, semantic inline/frontmatter/link support, durable Markdown export, multi-document operations, and long-running compaction | The live `md-mcp` service duplicates the Markdown engine and both projects overclaim exact serialization after mutation; correctness and source fidelity must precede protocol optimization |
 
 ---
 
@@ -125,6 +127,9 @@ Without an integration spine and character-level CRDT, multi-peer collaboration 
 6. Incremental, independently reviewable PRs; tests remain green or deliberately migrated.
 7. Module boundaries matching SOLID / DRY / KISS; Rust standards compliance (typed errors, borrow-first, profile-driven perf).
 8. Pre-1.0 API cleanup with changelog discipline.
+9. A narrow adapter contract for `md-mcp`: stable block identity across refresh, lightweight structure discovery, bounded change receipts, and atomic targeted edits that avoid full-file rereads.
+10. Lossless local Markdown editing: unchanged source bytes survive scoped mutations, while semantic CRDT state continues to converge.
+11. A stateful vault/workspace API that owns ingest, durable Markdown export, stable document identity, revisions, and multi-document mutation boundaries.
 
 ### Non-Goals
 
@@ -135,6 +140,7 @@ Without an integration spine and character-level CRDT, multi-peer collaboration 
 5. Yjs/Automerge interop (future, not this evolution).
 6. Zero public API breaks at 0.1.0 — breaks allowed when changelog-documented.
 7. Authenticated or encrypted peer channels (see trust model).
+8. MCP tool schemas, response pagination, search ranking, or token counting; those remain `md-mcp` responsibilities.
 
 ### Sequencing & MVP
 
@@ -143,6 +149,10 @@ Without an integration spine and character-level CRDT, multi-peer collaboration 
 | **MVP collab** | A (+ A′ snapshot), B, C | Library can multi-peer edit blocks + text + marks over `ChangeMessage` | Multi-week |
 | **Product surface** | D, E | Vault true ingest + structured markdown | Multi-week |
 | **Polish** | F, G, H | Perf (incl. optional run-length), durable storage, benches/FFI/CLI | Multi-week |
+| **Joint foundation** | I | Stable workspace contract, lossless source model, durable Markdown export | Three focused PRs; unlocks parallel `md-mcp` work |
+| **Semantic completeness** | J | Inline marks/links, frontmatter, section move, table ingest, mark-preserving replacement | Five focused PRs |
+| **Agent workspace** | K | Bounded descriptors/deltas, atomic batches, file lifecycle, multi-document transactions | Three focused PRs plus downstream integration |
+| **Long-running hardening** | L | Legacy cleanup, op integrity, compaction/rebase, joint contract fixtures | Three focused PRs |
 
 **MVP release gate = PR-01–PR-04 + PR-06a/06b + PR-07** (Phases A, A′, B, C). SessionSnapshot (PR-04), per-grapheme text CRDT (PR-06a/06b), and mark unification (PR-07) are required. **PR-05 (SemanticConflict observation) is optional** — not a release gate. **PR-06b alone is not a release gate.** Vault, structure, Sequence rewrite, run-length storage, fsync protocol, and FFI (PR-08+) are not required for MVP collab.
 
@@ -309,8 +319,12 @@ src/
 | **F** | Sequence performance + indices (+ optional run-length) | Profile-driven after correctness |
 | **G** | Storage durability protocol | Container hardening; payload already defined in A′ |
 | **H** | DX | Benches (recreate), FFI, module splits, CLI |
+| **I** | Joint contract + lossless foundation | Give `md-mcp` stable types early; make exact editing and Markdown export honest before cutover |
+| **J** | Semantic completeness | Close inline/frontmatter/move/table/mark fidelity gaps on the lossless source model |
+| **K** | Agent-efficient workspace | Expose bounded deltas and atomic document/vault mutations without MCP policy in core |
+| **L** | Long-running hardening | Bound storage growth, finish integrity cleanup, and freeze joint consumer contracts |
 
-Phase G can parallelize with B/C once A′ defines snapshot **payload** bytes. Do **not** expand vault op emission before A + A′.
+Phase G can parallelize with B/C once A′ defines snapshot **payload** bytes. Do **not** expand vault op emission before A + A′. Phases I–L begin after the completed Phase H baseline. `md-mcp` may implement protocol/retrieval work against contract fixtures once PR-21 lands, but it must not cut over from its legacy service until PR-23 makes the workspace persistence path honest.
 
 ---
 
@@ -1114,11 +1128,11 @@ pub struct IngestReport {
 
 #### Success criteria (Phase D)
 
-- [ ] Multi-file vault opens distinct sessions per path; shared peer id.
-- [ ] External paragraph edit → ops → snapshot → serialize matches file intent.
-- [ ] Block reorder preserves ids via match_blocks.
-- [ ] Two vaults exchange ops (export `encode_changes_since`) after external edits and converge.
-- [ ] No `Uuid::new_v4` on ingest add path.
+- [x] Multi-file vault opens distinct sessions per path; shared peer id.
+- [x] External paragraph edit → ops → snapshot → serialize matches file intent.
+- [x] Block reorder preserves ids via match_blocks.
+- [x] Two vaults exchange ops (export `encode_changes_since`) after external edits and converge.
+- [x] No `Uuid::new_v4` on ingest add path.
 
 ---
 
@@ -1239,6 +1253,112 @@ Phase G **depends on** A′ only insofar as real payloads are useful in integrat
 
 ---
 
+### Phase I — Joint contract and lossless document foundation
+
+Phase I is the parallelization seam. It lands the smallest stable Rust contract first, then makes source fidelity and disk persistence truthful before `md-mcp` replaces its legacy service.
+
+#### I1 — Joint workspace contract and persistent identity
+
+Introduce core, MCP-agnostic types for `VaultId`, `DocumentId`, opaque `RevisionToken`, hierarchical `BlockDescriptor`, `ChangeSummary`, `EditBatch`, `BatchReceipt`, and `ExportOutcome`. Persist vault/document identities; never derive document identity from current content. `BlockId` remains the semantic block identity even when a move changes placement ids.
+
+The contract is direct Rust API, not an MCP DTO and not a public generic engine trait. `md-mcp` may use a crate-private fixture backend while this phase is implemented, but the release path binds to the concrete workspace. Freeze compile fixtures in both repositories so either side detects drift immediately.
+
+#### I2 — Lossless source model and scoped serialization
+
+Replace the single `raw_source: Option<String>` all-or-nothing shortcut with a lossless source representation that tracks source spans/trivia and dirty semantic nodes. Ablate per-block source slices, a piece table, and a concrete syntax layer; choose the smallest model that proves the acceptance properties.
+
+Normative boundary:
+
+- unchanged source bytes are emitted byte-for-byte, including line endings, blank lines, markers, fence delimiters, comments, and final newline;
+- a scoped mutation re-renders only its dirty source region;
+- unsupported blocks/inlines survive as opaque source-backed nodes and reject unsupported structured mutations rather than being flattened;
+- semantic CRDT state converges; untouched local presentation is preserved. Byte-identical peer files are required only when their starting presentation and applied operations are identical.
+
+Acceptance: a one-word edit changes only the corresponding source span; move/insert/delete own surrounding trivia deterministically; parse → exact serialize is byte-identical over the supported fixture corpus; structural serialization remains canonical and explicitly separate.
+
+#### I3 — Stateful ingest and durable Markdown export
+
+Make `VaultSession` the owner of the disk baseline and Markdown export lifecycle. Add path-scoped open/refresh/ingest/export APIs with an expected `RevisionToken` and expected disk fingerprint. Export uses temp file → file sync → atomic rename → directory sync on Unix, then updates the baseline only after success.
+
+Rename ambiguous APIs so `save_state`/`save_all_state` persist CRDT snapshots while `export_markdown`/`export_all_markdown` write `.md` files. A failed or stale export never marks the document clean. The contract includes create/reopen and crash tests and is the earliest gate at which `md-mcp` may replace its legacy file lifecycle.
+
+---
+
+### Phase J — Semantic Markdown completeness
+
+#### J1 — Authoritative inline model: marks, links, and source trivia
+
+Resolve the current duality between raw Markdown delimiters in `TextUnit`s and a separate `MarkSet`. The target model uses semantic visible text plus causal mark/link intervals and source-style metadata; code spans, images/autolinks, hard breaks, and unsupported inline syntax use explicit atoms or opaque lossless nodes.
+
+Parser, exact/scoped serializer, structural serializer, wire operations, snapshots, split/merge, and external ingest must agree on the same representation. Marks and links are not considered shipped until parsed Markdown can be edited, exchanged, reopened, and rendered back to Markdown.
+
+#### J2 — Collaborative, lossless frontmatter
+
+Replace the document-wide raw frontmatter string with a top-level key map using per-key causal/LWW values plus source spans for order, comments, quoting, and untouched complex YAML. Nested values may remain whole-value registers initially. Malformed or unsupported YAML is preserved losslessly and blocks structured key mutation rather than being rewritten.
+
+#### J3 — Native block and section move/reorder
+
+Add identity-preserving block moves and an atomic heading-section/range move for `md-mcp`'s `move_section` semantics. A move preserves logical block/section ids, descendants, text units, rows, marks, and links even when it allocates new placement ids.
+
+Before wire freeze, ablate an atomic move operation against a per-id placement register. Specify concurrent same-target moves, move-vs-delete, concurrently inserted section children, parent changes, cycle rejection, missing anchors, and causal buffering. Invalid moves do not burn clock ids.
+
+#### J4 — Parsed table ingest
+
+Remove the table-containing-file skip. First ingest emits an empty table plus metadata and row operations. Re-ingest preserves matching table/row ids and emits header/alignment, cell, row insert/delete/update/reorder operations without replacing unrelated prose.
+
+#### J5 — Mark-preserving external replacement
+
+Extend grapheme diff with deterministic insertion affinity and mark boundary projection. Retained units keep anchors; partial deletion splits/trims; whole replacement preserves only marks justified by mapped semantic ranges and never silently broadens formatting. Expose byte/grapheme range-to-anchor helpers for downstream exact targeting.
+
+Property and cross-vault tests cover emoji/combining sequences, nested marks/links, whole-paragraph rewrites, exchange, snapshot, and reopen.
+
+---
+
+### Phase K — Agent-efficient workspace operations
+
+The token budget exists at the MCP boundary. Core supplies bounded identity/delta/mutation primitives; `md-mcp` owns handles, schemas, pagination, retrieval ranking, output encoding, and token accounting.
+
+#### K1 — Borrow-first descriptors and bounded changes
+
+Expose paged hierarchical descriptors with stable ids, parent/order, kind, heading metadata, source/text size, and content digest but no cloned body. Local edits, remote apply, ingest, and export return `ChangeSummary` values bounded by changed objects: created/deleted/moved/updated ids, affected parents/sections, operation count, and post-revision.
+
+#### K2 — Preconditioned atomic document batches
+
+Prevalidate the concrete edit set used by `md-mcp`; apply all-or-nothing against an expected revision; burn no ids on rejection; return a compact affected-id receipt. Preview may execute on an isolated clone, but a preview token is validated against the exact revision and operation digest before apply. Full Markdown/diff output stays downstream and opt-in.
+
+#### K3 — File lifecycle and multi-document transaction boundary
+
+Add vault create/rename/delete with persistent document identity across rename. Add multi-document prevalidation and in-memory atomic application, then a recovery journal for durable multi-file export. Cross-document failure leaves either the prior committed files or a recoverable journal—not an undocumented partial success.
+
+Link/backlink indexing remains a downstream `md-mcp` concern, but the core change summary must expose enough link-target and path changes to invalidate it incrementally.
+
+---
+
+### Phase L — Long-running storage and joint-release hardening
+
+#### L1 — V1 cleanup and operation-segment integrity
+
+Delete legacy `segment` only after both V2 slots and paired payloads validate and no V1 metadata can reference it; directory-sync the deletion on Unix. Add length/checksum framing and corruption handling for operation segments. Cleanup failure is reported without invalidating the committed V2 snapshot.
+
+#### L2 — Bounded history, compaction, and peer rebase
+
+Bound snapshot/op-log growth. Define checkpoint epochs, peer acknowledgement/lease policy, tombstone retention, and snapshot rebase for peers older than the retained delta horizon. Never discard operations required by a supported peer without an explicit snapshot-rebase path. Profile storage, reopen latency, and `encode_changes_since` before/after.
+
+#### L3 — Frozen joint consumer contract
+
+Maintain a versioned fixture suite consumed by `../md-mcp`: workspace open/refresh, descriptors, revisions, changes, preview/apply, export, move-section, table, marks/links, frontmatter, file rename, multi-document recovery, and stale-write rejection. The md-crdt gate runs the fixture producer; the md-mcp gate consumes the same fixtures and concrete API commit.
+
+Cross-repository acceptance:
+
+- the live `md-mcp` path contains no independent Markdown parser/model/editor/serializer;
+- map/locate/search/read avoid full serialization and all-block cloning on the normal path;
+- a one-block external edit preserves unrelated identities and invalidates only affected index entries;
+- preview → apply → scoped verify uses compact handles/receipts and rejects stale revisions before mutation;
+- all supported edits survive exchange, snapshot/reopen, and durable export;
+- measured end-to-end agent workflow tokens improve against the frozen v1.1 baseline.
+
+---
+
 ## API / Interface Changes
 
 | Addition | Feature | Phase |
@@ -1250,8 +1370,15 @@ Phase G **depends on** A′ only insofar as real payloads are useful in integrat
 | `Sequence::with_value_mut` | default | B |
 | `EditOp` / `DocOp` block+text variants | default | A/B |
 | Superblock V2 dual-read | storage | G |
+| Persistent `VaultId`/`DocumentId`, opaque `RevisionToken`, joint workspace contract | default/filesync | I |
+| Lossless source spans/trivia + scoped exact serialization | default | I |
+| Stateful durable Markdown export with staleness preconditions | filesync/storage | I |
+| Authoritative inline marks/links + collaborative frontmatter | default/filesync | J |
+| Native block/section move + parsed table ingest + mark-preserving replacement | default/filesync | J |
+| Bounded descriptors, `ChangeSummary`, preconditioned document/vault batches | default/filesync | K |
+| Operation-segment checksums, checkpoint/rebase compaction | storage | L |
 
-**Compatibility:** pre-1.0; CHANGELOG per PR; wire `version` fail closed; `.mdcrdt` may need re-flush after upgrades in 0.1.x (document explicitly).
+**Compatibility:** the joint `md-crdt`/`md-mcp` release is intentionally breaking. Do not add source-API compatibility shims. Preserve only the wire/storage migrations required to open existing vault state safely; fail closed on unknown versions and document any required re-flush.
 
 ---
 
@@ -1273,12 +1400,12 @@ Document
 | Store | Format | Phase |
 | --- | --- | --- |
 | Op payloads | JSON `Envelope` (default) | A |
-| SessionSnapshot segment | serde_json or rkyv DTO; **full op log** (compaction later) | A′ |
+| SessionSnapshot segment | serde_json or rkyv DTO; **full op log** until Phase L checkpoint/rebase | A′/L |
 | Superblock | rkyv V1/V2 dual-read | G |
 | Vault fingerprints | rkyv (existing) | D |
 | Peer id file | plain | D |
 
-**Snapshot growth:** A′ deliberately stores integrated ops for retransmission/audit. Unbounded growth is accepted for 0.1; compaction (drop ops covered by a sealed snapshot + tombstone GC) is a follow-up, not MVP.
+**Snapshot growth:** A′ deliberately stores integrated ops for retransmission/audit. Phase L must bound that growth with checkpoint epochs and an explicit snapshot-rebase path for stale peers; blind tombstone/op deletion is forbidden.
 
 ---
 
@@ -1394,10 +1521,11 @@ No panics in `apply_remote` / codec / storage library paths.
 
 ## Rollout Plan
 
-- Additive A/A′ → then breaking B/C (changelog BREAKING).
-- Vault D after snapshot exists.
-- G dual-read allows old vaults to open once.
-- Rollback = git revert per PR; wire versions not mixed across peers without upgrade.
+- Phases A–H are the completed baseline; Phase I begins the joint breaking-release line.
+- Land PR-21's contract and fixtures first so `md-mcp` can build its protocol, index, and service shell in parallel.
+- Do not cut `md-mcp` over from its legacy engine until PR-23 proves lossless ingest/export and durable Markdown publication.
+- Semantic operations may be adopted incrementally as PR-24–PR-28 land, but the joint release waits for the frozen consumer gate in PR-34.
+- Keep each repository independently revertible. Record the exact cross-repository commit pair used by integration tests; live peers must upgrade together when wire versions change.
 
 ---
 
@@ -1412,6 +1540,10 @@ No panics in `apply_remote` / codec / storage library paths.
 | Storage | V1 fixture decode; crash injection points |
 | Fuzz | envelope decode; unit-mode apply_remote empty-paragraph reject |
 | Benches | recreated; nested text insert included |
+| Lossless fixtures | byte-identical no-op/open/export; minimal byte diff for scoped edits; opaque unsupported syntax |
+| Joint contract | `md-mcp` consumer fixtures compile and run against the pinned `md-crdt` revision |
+| Workflow | bounded context/edit/verify transcripts and token budgets on representative vaults |
+| Crash recovery | durable Markdown export and multi-document journal interruption at every publication boundary |
 
 `just check` green every PR.
 
@@ -1428,15 +1560,23 @@ No panics in `apply_remote` / codec / storage library paths.
 | Multi-doc session bugs | Medium | Per-path isolation tests; shared peer clock file |
 | JSON op size | Medium | Batch paste (N1); optional compact codec later |
 | match_blocks mis-identity | Medium | High thresholds; exact path first; properties |
-| Scope creep | High | MVP = A–C without PR-05/runs/N6-c; freeze D–H behind product priority |
+| Scope creep | High | One behavior per PR; defer syntax outside the joint acceptance corpus unless it blocks lossless preservation |
 | encode/apply ordering bugs | High | Pre-decode whole message; N3 local encode-before-apply |
-| Snapshot op-log growth | Medium | Documented A′ tradeoff; compaction follow-up |
+| Snapshot op-log growth | Medium | Phase L checkpoint/rebase protocol with explicit peer-retention policy |
+| Concurrent move ambiguity | High | Specify winner/delete/parent semantics before wire freeze; bidirectional concurrency tests |
+| Mark drift on replacement | High | Unit-anchored boundary-affinity rules + rendered-span properties; never silently broaden |
+| Lossless model becomes a second document tree | High | Semantic nodes remain authoritative; source spans/trivia attach to them and unsupported regions stay opaque |
+| Duplicate downstream Markdown engine survives cutover | High | Release gate deletes `DocumentEngine`, `StoredBlock`, and downstream parse/edit/serialize paths from live use |
+| Adapter optimization leaks MCP policy into core | Medium | Core exposes ids/descriptors/summaries/batches only; `md-mcp` owns schemas, cursors, search, and token budgets |
+| Cross-document partial publication | High | Intent journal + idempotent recovery; crash injection before and after every rename |
+| V1 cleanup removes last fallback | High | Require two independently valid V2 slots and durable directory sync before unlink |
 
 ---
 
 ## Key Decisions
 
-1. **Phase order A → A′ → B → C → D → E → F → G → H** (G parallelizable after A′).  
+1. **Phase order A → A′ → B → C → D → E → F → G → H → I → J → K → L.** `md-mcp` protocol/index work may run beside I; its live-engine cutover waits for PR-23.
+
    **Rationale:** Integrate + persist before optimizing; text before marks; vault after session snapshots.
 
 2. **`CollaborativeDocument` owns Document + SyncState + peer clock; vault uses `VaultSession` map Path → session.**  
@@ -1518,16 +1658,55 @@ No panics in `apply_remote` / codec / storage library paths.
 27. **Producer-local grapheme segmentation; receivers trust unit lists on the wire. Do not pin exact `unicode-segmentation` as a multi-peer identity contract for ops.**  
     **Rationale:** With N6-d, peers never recompute `G` for OpIds. Still use a current segmenter for local offsets; treat major UAX#29 changes as local-only until documented.
 
+28. **The concrete `VaultSession` workspace is the only release backend.** Do not publish a generic `DocumentEngine` abstraction; any temporary `md-mcp` fixture backend is crate-private and deleted at cutover.
+
+    **Rationale:** A replaceable engine seam allowed two parsers, editors, and serializers to diverge. The joint release values one correct state model over compatibility.
+
+29. **“Exact” means scoped byte preservation, not whole-document canonical reserialization.** Semantic nodes are authoritative; source spans/trivia preserve untouched bytes and unsupported constructs remain opaque.
+
+    **Rationale:** Agents usually change a small range. Rewriting unrelated bytes increases review cost, merge conflicts, and tokens.
+
+30. **`DocumentId` is persistent and content-independent; `RevisionToken` is opaque and changes with observable workspace state.**
+
+    **Rationale:** Content hashes invalidate handles after every edit and cannot distinguish revision preconditions from document identity.
+
+31. **Inline semantics have one authoritative representation: unit-anchored marks/links plus source trivia.** Raw Markdown delimiters are not a second mutable mark model.
+
+    **Rationale:** A dual model cannot reliably preserve formatting across external replacement, collaborative edits, and export.
+
+32. **A logical move preserves `BlockId`, descendant, unit, row, and mark identities; a section/range move is one atomic operation.**
+
+    **Rationale:** Delete/reinsert invalidates agent targets and exposes partial section moves to concurrent peers.
+
+33. **External table ingest is structural.** Table metadata and rows become operations; table-containing files are never skipped as a unit.
+
+    **Rationale:** A skipped file makes every prose section in it unavailable to the agent and defeats bounded editing.
+
+34. **Agent-token policy stays in `md-mcp`; `md-crdt` exposes bounded descriptors, summaries, preconditioned batches, and scoped reads—not MCP response models.**
+
+    **Rationale:** Token cost exists at serialized tool boundaries, while identity and mutation correctness belong in the core.
+
+35. **`VaultSession` owns Markdown ingest and durable export.** Snapshot persistence and Markdown publication are separate, explicitly named operations.
+
+    **Rationale:** Saving only CRDT state after an edit can report success while leaving the user's Markdown file stale.
+
+36. **Legacy V1 cleanup requires two independently valid V2 generations; later compaction requires an explicit checkpoint/rebase contract for lagging peers.**
+
+    **Rationale:** Cleanup follows proof, while bounded storage must not silently strand a peer that still references pruned history.
+
 ---
 
 ## Open Questions
 
-Resolved recommendations are Key Decisions 1–27 (rev 6). Remaining non-blocking:
+Resolved recommendations are Key Decisions 1–36 (rev 8). Remaining questions:
 
 1. **Snapshot encoding:** serde_json vs rkyv for `SessionSnapshot` segment body? (Lean rkyv when `storage` enabled; JSON for debug dumps.)
 2. **SemanticConflict CLI surfacing:** log only vs JSON field? (Lean: library returns data; CLI prints count at debug.) — only relevant after optional PR-05.
 3. **0.2.0 vs 0.1.x** version label after B/C — release management, not technical.
 4. **When to revisit N6-c / run-length:** only after production profiles show paste-as-block or large-paragraph cost; not scheduled.
+5. **Lossless representation:** attached source slices vs piece table vs compact CST remains an explicit PR-22 ablation; choose against edit locality, memory, and unsupported-syntax fixtures before freezing storage shape.
+6. **Concurrent move winner rule:** placement register vs atomic source/destination op is intentionally unresolved until PR-26 ablation; the wire shape must not freeze first.
+7. **History retention:** time-based peer leases vs explicit checkpoint acknowledgement remains open until PR-33 measures long-offline peer behavior.
 
 ---
 
@@ -1539,6 +1718,12 @@ Resolved recommendations are Key Decisions 1–27 (rev 6). Remaining non-blockin
 4. Storage dual-read V1/V2 + generation recovery from crash injection.
 5. `just check`, differential, fuzz healthy.
 6. README shows session + multi-doc vault; benches exist under `benches/` and run via `just bench`.
+7. External reorder, table edits, and marked-text replacement emit identity-preserving operations and converge after exchange/reopen.
+8. A completed V1→V2 migration removes `segment` only after two valid V2 fallbacks exist.
+9. `md-mcp` can locate, mutate, and verify one section using bounded descriptors/change receipts/scoped reads without full-document serialization on the normal path; its measured token-budget gates do not regress.
+10. Opening and exporting an unchanged supported or opaque Markdown file is byte-identical; a one-word semantic edit changes only its owned source span.
+11. Document handles survive content edits, stale writes fail by opaque revision precondition, and durable export cannot report success before the Markdown file is published.
+12. The joint release contains one live Markdown parser/model/editor/serializer, owned by `md-crdt`; representative MCP workflows meet the companion plan's token and task-success gates.
 
 ---
 
@@ -1720,6 +1905,104 @@ Each PR is independently reviewable. Dependencies listed. Spec-dense phases A/B 
 - **Dependencies:** PR-09
 - **Description:** End-to-end docs matching architecture.
 
+### PR-21: Joint workspace contract and persistent identity
+
+- **PR title:** `feat(workspace): persistent document identity, revisions, and joint contract`
+- **Files/components:** `src/filesync/session.rs`, new workspace DTO module, contract fixtures, `CHANGELOG.md`
+- **Dependencies:** PR-20
+- **Description:** Add persistent `VaultId`/`DocumentId`, opaque `RevisionToken`, `BlockDescriptor`, `ChangeSummary`, `EditBatch`, `BatchReceipt`, and `ExportOutcome`. Freeze the smallest direct Rust contract needed by `md-mcp`; do not introduce MCP DTOs or a public generic engine trait.
+
+### PR-22: Lossless source model and scoped serialization
+
+- **PR title:** `feat(doc): lossless source spans and dirty-region serialization`
+- **Files/components:** parser/model/serializer, source fixtures, edit-locality properties, benches, `CHANGELOG.md`
+- **Dependencies:** PR-21
+- **Description:** Ablate attached slices, piece-table, and compact-CST representations. Preserve untouched bytes and unsupported syntax opaquely; render only dirty semantic regions. Prove byte-identical no-op export and a minimal diff for a one-word edit.
+
+### PR-23: Stateful ingest and durable Markdown export
+
+- **PR title:** `feat(filesync): revision-checked ingest and durable Markdown export`
+- **Files/components:** `src/filesync/session.rs`, publication helpers, crash tests, `CHANGELOG.md`
+- **Dependencies:** PR-21, PR-22
+- **Description:** Make `VaultSession` own baseline refresh, expected-revision ingest, and explicit Markdown export. Publish by temp write, sync, rename, and directory sync; distinguish snapshot save from Markdown export in names and receipts.
+
+### PR-24: Authoritative inline marks and links
+
+- **PR title:** `feat(doc): parse, edit, and serialize unit-anchored inline semantics`
+- **Files/components:** inline parser, `core::mark`, serializer, codec/snapshot, fixtures, `CHANGELOG.md`
+- **Dependencies:** PR-07, PR-22
+- **Description:** Parse supported inline markup and links into the one semantic model while retaining delimiter trivia for lossless export. Persist and exchange causal mark/link history; unsupported inline constructs remain opaque.
+
+### PR-25: Collaborative lossless frontmatter
+
+- **PR title:** `feat(doc): structured frontmatter operations with source preservation`
+- **Files/components:** document model, parser/serializer, session wire/snapshot, fixtures, `CHANGELOG.md`
+- **Dependencies:** PR-22
+- **Description:** Replace raw-string-only frontmatter editing with deterministic field operations and an opaque fallback that preserves comments, ordering, and unsupported YAML bytes.
+
+### PR-26: Native block and section move/reorder
+
+- **PR title:** `feat(session): identity-preserving block and atomic section moves`
+- **Files/components:** `src/codec/wire.rs`, `src/session/*`, `src/doc/*`, vault ingest, convergence/property tests, `CHANGELOG.md`
+- **Dependencies:** PR-13, PR-14, PR-21, PR-22
+- **Description:** Ablate placement models and freeze concurrent move/delete/parent semantics. Add top-level, nested, and contiguous section/range moves with cycle/anchor validation, no clock burn on rejection, and pure-reorder ingest while retaining all logical identities.
+
+### PR-27: Parsed table ingest
+
+- **PR title:** `feat(filesync): ingest parsed tables through row and metadata operations`
+- **Files/components:** `src/filesync/session.rs`, table metadata operations as required, fixtures/tests, `CHANGELOG.md`
+- **Dependencies:** PR-12, PR-23, PR-26
+- **Description:** Remove the whole-file table skip. First-ingest and re-ingest table metadata and rows structurally, preserving matched table/row identities and leaving unrelated prose bytes untouched.
+
+### PR-28: Mark-preserving external replacement
+
+- **PR title:** `feat(marks): preserve anchored marks across external text replacement`
+- **Files/components:** `src/core/mark.rs`, `src/filesync/diff.rs`, Unicode range helpers, property/cross-vault tests, `CHANGELOG.md`
+- **Dependencies:** PR-10, PR-24
+- **Description:** Define replacement boundary affinity and remap, split, or trim intervals without silent broadening. Expose byte/grapheme range-to-unit-anchor conversion and prove preservation across refresh, exchange, reopen, and export.
+
+### PR-29: Bounded descriptors and change summaries
+
+- **PR title:** `feat(workspace): lightweight descriptors and bounded change summaries`
+- **Files/components:** `src/doc/*`, `src/session/*`, `src/filesync/session.rs`, benchmarks/tests, `CHANGELOG.md`
+- **Dependencies:** PR-14, PR-21; expand coverage through PR-28
+- **Description:** Add borrow-first, body-free hierarchy descriptors and bounded affected-id/revision summaries for local edits, remote apply, ingest, and export. No MCP response types belong in this crate.
+
+### PR-30: Atomic targeted document batches
+
+- **PR title:** `feat(workspace): preconditioned atomic edit batches with compact receipts`
+- **Files/components:** `src/session/*`, operation DTOs, rollback/no-clock-burn tests, `CHANGELOG.md`
+- **Dependencies:** PR-24–PR-29
+- **Description:** Prevalidate the concrete joint operation set, apply all-or-nothing against an expected `RevisionToken`, and return affected ids and post-revision only. Full diffs remain opt-in downstream.
+
+### PR-31: File lifecycle and multi-document transactions
+
+- **PR title:** `feat(workspace): atomic file lifecycle and multi-document journal`
+- **Files/components:** `src/filesync/*`, recovery journal, crash tests, `CHANGELOG.md`
+- **Dependencies:** PR-23, PR-29, PR-30
+- **Description:** Add create/rename/delete plus preconditioned cross-document batches. Recover idempotently from interruption without exposing partially published files; backlink/search policy remains in `md-mcp`.
+
+### PR-32: V1 cleanup and operation-segment integrity
+
+- **PR title:** `fix(storage): retire proven V1 data and checksum operation segments`
+- **Files/components:** `src/storage/mod.rs`, session persistence, crash/compatibility tests, `CHANGELOG.md`
+- **Dependencies:** PR-16
+- **Description:** Durably unlink legacy `segment` only after both V2 pairs validate and no V1 fallback remains. Add checksums/length validation to persisted operation segments; cleanup failure must preserve readable state.
+
+### PR-33: Bounded history and peer checkpoint/rebase
+
+- **PR title:** `feat(storage): checkpoint, compact, and rebase lagging peers`
+- **Files/components:** storage/session checkpoint protocol, retention policy, soak/crash tests, `CHANGELOG.md`
+- **Dependencies:** PR-04, PR-32
+- **Description:** Bound snapshot/log growth without renumbering live identities. Define acknowledgement or lease policy, deterministic lagging-peer rebase, and safe checkpoint publication before pruning history.
+
+### PR-34: Frozen `md-mcp` consumer contract
+
+- **PR title:** `test(workspace): freeze joint md-mcp contract and release fixtures`
+- **Files/components:** public API docs, consumer fixtures, cross-repo test harness, README/CHANGELOG
+- **Dependencies:** PR-23, PR-28, PR-31, PR-33
+- **Description:** Pin and run the companion consumer suite, remove temporary surfaces, freeze the direct workspace API, and prove the joint lossless/token-efficient acceptance scenarios before release.
+
 ---
 
 ### PR dependency graph
@@ -1750,12 +2033,52 @@ flowchart LR
   PR07 --> PR18[PR-18 module splits]
   PR03 --> PR19[PR-19 FFI]
   PR09 --> PR20[PR-20 CLI/docs]
+  PR20 --> PR21[PR-21 joint contract]
+  PR21 --> PR22[PR-22 lossless source]
+  PR21 --> PR23[PR-23 durable export]
+  PR22 --> PR23
+  PR07 --> PR24[PR-24 inline semantics]
+  PR22 --> PR24
+  PR22 --> PR25[PR-25 frontmatter]
+  PR13 --> PR26[PR-26 move/reorder]
+  PR14 --> PR26
+  PR21 --> PR26
+  PR22 --> PR26
+  PR12 --> PR27[PR-27 table ingest]
+  PR23 --> PR27
+  PR26 --> PR27
+  PR10 --> PR28[PR-28 mark-preserving replace]
+  PR24 --> PR28
+  PR14 --> PR29[PR-29 descriptors/summaries]
+  PR21 --> PR29
+  PR24 --> PR30[PR-30 atomic batches]
+  PR25 --> PR30
+  PR26 --> PR30
+  PR27 --> PR30
+  PR28 --> PR30
+  PR29 --> PR30
+  PR23 --> PR31[PR-31 multi-doc transactions]
+  PR29 --> PR31
+  PR30 --> PR31
+  PR16 --> PR32[PR-32 V1 cleanup/integrity]
+  PR04 --> PR33[PR-33 compaction/rebase]
+  PR32 --> PR33
+  PR23 --> PR34[PR-34 joint contract gate]
+  PR28 --> PR34
+  PR31 --> PR34
+  PR33 --> PR34
 ```
 
 **MVP merge set:** PR-01 … PR-04 + PR-06a/06b + PR-07 (A, A′, B, C). **PR-05 optional.** **PR-06b alone is not a release gate.**  
 **Product set:** PR-08 … PR-13.  
 **Polish set:** PR-14 … PR-20.
 
+**Joint foundation:** PR-21 … PR-23. `md-mcp` may build in parallel after PR-21 and may cut over after PR-23.
+
+**Semantic completeness:** PR-24 … PR-28.  
+**Agent workspace:** PR-29 … PR-31.  
+**Long-running hardening and release:** PR-32 … PR-34.
+
 ---
 
-*End of design document (revision 6 — consistency pass).*
+*End of design document (revision 8 — joint lossless workspace and token-efficient integration).*

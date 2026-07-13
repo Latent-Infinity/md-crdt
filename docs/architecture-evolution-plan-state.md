@@ -4,9 +4,10 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 | Field | Value |
 | --- | --- |
-| **Plan** | `docs/architecture-evolution.md` (Draft revision 6) |
+| **Plan** | `docs/architecture-evolution.md` (Draft revision 8) |
 | **Last updated** | 2026-07-13 |
-| **Tracking unit** | PR slices under design phases A–H |
+| **Tracking unit** | PR slices under design phases A–L |
+| **Joint consumer plan** | `../md-mcp/docs/joint-md-crdt-v2-implementation-plan.md` |
 
 ## Progress
 
@@ -35,6 +36,21 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-18** Module splits | **done** | Document parser/serializer, session wire translation/application, and sync validation extracted behind unchanged module façades |
 | **PR-19** FFI publish decision | **done** | `md-crdt-ffi` remains unpublished and API-empty; placeholder function removed; manifest/README honesty enforced by test |
 | **PR-20** CLI/session examples | **done** | Global `--vault` root; accurate command help; high-level peer exchange and multi-document `VaultSession` README workflows |
+| **Phase D exchange follow-up** | **done** | Path-scoped state-vector/delta/apply APIs; concurrent external edits converge across two vaults and persist across reopen |
+| **PR-21** Joint workspace contract | **planned** | Persistent vault/document identity, opaque revisions, direct Rust consumer contract |
+| **PR-22** Lossless source model | **planned** | Preserve untouched bytes and opaque syntax; dirty-region serialization |
+| **PR-23** Stateful ingest/durable export | **planned** | Revision-checked refresh and crash-safe Markdown publication |
+| **PR-24** Inline marks/links | **planned** | One unit-anchored semantic model with preserved source trivia |
+| **PR-25** Collaborative frontmatter | **planned** | Structured field operations plus opaque lossless fallback |
+| **PR-26** Block/section move | **planned** | Identity-preserving atomic range moves with frozen concurrency semantics |
+| **PR-27** Parsed table ingest | **planned** | Remove whole-file skip; structural row/metadata diffs preserve ids |
+| **PR-28** Mark-preserving replacement | **planned** | Deterministic boundary affinity and Unicode-safe range mapping |
+| **PR-29** Descriptors/change summaries | **planned** | Borrow-first hierarchy and affected-id deltas for bounded consumers |
+| **PR-30** Atomic document batches | **planned** | Expected-revision precondition, no partial mutation/clock burn, compact receipt |
+| **PR-31** File lifecycle/multi-doc transaction | **planned** | Create/rename/delete and crash-recoverable cross-document publication |
+| **PR-32** V1 cleanup/op integrity | **planned** | Proved V1 retirement plus checksummed operation segments |
+| **PR-33** History compaction/rebase | **planned** | Bounded growth with explicit lagging-peer checkpoint contract |
+| **PR-34** Frozen `md-mcp` contract | **planned** | Joint consumer fixtures, temporary-surface removal, release acceptance |
 
 ## Phase B checklist
 
@@ -89,6 +105,18 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Module split boundaries | Split by responsibility, not equal line counts | Parser/serializer, wire translation/application, and validation are cohesive seams with narrow parent access; arbitrary chunks would reduce file size while increasing cross-module coupling |
 | FFI release surface | Keep `md-crdt-ffi` unpublished and expose no placeholder API | A real C ABI needs explicit ownership, allocation, UTF-8, error, panic, and header contracts. No target language or consumer is defined, so publishing a token surface would create unsupported compatibility debt |
 | CLI vault selection | One global `--vault <PATH>` with `.` as the default | Makes every existing command usable from outside the vault without duplicating path arguments or inventing new transport/export commands |
+| Vault exchange surface | Path-scoped `state_vector`, `encode_changes_since`, and `apply_remote`; persist after successful remote apply | Keeps transport outside the library, preserves per-document isolation, and prevents a successful vault-level apply from remaining memory-only |
+| Release engine | Concrete `VaultSession` workspace only; no public generic engine abstraction | Prevent a permanent second parser/model/editor/serializer in `md-mcp` |
+| Lossless model | Semantic nodes with attached source spans/trivia and opaque unsupported regions | Exact scoped edits without maintaining a second mutable document tree |
+| Persistent identity | Content-independent `VaultId`/`DocumentId`; opaque `RevisionToken` | Handles survive edits while stale mutation preconditions remain precise |
+| Export ownership | `VaultSession` separately names snapshot save and durable Markdown export | A successful state save must not imply that the user's Markdown was published |
+| Inline authority | Unit-anchored marks/links plus source trivia | Avoid divergent raw-delimiter and causal-mark representations |
+| Move identity | Preserve block, descendant, unit, row, and mark ids; section moves are atomic | Agent targets remain valid and peers never observe a half-moved section |
+| Table ingest boundary | Emit table and row/metadata operations; never skip the containing file | Prose in a table-bearing file remains discoverable/editable |
+| Replacement mark policy | Split/trim/project anchored intervals deterministically; never silently broaden | Preserve justified formatting without inventing marked content |
+| `md-mcp` boundary | Core owns identity/semantics/deltas/batches; MCP owns schemas/search/cursors/token budgets | Correctness stays at the state owner and presentation policy at the protocol boundary |
+| Multi-document publication | Intent journal with idempotent recovery | Cross-file edits cannot report success with partially published Markdown |
+| Storage retirement | Two valid V2 generations before V1 unlink; explicit checkpoint/rebase before history pruning | Cleanup and compaction must preserve the last valid recovery path |
 
 ## Phase C checklist
 
@@ -98,7 +126,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] `render_spans` over paragraph unit order (`Document::render_paragraph_spans`)
 - [x] Expand-on-insert / range-remove helpers still green
 
-## Phase D checklist (partial)
+## Phase D checklist — complete
 
 - [x] Multi-file vault opens distinct sessions per path; shared peer id (PR-08)
 - [x] Open/save per-file session snapshots (PR-08)
@@ -107,7 +135,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Blockquotes preserved on **first** ingest (not flattened); tables skipped, no vault-wide abort
 - [x] External in-paragraph text edit → InsertText/DeleteText (PR-10)
 - [x] **Nested re-ingest matching** (structure + in-quote text LCS via PR-10)
-- [ ] Two vaults exchange ops after external edits (later)
+- [x] Two vaults exchange ops after external edits
 
 ## Phase E checklist (partial)
 
@@ -148,6 +176,41 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Module splits after churn settles (PR-18)
 - [x] FFI implementation or explicit unpublish decision (PR-19: unpublish)
 - [x] CLI and README multi-document workflow polish (PR-20)
+
+## Phase I checklist — planned
+
+- [ ] PR-21: freeze persistent identity, opaque revision, descriptor/summary, batch/receipt, and export contracts
+- [ ] PR-21: companion `md-mcp` fixtures compile without a public generic engine trait
+- [ ] PR-22: unchanged open/export is byte-identical, including opaque unsupported syntax
+- [ ] PR-22: one-word edit changes only its owned source region
+- [ ] PR-23: refresh/ingest enforce expected revision or fingerprint
+- [ ] PR-23: Markdown export is durable and separately named from snapshot save
+
+## Phase J checklist — planned
+
+- [ ] PR-24: parse/serialize marks and links through one causal unit-anchored model
+- [ ] PR-24: snapshot and exchange preserve mark/link history and delimiter trivia
+- [ ] PR-25: frontmatter field edits preserve comments/order/unsupported YAML through opaque fallback
+- [ ] PR-26: top-level/nested/section moves preserve all logical identities and converge
+- [ ] PR-27: table-bearing files ingest structurally instead of returning `Skipped`
+- [ ] PR-28: external replacement follows tested mark-boundary affinity and Unicode mapping rules
+
+## Phase K checklist — planned
+
+- [ ] PR-29: body-free descriptors avoid cloning or serializing all blocks
+- [ ] PR-29: local/remote/ingest/export summaries are bounded by affected ids
+- [ ] PR-30: expected-revision batches are atomic and burn no ids on rejection
+- [ ] PR-30: compact receipts return affected ids/post-revision; full diff stays opt-in
+- [ ] PR-31: file create/rename/delete and cross-document batches recover from every crash point
+- [ ] `../md-mcp`: direct concrete workspace powers context → preview → apply → scoped verify
+
+## Phase L checklist — planned
+
+- [ ] PR-32: retain V1 until two independent V2 generations validate, then durably remove it
+- [ ] PR-32: operation segments reject corruption/truncation and preserve the prior readable state
+- [ ] PR-33: checkpoint/compaction bounds history and deterministically rebases lagging peers
+- [ ] PR-34: pinned `md-mcp` consumer suite passes; temporary adapters and duplicate engines are deleted
+- [ ] Joint token/task-success and lossless/crash-recovery release gates pass
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -310,8 +373,26 @@ The session result retains the same scaling signal as the lower-level sequence p
 
 **TDD:** `help_describes_vault_root_and_multi_document_commands` failed first because help exposed neither `--vault` nor all-file semantics. `vault_option_ingests_multiple_documents_outside_current_directory` failed first because Clap rejected the option; it now proves two vault-relative files create independent session snapshot paths when invoked from outside the vault.
 
+**Audit (verified + fixed, README honesty):** the five README Rust workflow blocks were written in doctest form but the crate never compiled them, so they were unverified and could rot silently. Wired README into the doctest harness via `#[cfg(doctest)] #[doc = include_str!("../README.md")] pub struct ReadmeDoctests;` (`src/lib.rs`) — the idiomatic pattern that compiles every README ```rust``` block under `cargo test --doc` without duplicating the README onto the rustdoc landing page. The two `VaultSession::open("./notes")` blocks are marked `rust,no_run` (compile-checked, not executed, since they touch the filesystem). Doing so immediately caught a **pre-existing broken example**: the Quick-Start block bound `let first_block = doc.blocks_in_order().first().unwrap();` — E0716, because `blocks_in_order()` returns an owned `Vec` whose temporary is dropped while borrowed — plus an unused `Document` import. Fixed to `let block_id = doc.blocks_in_order().first().unwrap().id;` (`BlockId: Copy`) and trimmed the import. All 6 doctests now pass under `-Dwarnings` (CI mirror), so a future README/API drift fails the gate.
+
+## Phase D cross-vault exchange follow-up — **done**
+
+- `VaultSession::state_vector` and `encode_changes_since` expose one vault-relative document without leaking access to the internal path map.
+- `VaultSession::apply_remote` delegates validation and causal integration to `CollaborativeDocument`, then persists the affected session snapshot.
+- The two-vault integration test establishes one shared base, ingests distinct external edits at different peers, verifies both deltas are non-empty, exchanges them bidirectionally, and proves state-vector/document convergence survives reopening both vaults.
+
+**Ablation:** direct caller choreography through `session_mut` could already reach the lower-level session primitives, but it made persistence optional and exposed the internal session boundary for a routine vault operation. A vault-wide batch exchange or transport trait was rejected because routing, authentication, retries, and remote discovery are outside the plan. Three path-scoped wrappers are the smallest API that satisfies the per-document exchange contract.
+
+**TDD:** `two_vaults_exchange_external_edits_and_persist_convergence` failed first at compile time because `VaultSession` exposed none of the path-level state-vector, delta, or remote-apply methods. It now covers all new production lines and the persistence boundary.
+
+**Audit (verified):** the three path-scoped methods are thin, correct delegations over the already-audited `CollaborativeDocument` sync; `apply_remote` persists via `self.save`, and `ingest_file` also persists (`self.save` + `write_last_flushed`), so the "persist across reopen" property holds for both the ingest and exchange paths — not only the exchanged case the test drives. The test correctly asserts *convergence* (equal state vectors + serialized text) rather than a specific interleaving of the two concurrent external edits, which is the right CRDT contract.
+
 ## Gate
 
+- `cargo test --test filesync_vault_session` — **passed** for the Phase D exchange follow-up (5 tests)
+- `just check` — **passed** after audit (0 warnings; README wired into the doctest harness — 6 doctests, all green under `-Dwarnings`)
+- `just check` — **passed** for the Phase D exchange follow-up (377 tests, 0 warnings)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 92.12% repository line coverage / 90.69% region coverage, up from 92.09% lines with the same 560 missed lines; every new `VaultSession` exchange line is covered
 - `cargo test --test sync` — **passed** for PR-20 (11 CLI tests, including the two new red/green workflow tests)
 - `just check` — **passed** for PR-20 (376 tests, 0 warnings)
 - `cargo llvm-cov --workspace --all-features --summary-only` — **passed** for PR-20; 92.09% repository line coverage / 90.72% region coverage, up from 92.03% / 90.66%, with missed lines reduced from 565 to 560; all 7 CLI functions executed

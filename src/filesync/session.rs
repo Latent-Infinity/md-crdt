@@ -6,10 +6,11 @@ use super::{
     Vault, VaultError, block_content, fingerprint_document, hash_string, match_blocks,
 };
 use crate::codec::JsonOpCodec;
-use crate::core::{OpId, PeerId, Sequence};
+use crate::core::{OpId, PeerId, Sequence, StateVector};
 use crate::doc::{Block, BlockId, BlockKind, Document, ListItem, Parser, paragraph_visible_string};
-use crate::session::{CollaborativeDocument, SessionError, SnapshotError};
+use crate::session::{CollaborativeDocument, SessionApplyResult, SessionError, SnapshotError};
 use crate::storage::{Storage, StorageError};
+use crate::sync::{ChangeMessage, ValidationLimits};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -77,6 +78,36 @@ impl VaultSession {
             self.docs.insert(rel.clone(), doc);
         }
         Ok(self.docs.get_mut(&rel).expect("session inserted above"))
+    }
+
+    /// State vector for one vault-relative document, opening its session lazily.
+    pub fn state_vector(&mut self, rel_path: impl AsRef<Path>) -> Result<StateVector, VaultError> {
+        Ok(self.session_mut(rel_path)?.state_vector())
+    }
+
+    /// Encode operations for one document that are not covered by `since`.
+    pub fn encode_changes_since(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        since: &StateVector,
+    ) -> Result<ChangeMessage, VaultError> {
+        Ok(self.session_mut(rel_path)?.encode_changes_since(since))
+    }
+
+    /// Apply remote operations to one document and persist the updated session snapshot.
+    pub fn apply_remote(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        message: ChangeMessage,
+        limits: &ValidationLimits,
+    ) -> Result<SessionApplyResult, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        let result = self
+            .session_mut(&rel)?
+            .apply_remote(message, limits)
+            .map_err(session_err)?;
+        self.save(&rel)?;
+        Ok(result)
     }
 
     /// Persist one open document's session snapshot to storage.

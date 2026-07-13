@@ -19,13 +19,12 @@ md-crdt is a Rust library and CLI for offline-first, deterministic collaboration
 Parse Markdown, edit a block, serialize back:
 
 ```rust
-use md_crdt::{Document, EquivalenceMode, OpId, Parser};
+use md_crdt::{EquivalenceMode, OpId, Parser};
 
 let input = "# Title\n\nHello world.";
 let mut doc = Parser::parse(input);
 
-let first_block = doc.blocks_in_order().first().unwrap();
-let block_id = first_block.id;
+let block_id = doc.blocks_in_order().first().unwrap().id;
 
 let op_id = OpId { counter: 1, peer: 1 };
 doc.insert_text(block_id, 5, " brave", op_id).unwrap();
@@ -74,7 +73,7 @@ assert_eq!(
 
 Manage independent collaborative sessions for multiple files in one vault:
 
-```rust
+```rust,no_run
 use md_crdt::filesync::VaultSession;
 
 let mut vault = VaultSession::open("./notes")?;
@@ -95,6 +94,25 @@ vault.save_all()?;
 
 `VaultSession` opens documents lazily by vault-relative path. All documents share the vault's
 stable peer ID, but their CRDT state, clocks, and snapshots remain independent.
+
+Exchange one path with another vault using the same host-provided transport boundary:
+
+```rust,no_run
+# use md_crdt::{ValidationLimits, filesync::VaultSession};
+# let mut local = VaultSession::open("./notes")?;
+# let mut remote = VaultSession::open("./notes-copy")?;
+let remote_vector = remote.state_vector("projects/alpha.md")?;
+let changes = local.encode_changes_since("projects/alpha.md", &remote_vector)?;
+remote.apply_remote(
+    "projects/alpha.md",
+    changes,
+    &ValidationLimits::default(),
+)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`apply_remote` saves the updated per-file session snapshot. The application still chooses how the
+`ChangeMessage` reaches the other vault.
 
 **CLI Workflows**
 Target a vault from any working directory (the default is `--vault .`):

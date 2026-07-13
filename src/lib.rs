@@ -27,6 +27,15 @@
 //! - `filesync` - Enables vault-based file system synchronization (requires `storage`)
 //! - `dhat-heap` - Enables heap profiling with dhat
 
+/// Compiles the README's Rust examples as doctests so they cannot silently rot.
+///
+/// This item exists only during `cargo test --doc` (zero cost for normal builds)
+/// and keeps the full README off the crate's rustdoc landing page while still
+/// compiling every ```rust``` block it contains.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
+
 // Core CRDT algorithms
 pub mod core;
 

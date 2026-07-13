@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.mdcrdt/peer_id` load-or-create (non-zero `u64`)
 - Per-file session snapshots under `.mdcrdt/sessions/` (separate from fingerprint `state/`)
 - `session_mut` / `save` / `save_all` / `flush_all` / `close`
+- Path-scoped `state_vector` / `encode_changes_since` / `apply_remote`; remote application persists the affected session snapshot
+- Two-vault coverage for concurrent external text edits, bidirectional delta exchange, convergence, and reopen persistence
 
 #### Vault structure ingest (`md-crdt::filesync`)
 - `VaultSession::ingest_all` / `ingest_file`: content-hash gate → parse → `match_blocks` → structure ops

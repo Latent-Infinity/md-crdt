@@ -2,10 +2,81 @@
 
 #![cfg(feature = "filesync")]
 
+use md_crdt::ValidationLimits;
 use md_crdt::doc::EquivalenceMode;
 use md_crdt::filesync::{VaultError, VaultSession};
 use std::fs;
 use tempfile::tempdir;
+
+fn document_text(vault: &mut VaultSession, path: &str) -> String {
+    vault
+        .session_mut(path)
+        .unwrap()
+        .document()
+        .serialize(EquivalenceMode::Structural)
+}
+
+#[test]
+fn two_vaults_exchange_external_edits_and_persist_convergence() {
+    let first_dir = tempdir().unwrap();
+    let second_dir = tempdir().unwrap();
+    fs::write(first_dir.path().join("note.md"), "base").unwrap();
+    fs::write(second_dir.path().join("note.md"), "").unwrap();
+
+    let mut first = VaultSession::open(first_dir.path()).unwrap();
+    let mut second = VaultSession::open(second_dir.path()).unwrap();
+    first.ingest_all().unwrap();
+
+    let second_vector = second.state_vector("note.md").unwrap();
+    let initial = first
+        .encode_changes_since("note.md", &second_vector)
+        .unwrap();
+    second
+        .apply_remote("note.md", initial, &ValidationLimits::default())
+        .unwrap();
+
+    fs::write(first_dir.path().join("note.md"), "base from first").unwrap();
+    fs::write(second_dir.path().join("note.md"), "base from second").unwrap();
+    first.ingest_all().unwrap();
+    second.ingest_all().unwrap();
+
+    assert_eq!(document_text(&mut first, "note.md"), "base from first");
+    assert_eq!(document_text(&mut second, "note.md"), "base from second");
+
+    let first_vector = first.state_vector("note.md").unwrap();
+    let second_vector = second.state_vector("note.md").unwrap();
+    let to_first = second
+        .encode_changes_since("note.md", &first_vector)
+        .unwrap();
+    let to_second = first
+        .encode_changes_since("note.md", &second_vector)
+        .unwrap();
+    assert!(!to_first.ops.is_empty());
+    assert!(!to_second.ops.is_empty());
+    first
+        .apply_remote("note.md", to_first, &ValidationLimits::default())
+        .unwrap();
+    second
+        .apply_remote("note.md", to_second, &ValidationLimits::default())
+        .unwrap();
+
+    assert_eq!(
+        first.state_vector("note.md").unwrap(),
+        second.state_vector("note.md").unwrap()
+    );
+    let first_text = document_text(&mut first, "note.md");
+    let second_text = document_text(&mut second, "note.md");
+    assert_eq!(first_text, second_text);
+
+    drop(first);
+    drop(second);
+    let mut first = VaultSession::open(first_dir.path()).unwrap();
+    let mut second = VaultSession::open(second_dir.path()).unwrap();
+    assert_eq!(
+        document_text(&mut first, "note.md"),
+        document_text(&mut second, "note.md")
+    );
+}
 
 #[test]
 fn peer_id_persists_across_reopen() {
