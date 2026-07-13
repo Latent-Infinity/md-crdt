@@ -145,7 +145,7 @@ fn snapshot_round_trip_across_process_boundary() {
             .unwrap()
             .insert_paragraph(None, "round-trip")
             .unwrap();
-        vs.save_all().unwrap();
+        vs.save_all_state().unwrap();
         vs.peer()
     };
 

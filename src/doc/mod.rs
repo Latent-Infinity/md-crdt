@@ -14,7 +14,10 @@ use uuid::Uuid;
 pub mod mark_ops;
 mod parser;
 mod serialize;
+mod source;
 pub mod text;
+
+pub(crate) use source::DocumentSource;
 
 pub use parser::Parser;
 use serialize::{
@@ -39,7 +42,7 @@ pub fn block_id_from_op(op: OpId) -> BlockId {
 pub struct Document {
     pub frontmatter: Option<String>,
     pub blocks: IndexedBlocks,
-    raw_source: Option<String>,
+    source: Option<DocumentSource>,
     block_index: RwLock<Option<CachedBlockIndex>>,
 }
 
@@ -121,7 +124,7 @@ impl Clone for Document {
         Self {
             frontmatter: self.frontmatter.clone(),
             blocks: self.blocks.clone(),
-            raw_source: self.raw_source.clone(),
+            source: self.source.clone(),
             block_index: RwLock::new(None),
         }
     }
@@ -131,7 +134,7 @@ impl PartialEq for Document {
     fn eq(&self, other: &Self) -> bool {
         self.frontmatter == other.frontmatter
             && self.blocks == other.blocks
-            && self.raw_source == other.raw_source
+            && self.source == other.source
     }
 }
 
@@ -488,7 +491,7 @@ impl Document {
         Self {
             frontmatter: None,
             blocks: IndexedBlocks::new(Sequence::new()),
-            raw_source: None,
+            source: None,
             block_index: RwLock::new(None),
         }
     }
@@ -500,6 +503,7 @@ impl Document {
 
     /// Mutable access to the top-level block sequence, invalidating the BlockId index.
     pub fn blocks_mut(&mut self) -> &mut Sequence<Block> {
+        self.source = None;
         &mut self.blocks
     }
 
@@ -540,11 +544,58 @@ impl Document {
     }
 
     pub fn set_raw_source(&mut self, source: String) {
-        self.raw_source = Some(source);
+        let parsed = Parser::parse(&source);
+        self.adopt_source_from(&parsed);
     }
 
     pub fn clear_raw_source(&mut self) {
-        self.raw_source = None;
+        self.source = None;
+    }
+
+    pub(crate) fn source_state(&self) -> Option<DocumentSource> {
+        self.source.clone()
+    }
+
+    pub(crate) fn has_source_state(&self) -> bool {
+        self.source.is_some()
+    }
+
+    pub(crate) fn set_source_state(&mut self, mut source: Option<DocumentSource>) {
+        if let Some(source) = &mut source {
+            source.reindex(&self.blocks);
+        }
+        self.source = source;
+    }
+
+    pub(crate) fn adopt_source_from(&mut self, parsed: &Document) -> bool {
+        let Some(source) = parsed.source.as_ref() else {
+            self.source = None;
+            return false;
+        };
+        let current = self.blocks_in_order();
+        let parsed_blocks = parsed.blocks_in_order();
+        if current.len() != parsed_blocks.len()
+            || current.iter().zip(parsed_blocks).any(|(left, right)| {
+                std::mem::discriminant(&left.kind) != std::mem::discriminant(&right.kind)
+            })
+        {
+            self.source = None;
+            return false;
+        }
+        self.source = source.adopt_for(&current);
+        self.source.is_some()
+    }
+
+    fn mark_source_block_dirty(&mut self, block_id: BlockId) {
+        if let Some(source) = &mut self.source {
+            source.mark_block_dirty(block_id);
+        }
+    }
+
+    fn mark_source_elem_dirty(&mut self, elem_id: OpId) {
+        if let Some(source) = &mut self.source {
+            source.mark_elem_dirty(elem_id);
+        }
     }
 
     pub fn blocks_in_order(&self) -> Vec<&Block> {
@@ -613,6 +664,7 @@ impl Document {
         f: impl FnOnce(&mut Block) -> R,
     ) -> Option<R> {
         self.find_block(elem_id)?;
+        self.mark_source_elem_dirty(elem_id);
         let path = self
             .block_index_read()
             .as_ref()?
@@ -700,6 +752,9 @@ impl Document {
         value: Block,
         right_origin: Option<OpId>,
     ) -> bool {
+        if let Some(parent) = parent {
+            self.mark_source_elem_dirty(parent);
+        }
         match parent {
             None => {
                 self.blocks.apply(SequenceOp::Insert {
@@ -725,6 +780,9 @@ impl Document {
 
     /// Delete a block from `parent`'s children (top-level when `parent` is `None`).
     pub fn delete_block_at(&mut self, parent: Option<OpId>, target: OpId, id: OpId) -> bool {
+        if let Some(parent) = parent {
+            self.mark_source_elem_dirty(parent);
+        }
         match parent {
             None => {
                 self.blocks.apply(SequenceOp::Delete { target, id });
@@ -824,7 +882,7 @@ impl Document {
         insert_graphemes(body, grapheme_offset, text, op_id).ok_or(EditError::InvalidOffset)?;
 
         self.blocks.update_value(elem_id, updated);
-        self.clear_raw_source();
+        self.mark_source_block_dirty(block_id);
 
         Ok(vec![EditOp::InsertText(InsertTextRun {
             block_id,
@@ -880,7 +938,7 @@ impl Document {
                     .ok_or(EditError::InvalidOffset)?;
 
                 self.blocks.update_value(elem_id, updated);
-                self.clear_raw_source();
+                self.mark_source_block_dirty(run.block_id);
                 Ok(())
             }
             EditOp::SetMark {
@@ -906,7 +964,7 @@ impl Document {
                     .marks
                     .set_mark(interval_id, kind, start, end, attrs, op_id);
                 self.blocks.update_value(elem_id, updated);
-                self.clear_raw_source();
+                self.mark_source_block_dirty(block_id);
                 Ok(())
             }
             EditOp::RemoveMark {
@@ -927,7 +985,7 @@ impl Document {
                 let mut updated = block.clone();
                 updated.marks.remove_mark(interval_id, observed, op_id);
                 self.blocks.update_value(elem_id, updated);
-                self.clear_raw_source();
+                self.mark_source_block_dirty(block_id);
                 Ok(())
             }
         }
@@ -1037,7 +1095,7 @@ impl Document {
         }
 
         self.blocks.update_value(elem_id, updated);
-        self.clear_raw_source();
+        self.mark_source_block_dirty(block_id);
         Ok(ops)
     }
 
@@ -1069,9 +1127,9 @@ impl Document {
     pub fn serialize_with_config(&self, config: &SerializeConfig) -> String {
         if let EquivalenceMode::Exact = config.equivalence
             && config.prefer_raw_source
-            && let Some(raw) = &self.raw_source
+            && let Some(source) = &self.source
         {
-            return raw.clone();
+            return source.render(&self.blocks);
         }
 
         let mut output = String::new();

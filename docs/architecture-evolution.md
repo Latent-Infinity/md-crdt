@@ -5,7 +5,7 @@
 | **Document title** | Architecture Evolution Design for md-crdt |
 | **Author** | Travis Silvers |
 | **Date** | 2026-07-09 |
-| **Status** | Draft (revision 8 — joint lossless-workspace roadmap for md-crdt + md-mcp) |
+| **Status** | Draft (revision 9 — joint lossless-workspace roadmap for md-crdt + md-mcp) |
 | **Repository** | `/Users/firestrand/Projects/latenty-infinity/md-crdt` |
 | **Current version** | `0.1.0` (pre-1.0; breaking changes allowed with changelog discipline) |
 | **License** | MIT |
@@ -24,6 +24,13 @@
 | **6 (review)** | Empty-paragraph rejection moved from `CodecError` → `SessionError` (codec stays pluggable per Decision D); codec keeps only a pure predicate | Layering fix — semantic rule lives at the layer that owns `unit_mode`, not in per-codec error types |
 | **7** | Added native move/reorder, parsed-table ingest, mark-preserving external replacement, safe V1 segment cleanup, and an adapter-facing efficiency phase for `md-mcp` | Closes known product gaps and lets agents locate, edit, and verify bounded Markdown regions without full-document serialization or rediscovery |
 | **8** | Rewrote all unfinished work after Phase H as a coordinated four-phase joint-release roadmap; added honest lossless editing, stable workspace identity, semantic inline/frontmatter/link support, durable Markdown export, multi-document operations, and long-running compaction | The live `md-mcp` service duplicates the Markdown engine and both projects overclaim exact serialization after mutation; correctness and source fidelity must precede protocol optimization |
+| **9** | Removed legacy snapshot/storage compatibility from the release contract and added a final breaking cleanup slice | The two projects ship together before 1.0; retaining V1/V2 snapshot readers and V1 storage migration paths adds code, fixtures, and ambiguity without user value |
+
+**Compatibility policy (supersedes earlier migration notes):** completed sections below retain
+historical implementation details, but they are not release requirements. The joint release accepts
+only the current V3 session snapshot and current V2 dual-slot storage format. PR-35 removes V1/V2
+session-snapshot readers and V1 storage readers/fixtures; older vault state must be reinitialized and
+re-ingested from Markdown.
 
 ---
 
@@ -152,7 +159,7 @@ Without an integration spine and character-level CRDT, multi-peer collaboration 
 | **Joint foundation** | I | Stable workspace contract, lossless source model, durable Markdown export | Three focused PRs; unlocks parallel `md-mcp` work |
 | **Semantic completeness** | J | Inline marks/links, frontmatter, section move, table ingest, mark-preserving replacement | Five focused PRs |
 | **Agent workspace** | K | Bounded descriptors/deltas, atomic batches, file lifecycle, multi-document transactions | Three focused PRs plus downstream integration |
-| **Long-running hardening** | L | Legacy cleanup, op integrity, compaction/rebase, joint contract fixtures | Three focused PRs |
+| **Long-running hardening** | L | Op integrity, compaction/rebase, joint contract fixtures, final compatibility purge | Four focused PRs |
 
 **MVP release gate = PR-01–PR-04 + PR-06a/06b + PR-07** (Phases A, A′, B, C). SessionSnapshot (PR-04), per-grapheme text CRDT (PR-06a/06b), and mark unification (PR-07) are required. **PR-05 (SemanticConflict observation) is optional** — not a release gate. **PR-06b alone is not a release gate.** Vault, structure, Sequence rewrite, run-length storage, fsync protocol, and FFI (PR-08+) are not required for MVP collab.
 
@@ -282,7 +289,7 @@ flowchart TB
 | Principle | Mapping |
 | --- | --- |
 | **S**ingle responsibility | `core` = pure CRDT primitives; `doc` = markdown model + local edit apply; `codec` = wire DTOs encode/decode only; `sync` = causal op log + size limits (**no** markdown, **no** SemanticConflict population); `session` = Document+SyncState+clock+decode/apply+conflict observation+snapshot; `storage` = durable container for opaque payloads; `filesync` = multi-file vault + matching → session ops |
-| **O**pen/closed | `OpCodec` + versioned `Envelope`; storage v1/v2 dual-read |
+| **O**pen/closed | `OpCodec` + versioned `Envelope`; strict current-format V2 storage after PR-35 |
 | **L**iskov | Codecs round-trip the same op set; fail closed on unknown versions; never silently drop ops |
 | **I**nterface segregation | Feature gates; parse-only callers need not pull filesync; sync free of doc types |
 | **D**ependency inversion | Session depends on `OpCodec` trait; storage stores caller bytes |
@@ -1041,7 +1048,7 @@ impl VaultSession {
 
     pub fn session_mut(&mut self, rel_path: &Path) -> Result<&mut CollaborativeDocument, VaultError>;
     pub fn ingest_all(&mut self) -> Result<IngestReport, VaultError>;
-    pub fn flush_all(&mut self) -> Result<(), VaultError>;
+    pub fn save_all_state(&self) -> Result<(), VaultError>;
 }
 ```
 
@@ -1257,6 +1264,8 @@ Phase G **depends on** A′ only insofar as real payloads are useful in integrat
 
 Phase I is the parallelization seam. It lands the smallest stable Rust contract first, then makes source fidelity and disk persistence truthful before `md-mcp` replaces its legacy service.
 
+**Status: complete.** The concrete contract is frozen locally; companion-repository cutover validation remains part of PR-34.
+
 #### I1 — Joint workspace contract and persistent identity
 
 Introduce core, MCP-agnostic types for `VaultId`, `DocumentId`, opaque `RevisionToken`, hierarchical `BlockDescriptor`, `ChangeSummary`, `EditBatch`, `BatchReceipt`, and `ExportOutcome`. Persist vault/document identities; never derive document identity from current content. `BlockId` remains the semantic block identity even when a move changes placement ids.
@@ -1265,7 +1274,7 @@ The contract is direct Rust API, not an MCP DTO and not a public generic engine 
 
 #### I2 — Lossless source model and scoped serialization
 
-Replace the single `raw_source: Option<String>` all-or-nothing shortcut with a lossless source representation that tracks source spans/trivia and dirty semantic nodes. Ablate per-block source slices, a piece table, and a concrete syntax layer; choose the smallest model that proves the acceptance properties.
+Replace the single `raw_source: Option<String>` all-or-nothing shortcut with a lossless source representation that tracks source spans/trivia and dirty semantic nodes. The ablation selected per-root-block source regions with owned leading trivia: a piece table still requires semantic ownership mapping, while a compact CST duplicates the authoritative CRDT tree and creates synchronization risk.
 
 Normative boundary:
 
@@ -1280,7 +1289,7 @@ Acceptance: a one-word edit changes only the corresponding source span; move/ins
 
 Make `VaultSession` the owner of the disk baseline and Markdown export lifecycle. Add path-scoped open/refresh/ingest/export APIs with an expected `RevisionToken` and expected disk fingerprint. Export uses temp file → file sync → atomic rename → directory sync on Unix, then updates the baseline only after success.
 
-Rename ambiguous APIs so `save_state`/`save_all_state` persist CRDT snapshots while `export_markdown`/`export_all_markdown` write `.md` files. A failed or stale export never marks the document clean. The contract includes create/reopen and crash tests and is the earliest gate at which `md-mcp` may replace its legacy file lifecycle.
+Rename ambiguous APIs so `save_state`/`save_all_state` persist CRDT snapshots while `export_markdown` writes one `.md` file. A failed or stale export never marks the document clean. A loop-shaped `export_all_markdown` is intentionally absent because it could partially publish while implying atomicity; PR-31 owns crash-recoverable multi-document publication. The contract includes create/reopen and crash tests and is the earliest gate at which `md-mcp` may replace its legacy file lifecycle.
 
 ---
 
@@ -1336,9 +1345,10 @@ Link/backlink indexing remains a downstream `md-mcp` concern, but the core chang
 
 ### Phase L — Long-running storage and joint-release hardening
 
-#### L1 — V1 cleanup and operation-segment integrity
+#### L1 — Operation-segment integrity
 
-Delete legacy `segment` only after both V2 slots and paired payloads validate and no V1 metadata can reference it; directory-sync the deletion on Unix. Add length/checksum framing and corruption handling for operation segments. Cleanup failure is reported without invalidating the committed V2 snapshot.
+Add length/checksum framing and corruption handling for operation segments. A failed or corrupt
+append must preserve the prior readable state and must not advance the committed generation.
 
 #### L2 — Bounded history, compaction, and peer rebase
 
@@ -1357,6 +1367,20 @@ Cross-repository acceptance:
 - all supported edits survive exchange, snapshot/reopen, and durable export;
 - measured end-to-end agent workflow tokens improve against the frozen v1.1 baseline.
 
+#### L4 — Final breaking compatibility cleanup
+
+After the concrete consumer contract is frozen, remove compatibility code before release:
+
+- accept only `SessionSnapshot::format_version == 3`; delete V1/V2 constants, DTO upgrade branches,
+  synthetic snapshot migration, and their fixtures;
+- accept only the current V2 dual-slot storage superblock; delete the V1 decoder, legacy `segment`
+  fallback, upgrade branches, and V1 byte fixtures;
+- remove temporary deprecated aliases and compatibility-only APIs that are not used by the pinned
+  `md-mcp` consumer;
+- fail closed with an explicit reinitialize/re-ingest error for older state—no in-place migration;
+- rerun the complete `md-crdt` and pinned `md-mcp` release gates after deletion so no compatibility
+  path remains accidentally reachable.
+
 ---
 
 ## API / Interface Changes
@@ -1369,16 +1393,19 @@ Cross-repository acceptance:
 | `VaultSession` / `DocStore` | filesync | D |
 | `Sequence::with_value_mut` | default | B |
 | `EditOp` / `DocOp` block+text variants | default | A/B |
-| Superblock V2 dual-read | storage | G |
+| Superblock V2 dual-slot generation protocol | storage | G |
 | Persistent `VaultId`/`DocumentId`, opaque `RevisionToken`, joint workspace contract | default/filesync | I |
 | Lossless source spans/trivia + scoped exact serialization | default | I |
 | Stateful durable Markdown export with staleness preconditions | filesync/storage | I |
 | Authoritative inline marks/links + collaborative frontmatter | default/filesync | J |
 | Native block/section move + parsed table ingest + mark-preserving replacement | default/filesync | J |
 | Bounded descriptors, `ChangeSummary`, preconditioned document/vault batches | default/filesync | K |
-| Operation-segment checksums, checkpoint/rebase compaction | storage | L |
+| Operation-segment checksums, checkpoint/rebase compaction, strict current-format loading | storage | L |
 
-**Compatibility:** the joint `md-crdt`/`md-mcp` release is intentionally breaking. Do not add source-API compatibility shims. Preserve only the wire/storage migrations required to open existing vault state safely; fail closed on unknown versions and document any required re-flush.
+**Compatibility:** the joint `md-crdt`/`md-mcp` release is intentionally breaking. Do not preserve
+source, wire, snapshot, or storage migration paths for older unpublished releases. At the PR-35
+gate, only the current formats are accepted; older vault state must be reinitialized and re-ingested
+from its Markdown source.
 
 ---
 
@@ -1401,7 +1428,7 @@ Document
 | --- | --- | --- |
 | Op payloads | JSON `Envelope` (default) | A |
 | SessionSnapshot segment | serde_json or rkyv DTO; **full op log** until Phase L checkpoint/rebase | A′/L |
-| Superblock | rkyv V1/V2 dual-read | G |
+| Superblock | rkyv V2 dual-slot generation format only | G/L |
 | Vault fingerprints | rkyv (existing) | D |
 | Peer id file | plain | D |
 
@@ -1524,7 +1551,7 @@ No panics in `apply_remote` / codec / storage library paths.
 - Phases A–H are the completed baseline; Phase I begins the joint breaking-release line.
 - Land PR-21's contract and fixtures first so `md-mcp` can build its protocol, index, and service shell in parallel.
 - Do not cut `md-mcp` over from its legacy engine until PR-23 proves lossless ingest/export and durable Markdown publication.
-- Semantic operations may be adopted incrementally as PR-24–PR-28 land, but the joint release waits for the frozen consumer gate in PR-34.
+- Semantic operations may be adopted incrementally as PR-24–PR-28 land, but the joint release waits for the frozen consumer gate in PR-34 and the final compatibility purge in PR-35.
 - Keep each repository independently revertible. Record the exact cross-repository commit pair used by integration tests; live peers must upgrade together when wire versions change.
 
 ---
@@ -1537,7 +1564,7 @@ No panics in `apply_remote` / codec / storage library paths.
 | Property | RGA text, marks, merge |
 | Differential | oracle vs Sequence text + blocks |
 | Integration | multi-peer session; multi-file vault |
-| Storage | V1 fixture decode; crash injection points |
+| Storage | Current V2 generation recovery; crash injection points; rejection of older formats after PR-35 |
 | Fuzz | envelope decode; unit-mode apply_remote empty-paragraph reject |
 | Benches | recreated; nested text insert included |
 | Lossless fixtures | byte-identical no-op/open/export; minimal byte diff for scoped edits; opaque unsupported syntax |
@@ -1556,7 +1583,7 @@ No panics in `apply_remote` / codec / storage library paths.
 | Phase B PR size | High | Split representation vs API cutover (PR-06a/06b); ban rebuild-from-string; **no run-length in B** |
 | Per-grapheme memory | Medium | Baseline benches; Phase F incremental order / optional runs if needed |
 | RGA incremental rewrite | High | Feature flag; oracle must pass; default off |
-| rkyv V1/V2 mistakes | High | Explicit dual-read tests with byte fixtures |
+| Stale compatibility code survives release | High | PR-35 deletes legacy readers/fixtures and rejects every non-current format in tests |
 | Multi-doc session bugs | Medium | Per-path isolation tests; shared peer clock file |
 | JSON op size | Medium | Batch paste (N1); optional compact codec later |
 | match_blocks mis-identity | Medium | High thresholds; exact path first; properties |
@@ -1569,7 +1596,7 @@ No panics in `apply_remote` / codec / storage library paths.
 | Duplicate downstream Markdown engine survives cutover | High | Release gate deletes `DocumentEngine`, `StoredBlock`, and downstream parse/edit/serialize paths from live use |
 | Adapter optimization leaks MCP policy into core | Medium | Core exposes ids/descriptors/summaries/batches only; `md-mcp` owns schemas, cursors, search, and token budgets |
 | Cross-document partial publication | High | Intent journal + idempotent recovery; crash injection before and after every rename |
-| V1 cleanup removes last fallback | High | Require two independently valid V2 slots and durable directory sync before unlink |
+| Old vault state is opened ambiguously | High | Reject it explicitly and require reinitialize/re-ingest; never guess or silently migrate |
 
 ---
 
@@ -1627,8 +1654,8 @@ No panics in `apply_remote` / codec / storage library paths.
 17. **Vault ingest: D1 structure match + block ops; D2 grapheme LCS; not whole-paragraph LWW default.**  
     **Rationale:** Preserve CRDT history; ship incrementally.
 
-18. **Storage G: explicit V1/V2 dual-read; generation alternate single-slot write; fsync file+dir; V2 CRC = LE u32 trailer over rkyv body (Decision 24).**  
-    **Rationale:** rkyv cannot silently add fields; true dual-superblock semantics.
+18. **Storage G keeps the V2 dual-slot generation protocol with file+directory sync and an LE u32 CRC trailer; PR-35 removes the temporary V1 reader.**
+    **Rationale:** Crash recovery needs two current-format generations, not compatibility with an unpublished predecessor.
 
 19. **MVP = PR-01–PR-04 + PR-06a/06b + PR-07. PR-05 optional. PR-06b alone is not a release gate. D–H not required to claim library collab.**  
     **Rationale:** Feasibility; SemanticConflict is observational; marks + snapshot still required for coherent public API.
@@ -1636,8 +1663,8 @@ No panics in `apply_remote` / codec / storage library paths.
 20. **Trust model: trusted peers + local disk; limits are resource safety only.**  
     **Rationale:** Honest security boundary for a local CRDT library.
 
-21. **Phase A→B paragraph skeleton JSON stays `{ text: String }`. Unit-mode sessions (`unit_mode = true`): producers MUST send `text: ""`; session pre-decode rejects non-empty; units only via InsertText/DeleteText. String-mode keeps non-empty as body. Snapshot `format_version` bumps for unit DTOs; never rebuild-from-string. Offline upgrade expands strings to units; mixed live peers should cut over together.**  
-    **Rationale:** Stable shape; no dead/misleading payload on unit-mode structure ops; safe A→B history story.
+21. **Unit-mode paragraph skeleton JSON stays `{ text: "" }`; units travel only through InsertText/DeleteText. The release accepts only V3 session snapshots and has no string-body snapshot upgrade path.**
+    **Rationale:** One current representation removes dead payload, migration branches, and synthetic identities.
 
 22. **Snapshot bootstrap: `restore_from_snapshot` = same peer crash recovery; `import_state` / `rebind_peer` = late join with local peer id.**  
     **Rationale:** Two-vault / late-join must not adopt remote peer clocks.  
@@ -1690,9 +1717,9 @@ No panics in `apply_remote` / codec / storage library paths.
 
     **Rationale:** Saving only CRDT state after an edit can report success while leaving the user's Markdown file stale.
 
-36. **Legacy V1 cleanup requires two independently valid V2 generations; later compaction requires an explicit checkpoint/rebase contract for lagging peers.**
+36. **The release accepts only V3 session snapshots and V2 dual-slot storage; PR-35 deletes all older readers and fixtures. Later compaction still requires an explicit checkpoint/rebase contract for lagging peers.**
 
-    **Rationale:** Cleanup follows proof, while bounded storage must not silently strand a peer that still references pruned history.
+    **Rationale:** No published compatibility promise exists. Removing migration code reduces the state space, while bounded storage must still preserve supported peers.
 
 ---
 
@@ -1704,9 +1731,8 @@ Resolved recommendations are Key Decisions 1–36 (rev 8). Remaining questions:
 2. **SemanticConflict CLI surfacing:** log only vs JSON field? (Lean: library returns data; CLI prints count at debug.) — only relevant after optional PR-05.
 3. **0.2.0 vs 0.1.x** version label after B/C — release management, not technical.
 4. **When to revisit N6-c / run-length:** only after production profiles show paste-as-block or large-paragraph cost; not scheduled.
-5. **Lossless representation:** attached source slices vs piece table vs compact CST remains an explicit PR-22 ablation; choose against edit locality, memory, and unsupported-syntax fixtures before freezing storage shape.
-6. **Concurrent move winner rule:** placement register vs atomic source/destination op is intentionally unresolved until PR-26 ablation; the wire shape must not freeze first.
-7. **History retention:** time-based peer leases vs explicit checkpoint acknowledgement remains open until PR-33 measures long-offline peer behavior.
+5. **Concurrent move winner rule:** placement register vs atomic source/destination op is intentionally unresolved until PR-26 ablation; the wire shape must not freeze first.
+6. **History retention:** time-based peer leases vs explicit checkpoint acknowledgement remains open until PR-33 measures long-offline peer behavior.
 
 ---
 
@@ -1715,11 +1741,11 @@ Resolved recommendations are Key Decisions 1–36 (rev 8). Remaining questions:
 1. Two peers exchange only `ChangeMessage` bytes and converge on structural markdown for concurrent **block** and **in-paragraph** edits.
 2. One mark model in the public API.
 3. Multi-file vault ingest emits ops, persists `SessionSnapshot`, preserves block identity when fingerprints match.
-4. Storage dual-read V1/V2 + generation recovery from crash injection.
+4. Current V2 dual-slot storage recovers from crash injection and rejects older formats.
 5. `just check`, differential, fuzz healthy.
 6. README shows session + multi-doc vault; benches exist under `benches/` and run via `just bench`.
 7. External reorder, table edits, and marked-text replacement emit identity-preserving operations and converge after exchange/reopen.
-8. A completed V1→V2 migration removes `segment` only after two valid V2 fallbacks exist.
+8. PR-35 leaves no V1/V2 session-snapshot reader, no V1 storage reader, and no legacy compatibility fixture or upgrade branch.
 9. `md-mcp` can locate, mutate, and verify one section using bounded descriptors/change receipts/scoped reads without full-document serialization on the normal path; its measured token-budget gates do not regress.
 10. Opening and exporting an unchanged supported or opaque Markdown file is byte-identical; a one-word semantic edit changes only its owned source span.
 11. Document handles survive content edits, stale writes fail by opaque revision precondition, and durable export cannot report success before the Markdown file is published.
@@ -1870,12 +1896,12 @@ Each PR is independently reviewable. Dependencies listed. Spec-dense phases A/B 
 - **Dependencies:** PR-14 recommended; **requires** oracle+differential green
 - **Description:** Highest risk perf change; default off until soak; dual-path compare under `cfg(test)`. **If** large-paragraph profiles still hurt after incremental order, a follow-up PR may add run-length storage **without renumbering grapheme OpIds** (expand for marks).
 
-### PR-16: Storage V2 generation dual-superblock + fsync + dual-read
+### PR-16: Storage V2 generation dual-superblock + fsync
 
-- **PR title:** `fix(storage): V1/V2 dual-read superblock generation protocol with fsync`
-- **Files/components:** `src/storage/mod.rs`, byte fixtures for V1, crash tests, `CHANGELOG.md`
+- **PR title:** `fix(storage): dual-slot generation protocol with fsync`
+- **Files/components:** `src/storage/mod.rs`, crash tests, `CHANGELOG.md`
 - **Dependencies:** PR-04 recommended for integration tests with real session payloads; container logic independent
-- **Description:** Explicit V1/V2 dual-read; alternate slot; fsync; V2 body + LE CRC32 trailer (not field-in-struct); no silent field add.
+- **Description:** Alternate V2 slots; fsync; V2 body + LE CRC32 trailer (not field-in-struct). The temporary V1 reader that landed with this historical slice is not a release requirement and is deleted by PR-35.
 
 ### PR-17: Recreate criterion benches
 
@@ -1982,12 +2008,12 @@ Each PR is independently reviewable. Dependencies listed. Spec-dense phases A/B 
 - **Dependencies:** PR-23, PR-29, PR-30
 - **Description:** Add create/rename/delete plus preconditioned cross-document batches. Recover idempotently from interruption without exposing partially published files; backlink/search policy remains in `md-mcp`.
 
-### PR-32: V1 cleanup and operation-segment integrity
+### PR-32: Operation-segment integrity
 
-- **PR title:** `fix(storage): retire proven V1 data and checksum operation segments`
-- **Files/components:** `src/storage/mod.rs`, session persistence, crash/compatibility tests, `CHANGELOG.md`
+- **PR title:** `fix(storage): checksum and validate operation segments`
+- **Files/components:** `src/storage/mod.rs`, session persistence, corruption/crash tests, `CHANGELOG.md`
 - **Dependencies:** PR-16
-- **Description:** Durably unlink legacy `segment` only after both V2 pairs validate and no V1 fallback remains. Add checksums/length validation to persisted operation segments; cleanup failure must preserve readable state.
+- **Description:** Add checksums/length validation to persisted operation segments; a failed append or corrupt newest segment must preserve the prior readable state.
 
 ### PR-33: Bounded history and peer checkpoint/rebase
 
@@ -2002,6 +2028,13 @@ Each PR is independently reviewable. Dependencies listed. Spec-dense phases A/B 
 - **Files/components:** public API docs, consumer fixtures, cross-repo test harness, README/CHANGELOG
 - **Dependencies:** PR-23, PR-28, PR-31, PR-33
 - **Description:** Pin and run the companion consumer suite, remove temporary surfaces, freeze the direct workspace API, and prove the joint lossless/token-efficient acceptance scenarios before release.
+
+### PR-35: Final breaking compatibility cleanup
+
+- **PR title:** `refactor(storage): remove legacy snapshot and storage readers`
+- **Files/components:** `src/session/snapshot.rs`, `src/session/mod.rs`, `src/storage/mod.rs`, legacy fixtures/tests, public deprecations, `CHANGELOG.md`
+- **Dependencies:** PR-32, PR-33, PR-34
+- **Description:** Accept only V3 session snapshots and current V2 dual-slot storage. Delete snapshot V1/V2 and storage V1 readers, upgrade branches, constants, fixtures, deprecated compatibility surfaces, and legacy-segment handling. Older vault state must be reinitialized/re-ingested. Rerun both repositories' pinned release gates after deletion.
 
 ---
 
@@ -2060,13 +2093,16 @@ flowchart LR
   PR23 --> PR31[PR-31 multi-doc transactions]
   PR29 --> PR31
   PR30 --> PR31
-  PR16 --> PR32[PR-32 V1 cleanup/integrity]
+  PR16 --> PR32[PR-32 op integrity]
   PR04 --> PR33[PR-33 compaction/rebase]
   PR32 --> PR33
   PR23 --> PR34[PR-34 joint contract gate]
   PR28 --> PR34
   PR31 --> PR34
   PR33 --> PR34
+  PR32 --> PR35[PR-35 compatibility purge]
+  PR33 --> PR35
+  PR34 --> PR35
 ```
 
 **MVP merge set:** PR-01 … PR-04 + PR-06a/06b + PR-07 (A, A′, B, C). **PR-05 optional.** **PR-06b alone is not a release gate.**  
@@ -2077,8 +2113,8 @@ flowchart LR
 
 **Semantic completeness:** PR-24 … PR-28.  
 **Agent workspace:** PR-29 … PR-31.  
-**Long-running hardening and release:** PR-32 … PR-34.
+**Long-running hardening and release:** PR-32 … PR-35.
 
 ---
 
-*End of design document (revision 8 — joint lossless workspace and token-efficient integration).*
+*End of design document (revision 9 — joint lossless workspace and token-efficient integration).*

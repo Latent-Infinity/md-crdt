@@ -6,7 +6,7 @@ md-crdt is a Rust library and CLI for offline-first, deterministic collaboration
 
 **Highlights**
 - Deterministic merge behavior across peers.
-- Markdown-aware parsing and serialization (structural or exact).
+- Markdown-aware parsing and serialization (canonical structural or source-preserving exact).
 - Block- and mark-level operations for precise edits.
 - File sync that ingests and flushes against a local vault.
 
@@ -86,14 +86,46 @@ for path in ["projects/alpha.md", "journal/2026-07-13.md"] {
     assert_eq!(document.peer(), shared_peer);
 }
 
-// Each path has an independent document and operation log. save_all writes the
-// open sessions beneath .mdcrdt/sessions/ using the vault-wide peer identity.
-vault.save_all()?;
+// Each path has an independent document and operation log. save_all_state writes
+// the open snapshots beneath .mdcrdt/sessions/; it does not publish Markdown.
+vault.save_all_state()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 `VaultSession` opens documents lazily by vault-relative path. All documents share the vault's
 stable peer ID, but their CRDT state, clocks, and snapshots remain independent.
+
+Open, edit, and durably publish one Markdown document with explicit stale-state checks:
+
+```rust,no_run
+use md_crdt::filesync::VaultSession;
+
+let mut vault = VaultSession::open("./notes")?;
+let opened = vault.open_document("projects/alpha.md")?;
+let block_id = vault
+    .session_mut("projects/alpha.md")?
+    .document()
+    .blocks_in_order()[0]
+    .id;
+
+vault
+    .session_mut("projects/alpha.md")?
+    .insert_text(block_id, 5, " focused")?;
+let edited = vault.open_document("projects/alpha.md")?;
+let outcome = vault.export_markdown(
+    "projects/alpha.md",
+    &edited.revision,
+    edited.disk_fingerprint,
+)?;
+
+assert_eq!(outcome.document_id, opened.document_id);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`save_state` and `save_all_state` persist CRDT snapshots only. `export_markdown` publishes one
+source-preserving Markdown view with revision and optional disk-fingerprint preconditions. Atomic
+multi-document publication remains a separate lifecycle operation rather than a misleading loop
+over single-file exports.
 
 Exchange one path with another vault using the same host-provided transport boundary:
 

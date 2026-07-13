@@ -6,20 +6,22 @@
 
 use crate::core::{Element, LwwRegister, OpId, PeerId, Sequence};
 use crate::doc::{
-    Block, BlockId, BlockKind, CellContent, ColumnAlignment, ColumnDef, Document, Table, TableRow,
-    TextUnit, units_from_str,
+    Block, BlockId, BlockKind, CellContent, ColumnAlignment, ColumnDef, Document, DocumentSource,
+    Table, TableRow, TextUnit, units_from_str,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Snapshot schema version (not wire `Envelope` version).
 ///
-/// v1: paragraph body as plain string.  
+/// v1: paragraph body as plain string.
 /// v2: paragraph body as ordered grapheme units (with OpIds).
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 2;
+/// v3: lossless source regions and dirty-root state.
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 3;
 
 /// Prior format that stored paragraph text as a plain string.
 pub const SNAPSHOT_FORMAT_VERSION_V1: u16 = 1;
+pub(super) const SNAPSHOT_FORMAT_VERSION_V2: u16 = 2;
 
 /// Errors loading or decoding session snapshots.
 #[derive(Debug, Error)]
@@ -54,6 +56,8 @@ pub struct SessionSnapshot {
 pub struct DocumentDto {
     pub frontmatter: Option<String>,
     pub blocks: Vec<ElementDto<BlockDto>>,
+    #[serde(default)]
+    pub(crate) source: Option<DocumentSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +180,7 @@ impl DocumentDto {
         Self {
             frontmatter: doc.frontmatter.clone(),
             blocks: sequence_to_elements(doc.blocks(), block_to_dto),
+            source: doc.source_state(),
         }
     }
 
@@ -183,6 +188,7 @@ impl DocumentDto {
         let mut doc = Document::new();
         doc.frontmatter = self.frontmatter;
         *doc.blocks_mut() = sequence_from_elements(self.blocks, block_from_dto);
+        doc.set_source_state(self.source);
         doc
     }
 }
@@ -197,6 +203,7 @@ impl SessionSnapshot {
             serde_json::from_slice(bytes).map_err(|e| SnapshotError::Serde(e.to_string()))?;
         if snap.format_version != SNAPSHOT_FORMAT_VERSION
             && snap.format_version != SNAPSHOT_FORMAT_VERSION_V1
+            && snap.format_version != SNAPSHOT_FORMAT_VERSION_V2
         {
             return Err(SnapshotError::UnsupportedVersion(snap.format_version));
         }

@@ -11,9 +11,12 @@ use crate::doc::{Block, BlockId, BlockKind, Document, ListItem, Parser, paragrap
 use crate::session::{CollaborativeDocument, SessionApplyResult, SessionError, SnapshotError};
 use crate::storage::{Storage, StorageError};
 use crate::sync::{ChangeMessage, ValidationLimits};
+use crate::{DiskFingerprint, DocumentHandle, DocumentId, RevisionToken, VaultId};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 /// Shared vault-level identity and open collaborative documents.
 ///
@@ -22,11 +25,13 @@ use std::path::{Path, PathBuf};
 /// [`crate::session::SessionSnapshot`] blobs under `.mdcrdt/sessions/`.
 pub struct VaultSession {
     pub vault: Vault,
+    vault_id: VaultId,
     /// Stable peer id for this machine/vault (shared by all open docs).
     pub peer: PeerId,
     pub codec: JsonOpCodec,
     /// Lazy map: vault-relative path → session.
     docs: BTreeMap<PathBuf, CollaborativeDocument>,
+    document_ids: BTreeMap<PathBuf, DocumentId>,
 }
 
 impl VaultSession {
@@ -34,12 +39,15 @@ impl VaultSession {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, VaultError> {
         let vault = Vault::open(path)?;
         vault.init()?;
+        let vault_id = load_or_create_identity::<VaultId>(&vault_id_path(&vault))?;
         let peer = load_or_create_peer_id(&vault)?;
         Ok(Self {
             vault,
+            vault_id,
             peer,
             codec: JsonOpCodec,
             docs: BTreeMap::new(),
+            document_ids: BTreeMap::new(),
         })
     }
 
@@ -50,6 +58,45 @@ impl VaultSession {
 
     pub fn peer(&self) -> PeerId {
         self.peer
+    }
+
+    pub fn vault_id(&self) -> VaultId {
+        self.vault_id
+    }
+
+    /// Persistent identity for a vault-relative path, independent of file content.
+    pub fn document_id(&mut self, rel_path: impl AsRef<Path>) -> Result<DocumentId, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        if let Some(id) = self.document_ids.get(&rel) {
+            return Ok(*id);
+        }
+        let id = load_or_create_identity::<DocumentId>(&document_id_path(&self.vault, &rel))?;
+        self.document_ids.insert(rel, id);
+        Ok(id)
+    }
+
+    /// Open the concrete workspace document, ingesting disk content for an empty session.
+    pub fn open_document(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+    ) -> Result<DocumentHandle, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.document_id(&rel)?;
+        let needs_ingest = self
+            .session_mut(&rel)?
+            .document()
+            .blocks_in_order()
+            .is_empty();
+        if needs_ingest {
+            self.ingest_file_unchecked(&rel)?;
+        }
+        self.document_handle(&rel)
+    }
+
+    pub fn revision(&mut self, rel_path: impl AsRef<Path>) -> Result<RevisionToken, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.session_mut(&rel)?;
+        revision_for(self.docs.get(&rel).expect("session opened above"))
     }
 
     /// Vault-relative paths currently open in memory.
@@ -73,11 +120,126 @@ impl VaultSession {
         rel_path: impl AsRef<Path>,
     ) -> Result<&mut CollaborativeDocument, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
+        self.document_id(&rel)?;
         if !self.docs.contains_key(&rel) {
             let doc = self.load_or_create_session(&rel)?;
             self.docs.insert(rel.clone(), doc);
         }
         Ok(self.docs.get_mut(&rel).expect("session inserted above"))
+    }
+
+    fn document_handle(&mut self, rel: &Path) -> Result<DocumentHandle, VaultError> {
+        let document_id = self.document_id(rel)?;
+        let revision = self.revision(rel)?;
+        Ok(DocumentHandle {
+            vault_id: self.vault_id,
+            document_id,
+            revision,
+            disk_fingerprint: disk_fingerprint(&self.vault.path.join(rel))?,
+        })
+    }
+
+    /// Refresh one Markdown file after optional workspace and disk precondition checks.
+    pub fn refresh_markdown(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        expected_revision: Option<&RevisionToken>,
+        expected_disk_fingerprint: Option<DiskFingerprint>,
+    ) -> Result<IngestOutcome, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.ingest_markdown(rel, expected_revision, expected_disk_fingerprint)
+    }
+
+    /// Ingest one observed Markdown file through revision and disk preconditions.
+    pub fn ingest_markdown(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        expected_revision: Option<&RevisionToken>,
+        expected_disk_fingerprint: Option<DiskFingerprint>,
+    ) -> Result<IngestOutcome, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.verify_revision(&rel, expected_revision)?;
+        if let Some(expected) = expected_disk_fingerprint {
+            self.verify_disk(&rel, expected)?;
+        }
+        self.ingest_file_unchecked(&rel)
+    }
+
+    /// Durably publish the exact/scoped Markdown view for one document.
+    pub fn export_markdown(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        expected_revision: &RevisionToken,
+        expected_disk_fingerprint: Option<DiskFingerprint>,
+    ) -> Result<crate::ExportOutcome, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.verify_revision(&rel, Some(expected_revision))?;
+        if let Some(expected) = expected_disk_fingerprint {
+            self.verify_disk(&rel, expected)?;
+        }
+
+        let path = self.vault.path.join(&rel);
+        let markdown = self
+            .docs
+            .get(&rel)
+            .expect("revision check opened the session")
+            .document()
+            .serialize(crate::doc::EquivalenceMode::Exact);
+        let prior = fs::read(&path).ok();
+        let changed = prior.as_deref() != Some(markdown.as_bytes());
+        if changed {
+            atomic_write_markdown(&path, markdown.as_bytes(), PublishControl::default())?;
+        }
+
+        let parsed = Parser::parse(&markdown);
+        let session = self.docs.get_mut(&rel).expect("session remains open");
+        session.document_mut().adopt_source_from(&parsed);
+        let state = LastFlushedState {
+            content_hash: hash_string(&markdown),
+            blocks: fingerprint_document(session.document()),
+        };
+        self.vault.write_last_flushed(&path, &state)?;
+        self.save_state(&rel)?;
+
+        let document_id = self.document_id(&rel)?;
+        let revision = self.revision(&rel)?;
+        Ok(crate::ExportOutcome {
+            document_id,
+            revision,
+            disk_fingerprint: disk_fingerprint(&path)?,
+            bytes_written: markdown.len(),
+            changed,
+        })
+    }
+
+    fn verify_revision(
+        &mut self,
+        rel: &Path,
+        expected: Option<&RevisionToken>,
+    ) -> Result<(), VaultError> {
+        let Some(expected) = expected else {
+            self.session_mut(rel)?;
+            return Ok(());
+        };
+        let actual = self.revision(rel)?;
+        if &actual != expected {
+            return Err(VaultError::StaleRevision {
+                expected: expected.clone(),
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    fn verify_disk(&self, rel: &Path, expected: DiskFingerprint) -> Result<(), VaultError> {
+        let actual = disk_fingerprint(&self.vault.path.join(rel))?;
+        if actual != Some(expected) {
+            return Err(VaultError::StaleDisk {
+                expected: Some(expected),
+                actual,
+            });
+        }
+        Ok(())
     }
 
     /// State vector for one vault-relative document, opening its session lazily.
@@ -106,12 +268,12 @@ impl VaultSession {
             .session_mut(&rel)?
             .apply_remote(message, limits)
             .map_err(session_err)?;
-        self.save(&rel)?;
+        self.save_state(&rel)?;
         Ok(result)
     }
 
     /// Persist one open document's session snapshot to storage.
-    pub fn save(&self, rel_path: impl AsRef<Path>) -> Result<(), VaultError> {
+    pub fn save_state(&self, rel_path: impl AsRef<Path>) -> Result<(), VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
         let doc = self
             .docs
@@ -121,17 +283,12 @@ impl VaultSession {
     }
 
     /// Persist all open document snapshots.
-    pub fn save_all(&self) -> Result<(), VaultError> {
+    pub fn save_all_state(&self) -> Result<(), VaultError> {
         for rel in self.docs.keys() {
             let doc = self.docs.get(rel).expect("key from map");
             write_session_snapshot(&self.vault, rel, doc)?;
         }
         Ok(())
-    }
-
-    /// Alias for [`Self::save_all`] — snapshot flush, not markdown export.
-    pub fn flush_all(&self) -> Result<(), VaultError> {
-        self.save_all()
     }
 
     /// Drop an in-memory session without saving (disk snapshot left unchanged).
@@ -153,7 +310,7 @@ impl VaultSession {
                 .strip_prefix(&self.vault.path)
                 .unwrap_or(abs.as_path())
                 .to_path_buf();
-            match self.ingest_file(&rel)? {
+            match self.ingest_file_unchecked(&rel)? {
                 IngestOutcome::Changed(ops) => {
                     report.files_changed += 1;
                     report.ops_emitted += ops;
@@ -168,7 +325,10 @@ impl VaultSession {
     /// Structure ingest for a single vault-relative markdown path.
     ///
     /// Returns `(changed, ops_emitted)`.
-    pub fn ingest_file(&mut self, rel_path: impl AsRef<Path>) -> Result<IngestOutcome, VaultError> {
+    fn ingest_file_unchecked(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+    ) -> Result<IngestOutcome, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
         let abs = self.vault.path.join(&rel);
         if !abs.exists() {
@@ -180,6 +340,14 @@ impl VaultSession {
         if let Some(prev) = self.vault.read_last_flushed(&abs)?
             && prev.content_hash == content_hash
         {
+            let needs_source = !self.session_mut(&rel)?.document().has_source_state();
+            if needs_source {
+                let parsed = Parser::parse(&content);
+                self.session_mut(&rel)?
+                    .document_mut()
+                    .adopt_source_from(&parsed);
+                self.save_state(&rel)?;
+            }
             return Ok(IngestOutcome::NoOp);
         }
 
@@ -206,8 +374,14 @@ impl VaultSession {
             }
         };
 
+        self.docs
+            .get_mut(&rel)
+            .expect("session still open")
+            .document_mut()
+            .adopt_source_from(&parsed);
+
         // Persist session snapshot + fingerprint/hash gate state.
-        self.save(&rel)?;
+        self.save_state(&rel)?;
         let session = self.docs.get(&rel).expect("session still open");
         let state = LastFlushedState {
             content_hash,
@@ -244,6 +418,178 @@ impl VaultSession {
             Err(err) => Err(VaultError::Storage(err)),
         }
     }
+}
+
+trait PersistentIdentity: Copy + std::fmt::Display + std::str::FromStr {
+    fn fresh() -> Self;
+}
+
+impl PersistentIdentity for VaultId {
+    fn fresh() -> Self {
+        Self::from_uuid(Uuid::new_v4())
+    }
+}
+
+impl PersistentIdentity for DocumentId {
+    fn fresh() -> Self {
+        Self::from_uuid(Uuid::new_v4())
+    }
+}
+
+fn load_or_create_identity<T>(path: &Path) -> Result<T, VaultError>
+where
+    T: PersistentIdentity,
+{
+    if path.exists() {
+        return parse_identity(path);
+    }
+    let id = T::fresh();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("identity");
+    let temp = path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp)?;
+    writeln!(file, "{id}")?;
+    file.sync_all()?;
+    drop(file);
+    match fs::hard_link(&temp, path) {
+        Ok(()) => {
+            fs::remove_file(&temp)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            fs::remove_file(&temp)?;
+            return parse_identity(path);
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temp);
+            return Err(error.into());
+        }
+    }
+    if let Some(parent) = path.parent() {
+        sync_directory(parent)?;
+    }
+    Ok(id)
+}
+
+fn parse_identity<T>(path: &Path) -> Result<T, VaultError>
+where
+    T: PersistentIdentity,
+{
+    let value = fs::read_to_string(path)?;
+    value
+        .trim()
+        .parse()
+        .map_err(|_| VaultError::InvalidIdentity {
+            path: path.to_path_buf(),
+            value: value.trim().to_string(),
+        })
+}
+
+fn vault_id_path(vault: &Vault) -> PathBuf {
+    vault.path.join(".mdcrdt").join("vault_id")
+}
+
+fn document_id_path(vault: &Vault, rel: &Path) -> PathBuf {
+    let mut path = vault.path.join(".mdcrdt").join("document_ids").join(rel);
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map_or_else(|| "id".to_string(), |value| format!("{value}.id"));
+    path.set_extension(extension);
+    path
+}
+
+fn revision_for(document: &CollaborativeDocument) -> Result<RevisionToken, VaultError> {
+    let bytes = document
+        .save_snapshot()
+        .and_then(|snapshot| snapshot.to_bytes())
+        .map_err(|error| VaultError::Snapshot(error.to_string()))?;
+    Ok(RevisionToken::from_u128(stable_hash_128(&bytes)))
+}
+
+fn stable_hash_128(bytes: &[u8]) -> u128 {
+    const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+    bytes.iter().fold(OFFSET, |hash, byte| {
+        (hash ^ u128::from(*byte)).wrapping_mul(PRIME)
+    })
+}
+
+fn disk_fingerprint(path: &Path) -> Result<Option<DiskFingerprint>, VaultError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(DiskFingerprint(hash_bytes(&bytes)))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    bytes.iter().fold(OFFSET, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PublishControl {
+    /// Test-only fault injection for the pre-rename crash path. Not present in
+    /// production builds so the shipping write path carries no test seam.
+    #[cfg(test)]
+    fail_before_rename: bool,
+}
+
+fn atomic_write_markdown(
+    path: &Path,
+    bytes: &[u8],
+    control: PublishControl,
+) -> Result<(), VaultError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| VaultError::InvalidRelativePath(path.to_path_buf()))?;
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("markdown");
+    let temporary = parent.join(format!(".{file_name}.md-crdt.tmp"));
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    #[cfg(test)]
+    if control.fail_before_rename {
+        let _ = fs::remove_file(&temporary);
+        return Err(VaultError::Io(std::io::Error::other(
+            "injected failure before markdown rename",
+        )));
+    }
+    #[cfg(not(test))]
+    let _ = control;
+    fs::rename(&temporary, path)?;
+    sync_directory(parent)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn load_or_create_peer_id(vault: &Vault) -> Result<PeerId, VaultError> {
@@ -713,7 +1059,51 @@ mod tests {
     use super::*;
     use crate::doc::EquivalenceMode;
     use std::fs;
+    use std::sync::{Arc, Barrier};
     use tempfile::tempdir;
+
+    #[test]
+    fn concurrent_identity_creation_returns_one_persisted_value() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("identity");
+        let barrier = Arc::new(Barrier::new(8));
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                load_or_create_identity::<VaultId>(&path)
+            }));
+        }
+        let ids: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap().unwrap())
+            .collect();
+
+        assert!(ids.iter().all(|id| *id == ids[0]));
+        assert_eq!(parse_identity::<VaultId>(&path).unwrap(), ids[0]);
+    }
+
+    #[test]
+    fn failed_publication_before_rename_preserves_original_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        fs::write(&path, "original\n").unwrap();
+
+        let error = atomic_write_markdown(
+            &path,
+            b"replacement\n",
+            PublishControl {
+                fail_before_rename: true,
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, VaultError::Io(_)));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original\n");
+        assert!(!dir.path().join(".note.md.md-crdt.tmp").exists());
+    }
 
     #[test]
     fn open_creates_stable_peer_id_file() {
@@ -775,7 +1165,7 @@ mod tests {
                 .unwrap()
                 .insert_paragraph(None, "persist me")
                 .unwrap();
-            vs.save("note.md").unwrap();
+            vs.save_state("note.md").unwrap();
         }
 
         let mut vs = VaultSession::open(dir.path()).unwrap();
@@ -808,7 +1198,7 @@ mod tests {
                 .unwrap()
                 .insert_paragraph(None, "Y")
                 .unwrap();
-            vs.flush_all().unwrap();
+            vs.save_all_state().unwrap();
         }
 
         let mut vs = VaultSession::open(dir.path()).unwrap();
@@ -843,7 +1233,7 @@ mod tests {
     fn save_without_open_errors() {
         let dir = tempdir().unwrap();
         let vs = VaultSession::open(dir.path()).unwrap();
-        let err = vs.save("missing.md").unwrap_err();
+        let err = vs.save_state("missing.md").unwrap_err();
         assert!(matches!(err, VaultError::SessionNotOpen(_)));
     }
 }

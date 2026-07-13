@@ -51,6 +51,9 @@ pub mod codec;
 // Collaborative session (document + sync + peer clock)
 pub mod session;
 
+// Concrete workspace contract types
+pub mod workspace;
+
 // Optional: Persistent storage layer
 #[cfg(feature = "storage")]
 pub mod storage;
@@ -103,6 +106,11 @@ pub use codec::{
 pub use session::{
     CollaborativeDocument, DocumentDto, SNAPSHOT_FORMAT_VERSION, SessionApplyResult, SessionError,
     SessionSnapshot, SnapshotError,
+};
+
+pub use workspace::{
+    BatchReceipt, BlockDescriptor, BlockDescriptorKind, ChangeSummary, DiskFingerprint,
+    DocumentHandle, DocumentId, EditBatch, ExportOutcome, RevisionToken, VaultId,
 };
 
 // Re-export sync integrate types used with session

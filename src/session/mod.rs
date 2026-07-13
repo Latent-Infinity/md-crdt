@@ -125,6 +125,10 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         &self.document
     }
 
+    pub(crate) fn document_mut(&mut self) -> &mut Document {
+        &mut self.document
+    }
+
     pub fn state_vector(&self) -> StateVector {
         self.sync.state_vector()
     }
@@ -840,6 +844,7 @@ impl CollaborativeDocument<JsonOpCodec> {
     pub fn restore_from_snapshot(snap: SessionSnapshot) -> Result<Self, SnapshotError> {
         if snap.format_version != SNAPSHOT_FORMAT_VERSION
             && snap.format_version != snapshot::SNAPSHOT_FORMAT_VERSION_V1
+            && snap.format_version != snapshot::SNAPSHOT_FORMAT_VERSION_V2
         {
             return Err(SnapshotError::UnsupportedVersion(snap.format_version));
         }

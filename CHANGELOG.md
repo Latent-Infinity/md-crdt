@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Concrete workspace lifecycle (`md-crdt::workspace` / `filesync`)
+- Persistent, content-independent `VaultId` and `DocumentId` identities plus opaque `RevisionToken` and `DiskFingerprint` preconditions
+- Direct Rust workspace contracts for document handles, block descriptors, change summaries, edit batches, receipts, and export outcomes without a public generic engine trait
+- Path-scoped open, refresh, ingest, and durable Markdown export through `VaultSession`
+- Crash-safe single-file publication using temp write, file sync, atomic rename, and directory sync on Unix
+
+#### Lossless source-backed documents (`md-crdt::doc`)
+- Per-root-block source regions with owned leading trivia and dirty-region exact serialization
+- Byte-identical no-op serialization for original line endings, blank lines, marker style, opaque blocks, and final-newline state
+- Snapshot format v3 persistence for lossless source state while retaining v1/v2 reads
+- Scoped edits re-render only their owning region; unsupported raw blocks remain byte-preserved and reject structured text mutation
+
 #### Wire Codec (`md-crdt::codec`)
 - Versioned `Envelope` / `DocOp` DTOs for collaborative ops (`InsertBlock`, `DeleteBlock`, `InsertText`, `DeleteText`)
 - `JsonOpCodec` encode/decode with nest-depth limits and unknown-version rejection
@@ -57,12 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `VaultSession`: lazy `Path` → `CollaborativeDocument` map with shared vault peer
 - `.mdcrdt/peer_id` load-or-create (non-zero `u64`)
 - Per-file session snapshots under `.mdcrdt/sessions/` (separate from fingerprint `state/`)
-- `session_mut` / `save` / `save_all` / `flush_all` / `close`
+- `session_mut` / `save_state` / `save_all_state` / `close`; snapshot persistence is explicitly separate from Markdown export
 - Path-scoped `state_vector` / `encode_changes_since` / `apply_remote`; remote application persists the affected session snapshot
 - Two-vault coverage for concurrent external text edits, bidirectional delta exchange, convergence, and reopen persistence
 
 #### Vault structure ingest (`md-crdt::filesync`)
-- `VaultSession::ingest_all` / `ingest_file`: content-hash gate → parse → `match_blocks` → structure ops
+- `VaultSession::ingest_all` / `ingest_markdown`: content-hash gate → parse → `match_blocks` → structure ops
 - Removed blocks → `delete_block`; added paragraphs → N6-d `insert_paragraph`
 - `IngestReport { files_noop, files_changed, ops_emitted }`; CLI `ingest`/`sync` use `VaultSession`
 - Matched-block text diffs deferred (no grapheme LCS yet)

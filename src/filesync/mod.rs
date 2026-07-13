@@ -37,6 +37,8 @@ pub enum VaultError {
     Serialization,
     #[error("invalid peer id in .mdcrdt/peer_id: {0}")]
     InvalidPeerId(String),
+    #[error("invalid persistent workspace identity in {path}: {value}")]
+    InvalidIdentity { path: PathBuf, value: String },
     #[error("path must be relative to the vault root: {0}")]
     InvalidRelativePath(PathBuf),
     #[error("session not open for path: {0}")]
@@ -47,6 +49,16 @@ pub enum VaultError {
     Session(String),
     #[error("unsupported block kind during ingest: {0}")]
     UnsupportedIngestBlock(&'static str),
+    #[error("stale document revision: expected {expected}, actual {actual}")]
+    StaleRevision {
+        expected: crate::RevisionToken,
+        actual: crate::RevisionToken,
+    },
+    #[error("stale markdown bytes: expected {expected:?}, actual {actual:?}")]
+    StaleDisk {
+        expected: Option<crate::DiskFingerprint>,
+        actual: Option<crate::DiskFingerprint>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]

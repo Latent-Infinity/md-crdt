@@ -4,10 +4,15 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 | Field | Value |
 | --- | --- |
-| **Plan** | `docs/architecture-evolution.md` (Draft revision 8) |
+| **Plan** | `docs/architecture-evolution.md` (Draft revision 9) |
 | **Last updated** | 2026-07-13 |
 | **Tracking unit** | PR slices under design phases A–L |
 | **Joint consumer plan** | `../md-mcp/docs/joint-md-crdt-v2-implementation-plan.md` |
+
+**Release compatibility policy:** only V3 session snapshots and current V2 dual-slot storage are
+accepted. Earlier completed entries record what landed historically; PR-35 removes the temporary
+snapshot V1/V2 and storage V1 readers, upgrade branches, and fixtures. Older vault state must be
+reinitialized and re-ingested from Markdown.
 
 ## Progress
 
@@ -31,15 +36,15 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-13** SplitBlock / MergeBlocks | **done** | Atomic text-unit transfer for paragraph/heading siblings; nested APIs; identity-preserving split/merge with collision fallback |
 | **PR-14** Block index / cached state vector / shared payloads | **done** | Nested BlockId path index; O(peers) state vector; `Arc<[u8]>` operation payloads; Criterion before/after |
 | **PR-15** Incremental sequence order | **done** | Sibling-local insertion behind default-off `sequence_incremental`; debug dual-path check; top-level/nested Criterion results |
-| **PR-16** Storage V2 generation protocol | **done** | Frozen V1 dual-read fixture; V2 CRC trailer; alternating metadata/payload slots; file + directory sync; crash fallback |
+| **PR-16** Storage V2 generation protocol | **done** | V2 CRC trailer; alternating metadata/payload slots; file + directory sync; crash fallback. Temporary V1 reader is scheduled for deletion in PR-35. |
 | **PR-17** Criterion benchmark suite | **done** | Sequence, nested text, public `insert_text`, serialization, block index, state-vector, and change-encoding probes; default + incremental `just bench` |
 | **PR-18** Module splits | **done** | Document parser/serializer, session wire translation/application, and sync validation extracted behind unchanged module façades |
 | **PR-19** FFI publish decision | **done** | `md-crdt-ffi` remains unpublished and API-empty; placeholder function removed; manifest/README honesty enforced by test |
 | **PR-20** CLI/session examples | **done** | Global `--vault` root; accurate command help; high-level peer exchange and multi-document `VaultSession` README workflows |
 | **Phase D exchange follow-up** | **done** | Path-scoped state-vector/delta/apply APIs; concurrent external edits converge across two vaults and persist across reopen |
-| **PR-21** Joint workspace contract | **planned** | Persistent vault/document identity, opaque revisions, direct Rust consumer contract |
-| **PR-22** Lossless source model | **planned** | Preserve untouched bytes and opaque syntax; dirty-region serialization |
-| **PR-23** Stateful ingest/durable export | **planned** | Revision-checked refresh and crash-safe Markdown publication |
+| **PR-21** Joint workspace contract | **done** | Persistent vault/document identity, opaque revisions, direct Rust consumer contract |
+| **PR-22** Lossless source model | **done** | Per-root source regions preserve untouched bytes and opaque syntax |
+| **PR-23** Stateful ingest/durable export | **done** | Revision-checked refresh and crash-safe single-document Markdown publication |
 | **PR-24** Inline marks/links | **planned** | One unit-anchored semantic model with preserved source trivia |
 | **PR-25** Collaborative frontmatter | **planned** | Structured field operations plus opaque lossless fallback |
 | **PR-26** Block/section move | **planned** | Identity-preserving atomic range moves with frozen concurrency semantics |
@@ -48,16 +53,17 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-29** Descriptors/change summaries | **planned** | Borrow-first hierarchy and affected-id deltas for bounded consumers |
 | **PR-30** Atomic document batches | **planned** | Expected-revision precondition, no partial mutation/clock burn, compact receipt |
 | **PR-31** File lifecycle/multi-doc transaction | **planned** | Create/rename/delete and crash-recoverable cross-document publication |
-| **PR-32** V1 cleanup/op integrity | **planned** | Proved V1 retirement plus checksummed operation segments |
+| **PR-32** Operation-segment integrity | **planned** | Checksummed/length-framed operation segments with prior-state recovery |
 | **PR-33** History compaction/rebase | **planned** | Bounded growth with explicit lagging-peer checkpoint contract |
-| **PR-34** Frozen `md-mcp` contract | **planned** | Joint consumer fixtures, temporary-surface removal, release acceptance |
+| **PR-34** Frozen `md-mcp` contract | **planned** | Joint consumer fixtures and temporary-surface removal before the final purge |
+| **PR-35** Final compatibility purge | **planned** | Remove snapshot V1/V2 and storage V1 readers/fixtures; accept current formats only |
 
 ## Phase B checklist
 
 - [x] In-memory paragraph as `Sequence<TextUnit>` (PR-06a)
 - [x] Parse + serialize round-trip on units
 - [x] insert_text inserts grapheme units (local API)
-- [x] Snapshot format v2 + v1 string upgrade path
+- [x] Unit-backed snapshot format landed; its temporary legacy readers are scheduled for PR-35 deletion
 - [x] Wire InsertText/DeleteText + session commits (PR-06b)
 - [x] Concurrent multi-peer paragraph edits (PR-06b)
 
@@ -67,7 +73,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | --- | --- | --- |
 | PR-05 before 06a? | **Skip optional PR-05** | MVP gate is 01–04 + 06a/b + 07 |
 | Unit OpIds on skeleton expand | `parent_elem.counter + 1 + i` same peer | Deterministic across peers; wire still only carries block id + string |
-| Snapshot paragraph body | v2 `units` list; accept v1 `text` string | Offline upgrade without live N6-c |
+| Snapshot paragraph body | Current V3 snapshot only at release; remove V1/V2 readers in PR-35 | The joint pre-1.0 release has no migration obligation; one accepted representation reduces branches and synthetic-id risk |
 | Span-aware sync (audit) | `Operation` covers a counter range `[e-span+1, e]`; `Operation.id` = max embedded id (N1); readiness gates on range start vs frontier | Lets one op reserve a contiguous id range (block + G units) without sparse op ids; span 1 = old behavior; unblocks multi-unit InsertText |
 | Unit-mode default | `CollaborativeDocument::new` → `unit_mode = true` | Phase B cutover; string-mode still available via `with_codec(..., false)` |
 | N6-d insert_paragraph | empty `InsertBlock` then `InsertText` (two commits) | Pure N1–N4; no skeleton range-seed |
@@ -116,7 +122,11 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Replacement mark policy | Split/trim/project anchored intervals deterministically; never silently broaden | Preserve justified formatting without inventing marked content |
 | `md-mcp` boundary | Core owns identity/semantics/deltas/batches; MCP owns schemas/search/cursors/token budgets | Correctness stays at the state owner and presentation policy at the protocol boundary |
 | Multi-document publication | Intent journal with idempotent recovery | Cross-file edits cannot report success with partially published Markdown |
-| Storage retirement | Two valid V2 generations before V1 unlink; explicit checkpoint/rebase before history pruning | Cleanup and compaction must preserve the last valid recovery path |
+| Storage compatibility | Current V2 dual-slot format only at release; remove V1 reader/fixture and upgrade branches in PR-35 | Two V2 generations provide crash recovery without preserving an unpublished legacy format |
+| Lossless representation ablation | Per-root semantic block source regions with owned leading trivia | Smallest option that preserves unsupported bytes and localizes edits. A piece table still needs semantic ownership mapping; a compact CST duplicates the authoritative CRDT tree and increases synchronization risk. |
+| Workspace identity files | UUID text in `.mdcrdt/vault_id` and path-scoped `.mdcrdt/document_ids/` entries, published durably | Content-independent handles survive edits/reopen; invalid identity bytes fail closed instead of silently replacing identity. |
+| Revision representation | Opaque 128-bit digest of the session snapshot | Detects observable state changes without exposing log or hashing details as API. |
+| Markdown publication scope | Durable `export_markdown` for one document; no loop-shaped `export_all_markdown` | A loop can partially publish and imply false atomicity. Cross-document publication waits for PR-31's intent journal and recovery contract. |
 
 ## Phase C checklist
 
@@ -158,7 +168,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Incremental sequence ordering behind a soakable, default-off flag (PR-15)
 - [x] Run-length text evaluated and deferred because profiling did not demand it (PR-15)
 
-## Phase G checklist
+## Phase G checklist — historical implementation; legacy reader removed by PR-35
 
 - [x] Dedicated V1 decoder exercised by frozen pre-V2 bytes
 - [x] V2 body uses generation metadata plus a little-endian CRC32 trailer
@@ -177,14 +187,18 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] FFI implementation or explicit unpublish decision (PR-19: unpublish)
 - [x] CLI and README multi-document workflow polish (PR-20)
 
-## Phase I checklist — planned
+## Phase I checklist — complete
 
-- [ ] PR-21: freeze persistent identity, opaque revision, descriptor/summary, batch/receipt, and export contracts
-- [ ] PR-21: companion `md-mcp` fixtures compile without a public generic engine trait
-- [ ] PR-22: unchanged open/export is byte-identical, including opaque unsupported syntax
-- [ ] PR-22: one-word edit changes only its owned source region
-- [ ] PR-23: refresh/ingest enforce expected revision or fingerprint
-- [ ] PR-23: Markdown export is durable and separately named from snapshot save
+- [x] PR-21: freeze persistent identity, opaque revision, descriptor/summary, batch/receipt, and export contracts
+- [x] PR-21: local direct-consumer compile fixture freezes the concrete API without a public generic engine trait
+- [x] PR-22: unchanged open/export is byte-identical, including opaque unsupported syntax
+- [x] PR-22: one-word edit changes only its owned source region
+- [x] PR-23: refresh/ingest enforce expected revision or fingerprint without mutation on rejection
+- [x] PR-23: single-document Markdown export is durable and separately named from snapshot save
+
+The companion `md-mcp` cutover fixture remains owned by its repository and is part of the joint
+PR-34 release gate. This repository's Phase I fixture is `tests/workspace_contract.rs`; no sibling
+repository was modified during this slice.
 
 ## Phase J checklist — planned
 
@@ -206,11 +220,13 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 ## Phase L checklist — planned
 
-- [ ] PR-32: retain V1 until two independent V2 generations validate, then durably remove it
 - [ ] PR-32: operation segments reject corruption/truncation and preserve the prior readable state
 - [ ] PR-33: checkpoint/compaction bounds history and deterministically rebases lagging peers
 - [ ] PR-34: pinned `md-mcp` consumer suite passes; temporary adapters and duplicate engines are deleted
-- [ ] Joint token/task-success and lossless/crash-recovery release gates pass
+- [ ] PR-35: delete session-snapshot V1/V2 and storage V1 readers, constants, upgrade branches, and fixtures
+- [ ] PR-35: reject every non-current persisted format with an explicit reinitialize/re-ingest error
+- [ ] PR-35: remove remaining deprecated compatibility surfaces unused by the pinned consumer
+- [ ] Joint token/task-success and lossless/crash-recovery release gates pass again after cleanup
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -385,10 +401,24 @@ The session result retains the same scaling signal as the lower-level sequence p
 
 **TDD:** `two_vaults_exchange_external_edits_and_persist_convergence` failed first at compile time because `VaultSession` exposed none of the path-level state-vector, delta, or remote-apply methods. It now covers all new production lines and the persistence boundary.
 
-**Audit (verified):** the three path-scoped methods are thin, correct delegations over the already-audited `CollaborativeDocument` sync; `apply_remote` persists via `self.save`, and `ingest_file` also persists (`self.save` + `write_last_flushed`), so the "persist across reopen" property holds for both the ingest and exchange paths — not only the exchanged case the test drives. The test correctly asserts *convergence* (equal state vectors + serialized text) rather than a specific interleaving of the two concurrent external edits, which is the right CRDT contract.
+**Audit (verified):** the three path-scoped methods are thin, correct delegations over the already-audited `CollaborativeDocument` sync; `apply_remote` persists via `save_state`, and Markdown ingest also persists (`save_state` + `write_last_flushed`), so the "persist across reopen" property holds for both the ingest and exchange paths — not only the exchanged case the test drives. The test correctly asserts *convergence* (equal state vectors + serialized text) rather than a specific interleaving of the two concurrent external edits, which is the right CRDT contract.
+
+## Audit — PR-21 / PR-22 / PR-23 (fanned out over three verifiers + API-surface diff)
+
+**PR-21 workspace contract — PARTIAL, hardened.** Identity persistence is real (`VaultId`/`DocumentId` are `Uuid` newtypes persisted to `.mdcrdt/vault_id` and `.mdcrdt/document_ids/`, atomic write, survive reopen — `workspace_contract.rs`). The wired half (identity + revision + disk-fingerprint + handle + export) is genuinely implemented and precondition-checked. Findings: (a) **fixed** — `RevisionToken` derived `Ord`/`PartialOrd` despite being a content digest (never used as a key or sorted); removed the derives before the joint consumer can write meaningless `new > old` comparisons. (b) **Documented, not a defect** — `EditBatch`/`BatchReceipt`/`ChangeSummary`/`BlockDescriptor`/`BlockDescriptorKind` are defined-but-unwired: this is the *deliberate contract freeze* the plan schedules for PR-29/PR-30, not accidental dead code. (c) **Recommendation (not changed — frozen external-contract shape)**: `DiskFingerprint(pub u64)` exposes its raw hash; consider sealing it behind an accessor to match `RevisionToken`'s opaque pattern before md-mcp consumes it.
+
+**PR-22 lossless source — TRUE.** Losslessness is genuinely correct, not just the no-op case: `DocumentSource` slices untouched roots out of an *immutable* `original` string and re-serializes only `dirty` roots, so an edit provably cannot corrupt another region's bytes; `adopt_source_from` drops the source entirely (→ canonical serialization) on any block count/kind divergence, a safety net against stale bytes. Independent checks confirmed multi-region, unicode, and nested-containing-root cases hold byte-exact. **Coverage gap closed:** added `untouched_blockquote_root_with_nested_children_stays_byte_exact` and `multi_region_edit_leaves_untouched_unicode_region_byte_identical` (`doc_lossless_source.rs`) — the latter guards multibyte slice-boundary safety. (Note: nested-child *edit* losslessness is a session-level path — `Document::insert_text` is top-level-only — verified manually by the auditor; a session-level test remains a future coverage item. Latent rough edges, non-blocking: top-level reorder trivia isn't faithfully reproduced; `blocks_mut()` drops the whole source.)
+
+**PR-23 stateful ingest/durable export — TRUE.** Export is genuinely crash-safe (`atomic_write_markdown` = temp + `sync_all` + rename + dir fsync, mirroring the storage layer) and precondition-guarded: `verify_revision`/`verify_disk` run *before* any filesystem mutation, returning `StaleRevision`/`StaleDisk` with the target file untouched (well-tested). Findings: (a) **fixed** — `PublishControl.fail_before_rename` fault-injection was compiled into the production write path; gated it behind `#[cfg(test)]`. (b) **TDD gaps closed** — added `re_export_of_unchanged_document_does_not_rewrite` (idempotence; also pins revision stability across a no-op export) and `export_publishes_into_a_nested_subdirectory` (subdir temp/rename/dir-fsync path). Minor: `sync_directory` is duplicated between `filesync/session.rs` and `storage/mod.rs` (DRY nit, left as-is).
+
+**Plan consistency:** fixed a version drift — plan-state referenced the design doc as revision 8 while `architecture-evolution.md` is revision 9.
 
 ## Gate
 
+- `just check` — **passed** after PR-21/22/23 audit (403 test-results, 0 warnings; +4 tests: export idempotence/nested-dir, lossless nested-root/unicode; removed misleading `RevisionToken: Ord`; gated the export test seam behind `cfg(test)`)
+- `cargo test --test workspace_contract --test doc_lossless_source --test filesync_export` — **passed** for PR-21–PR-23 (14 tests: persistent identity and opaque contract types, source-local exact serialization, stale refresh rejection, and durable export)
+- `just check` — **passed** for Phase I (format, all-target/all-feature Clippy with warnings denied, full workspace tests, and 7 doctests)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed** for Phase I; 92.82% repository line coverage / 91.15% region coverage, above the 92.12% / 90.69% prior baseline. The main changed production files are 100% line-covered (`workspace.rs`), 98.77% (`doc/source.rs`), 99.17% (`doc/parser.rs`), 90.28% (`doc/mod.rs`), and 92.21% (`filesync/session.rs`); snapshot source-state integration is exercised by JSON and persisted-session reopen tests.
 - `cargo test --test filesync_vault_session` — **passed** for the Phase D exchange follow-up (5 tests)
 - `just check` — **passed** after audit (0 warnings; README wired into the doctest harness — 6 doctests, all green under `-Dwarnings`)
 - `just check` — **passed** for the Phase D exchange follow-up (377 tests, 0 warnings)

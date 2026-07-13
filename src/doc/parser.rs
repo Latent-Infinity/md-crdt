@@ -4,7 +4,8 @@ pub struct Parser;
 
 impl Parser {
     pub fn parse(text: &str) -> Document {
-        let lines: Vec<&str> = text.lines().collect();
+        let source_lines = source_lines(text);
+        let lines: Vec<&str> = source_lines.iter().map(|line| line.text).collect();
         let mut frontmatter = None;
         let mut start_index = 0;
 
@@ -28,7 +29,26 @@ impl Parser {
 
         let mut counter = 1u64;
         let mut blocks = Vec::new();
-        parse_blocks(&lines[start_index..], &mut counter, &mut blocks);
+        let mut line_spans = Vec::new();
+        parse_blocks_with_spans(
+            &lines[start_index..],
+            &mut counter,
+            &mut blocks,
+            Some(&mut line_spans),
+        );
+        let byte_spans = line_spans
+            .into_iter()
+            .map(|(id, span)| {
+                let start_line = start_index + span.start;
+                let end_line = start_index + span.end - 1;
+                (
+                    id,
+                    source_lines[start_line].start,
+                    source_lines[end_line].content_end,
+                )
+            })
+            .collect();
+        let source = DocumentSource::new(text.to_string(), byte_spans, &blocks);
 
         let sequence = Sequence::from_ordered(
             blocks
@@ -40,13 +60,60 @@ impl Parser {
         Document {
             frontmatter,
             blocks: IndexedBlocks::new(sequence),
-            raw_source: Some(text.to_string()),
+            source: Some(source),
             block_index: RwLock::new(None),
         }
     }
 }
 
 fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
+    parse_blocks_with_spans(lines, counter, out, None);
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LineSpan {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug)]
+struct SourceLine<'a> {
+    text: &'a str,
+    start: usize,
+    content_end: usize,
+}
+
+fn source_lines(text: &str) -> Vec<SourceLine<'_>> {
+    let mut start = 0usize;
+    text.split_inclusive('\n')
+        .map(|segment| {
+            let full_end = start + segment.len();
+            let has_newline = segment.ends_with('\n');
+            let without_newline = segment.strip_suffix('\n').unwrap_or(segment);
+            let logical = if has_newline {
+                without_newline
+                    .strip_suffix('\r')
+                    .unwrap_or(without_newline)
+            } else {
+                without_newline
+            };
+            let line = SourceLine {
+                text: logical,
+                start,
+                content_end: start + logical.len(),
+            };
+            start = full_end;
+            line
+        })
+        .collect()
+}
+
+fn parse_blocks_with_spans(
+    lines: &[&str],
+    counter: &mut u64,
+    out: &mut Vec<Block>,
+    mut spans: Option<&mut Vec<(BlockId, LineSpan)>>,
+) {
     let mut index = 0;
     while index < lines.len() {
         let line = lines[index];
@@ -79,8 +146,10 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
                 },
                 next_op_id(counter),
             );
+            let next = (end_index + 1).min(lines.len());
+            record_span(&mut spans, block.id, index, next);
             out.push(block);
-            index = (end_index + 1).min(lines.len());
+            index = next;
             continue;
         }
 
@@ -106,6 +175,7 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
                     .collect(),
             );
             let block = Block::new(BlockKind::BlockQuote { children }, next_op_id(counter));
+            record_span(&mut spans, block.id, index, end_index);
             out.push(block);
             index = end_index;
             continue;
@@ -127,6 +197,7 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
                 },
                 next_op_id(counter),
             );
+            record_span(&mut spans, block.id, index, end_index);
             out.push(block);
             index = end_index;
             continue;
@@ -151,7 +222,9 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
                 after = Some(row_id);
                 end_index += 1;
             }
-            out.push(Block::new(BlockKind::Table { table }, elem_id));
+            let block = Block::new(BlockKind::Table { table }, elem_id);
+            record_span(&mut spans, block.id, index, end_index);
+            out.push(block);
             index = end_index;
             continue;
         }
@@ -160,7 +233,9 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
         if let Some((level, title)) = parse_atx_heading(trimmed) {
             let elem_id = next_op_id(counter);
             let text = units_from_str(title, counter, 0);
-            out.push(Block::new(BlockKind::Heading { level, text }, elem_id));
+            let block = Block::new(BlockKind::Heading { level, text }, elem_id);
+            record_span(&mut spans, block.id, index, index + 1);
+            out.push(block);
             index += 1;
             continue;
         }
@@ -168,6 +243,7 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
         // Unordered / ordered list
         if is_list_start(trimmed) {
             let (list_block, next) = parse_list(lines, index, counter, indent_of(line));
+            record_span(&mut spans, list_block.id, index, next);
             out.push(list_block);
             index = next;
             continue;
@@ -180,7 +256,9 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
             let title = trimmed;
             let elem_id = next_op_id(counter);
             let text = units_from_str(title, counter, 0);
-            out.push(Block::new(BlockKind::Heading { level, text }, elem_id));
+            let block = Block::new(BlockKind::Heading { level, text }, elem_id);
+            record_span(&mut spans, block.id, index, index + 2);
+            out.push(block);
             index += 2;
             continue;
         }
@@ -206,8 +284,21 @@ fn parse_blocks(lines: &[&str], counter: &mut u64, out: &mut Vec<Block>) {
         }
         let elem_id = next_op_id(counter);
         let text = units_from_str(&paragraph_lines.join("\n"), counter, 0);
-        out.push(Block::new(BlockKind::Paragraph { text }, elem_id));
+        let block = Block::new(BlockKind::Paragraph { text }, elem_id);
+        record_span(&mut spans, block.id, index, end_index);
+        out.push(block);
         index = end_index;
+    }
+}
+
+fn record_span(
+    spans: &mut Option<&mut Vec<(BlockId, LineSpan)>>,
+    id: BlockId,
+    start: usize,
+    end: usize,
+) {
+    if let Some(spans) = spans.as_deref_mut() {
+        spans.push((id, LineSpan { start, end }));
     }
 }
 
