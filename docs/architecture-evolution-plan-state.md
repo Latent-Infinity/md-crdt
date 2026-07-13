@@ -5,7 +5,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Field | Value |
 | --- | --- |
 | **Plan** | `docs/architecture-evolution.md` (Draft revision 6) |
-| **Last updated** | 2026-07-12 |
+| **Last updated** | 2026-07-13 |
 | **Tracking unit** | PR slices under design phases A–H |
 
 ## Progress
@@ -34,7 +34,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-17** Criterion benchmark suite | **done** | Sequence, nested text, public `insert_text`, serialization, block index, state-vector, and change-encoding probes; default + incremental `just bench` |
 | **PR-18** Module splits | **done** | Document parser/serializer, session wire translation/application, and sync validation extracted behind unchanged module façades |
 | **PR-19** FFI publish decision | **done** | `md-crdt-ffi` remains unpublished and API-empty; placeholder function removed; manifest/README honesty enforced by test |
-| PR-20 | pending | CLI/session examples and README multi-document workflow polish |
+| **PR-20** CLI/session examples | **done** | Global `--vault` root; accurate command help; high-level peer exchange and multi-document `VaultSession` README workflows |
 
 ## Phase B checklist
 
@@ -88,6 +88,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Public text benchmark setup | Restore a prepared session snapshot outside the timed interval, then time one middle `insert_text` | Measures block lookup, unit construction, wire encoding, document apply, and sync-log integration without charging fixture construction |
 | Module split boundaries | Split by responsibility, not equal line counts | Parser/serializer, wire translation/application, and validation are cohesive seams with narrow parent access; arbitrary chunks would reduce file size while increasing cross-module coupling |
 | FFI release surface | Keep `md-crdt-ffi` unpublished and expose no placeholder API | A real C ABI needs explicit ownership, allocation, UTF-8, error, panic, and header contracts. No target language or consumer is defined, so publishing a token surface would create unsupported compatibility debt |
+| CLI vault selection | One global `--vault <PATH>` with `.` as the default | Makes every existing command usable from outside the vault without duplicating path arguments or inventing new transport/export commands |
 
 ## Phase C checklist
 
@@ -137,7 +138,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Payload and superblock temp files are synced before rename; containing directory is synced on Unix
 - [x] Missing/corrupt newest metadata and interrupted payload publication fall back to the prior valid generation
 
-## Phase H checklist (partial)
+## Phase H checklist — complete
 
 - [x] Criterion suite exists under `benches/` and is registered in Cargo
 - [x] Sequence middle insert and nested `Sequence<TextUnit>` insert at 1k/10k
@@ -146,7 +147,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] `just bench` runs default and incremental ordering configurations
 - [x] Module splits after churn settles (PR-18)
 - [x] FFI implementation or explicit unpublish decision (PR-19: unpublish)
-- [ ] CLI and README multi-document workflow polish (PR-20)
+- [x] CLI and README multi-document workflow polish (PR-20)
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -297,8 +298,23 @@ The session result retains the same scaling signal as the lower-level sequence p
 
 **Audit (verified):** `md-crdt-ffi/Cargo.toml` has `publish = false`, an honest description, empty `[dependencies]`, and no `[lib] crate-type` (so no `cdylib`/`staticlib` native artifact); `src/lib.rs` is documentation-only with the placeholder `add` removed; README and CONTRIBUTING match the honesty strings the test pins. **Test-strength gap closed:** the contract only asserted `!source.contains("pub fn add")` — the *specific* old placeholder name — so a future `pub extern "C" fn …` or `#[no_mangle]` would slip past the very test meant to keep the crate API-empty. Generalized `packaging_contract.rs` to forbid any exported/foreign surface (`pub fn`/`pub struct`/`pub enum`/`pub extern`/`extern "C"`/`#[no_mangle]`/`#[unsafe(no_mangle)]`), so the "API-empty" claim is now actually enforced.
 
+## PR-20 CLI and multi-document workflows — **done**
+
+- Every command accepts a global `--vault <PATH>` and retains the current directory as the default.
+- Command help identifies `ingest`/`sync` as all-file, per-session ingest and describes `status`/`flush` as fingerprint tracking.
+- README peer exchange uses `CollaborativeDocument::{encode_changes_since,apply_remote}` instead of raw opaque `SyncState` payloads.
+- README multi-document usage uses `VaultSession`, showing one stable peer shared by independent path-keyed documents and snapshots.
+- The CLI documentation states the actual boundary: `sync` emits local operations but does not transport them, and `flush` records fingerprints rather than exporting CRDT session state.
+
+**Ablation:** a docs-only wording pass was rejected because it left callers tied to changing the process working directory. New exchange/export subcommands were also rejected because the plan defines no transport, remote endpoint, authentication, or snapshot-to-Markdown export contract. A single global vault-root option improves every existing command without expanding protocol or persistence scope.
+
+**TDD:** `help_describes_vault_root_and_multi_document_commands` failed first because help exposed neither `--vault` nor all-file semantics. `vault_option_ingests_multiple_documents_outside_current_directory` failed first because Clap rejected the option; it now proves two vault-relative files create independent session snapshot paths when invoked from outside the vault.
+
 ## Gate
 
+- `cargo test --test sync` — **passed** for PR-20 (11 CLI tests, including the two new red/green workflow tests)
+- `just check` — **passed** for PR-20 (376 tests, 0 warnings)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed** for PR-20; 92.09% repository line coverage / 90.72% region coverage, up from 92.03% / 90.66%, with missed lines reduced from 565 to 560; all 7 CLI functions executed
 - `cargo test -p md-crdt-ffi --test packaging_contract` — **passed**; unpublished/no-native-artifact/no-placeholder/README contract enforced
 - `just check` — **passed** after PR-19 audit (374 tests, 0 warnings; generalized the API-empty contract assertion)
 - `just check` — **passed** for PR-19 (374 tests, 0 warnings)

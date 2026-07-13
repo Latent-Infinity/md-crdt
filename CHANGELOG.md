@@ -110,6 +110,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### FFI workspace packaging (`md-crdt-ffi`)
 - Explicitly retained as an unpublished, API-empty workspace placeholder; removed the template `add` function and documented that no C ABI or supported language bindings exist
 
+#### CLI and multi-document workflows
+- Global `--vault <PATH>` option targets any vault root from any working directory while retaining `.` as the default
+- CLI help now describes per-file collaborative ingest and distinguishes fingerprint tracking from session persistence
+- README examples now use `CollaborativeDocument` for peer exchange and `VaultSession` for independent multi-file sessions with one shared vault peer
+- Documented that CLI `sync` performs local ingest only; host applications provide transport, and `flush` records status fingerprints rather than exporting session snapshots
+
 ## [0.1.0] - 2025-02-04
 
 ### Added

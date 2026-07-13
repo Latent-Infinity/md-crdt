@@ -1,30 +1,38 @@
 use clap::{Parser, Subcommand};
 use md_crdt::filesync::{Vault, VaultSession};
 use serde::Serialize;
-use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author,
+    version,
+    about = "Manage collaborative Markdown vaults",
+    long_about = None
+)]
 struct Cli {
+    /// Vault root containing all Markdown files managed by this command
+    #[arg(long, global = true, value_name = "PATH", default_value = ".")]
+    vault: PathBuf,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Shows the status of files in the vault
+    /// Show fingerprint tracking status for all Markdown files
     Status {
         #[arg(long)]
         json: bool,
     },
-    /// Initialize a vault
+    /// Initialize metadata for the vault
     Init,
-    /// Flush current state to storage
+    /// Record current Markdown fingerprints for status tracking
     Flush,
-    /// Ingest changes from files
+    /// Ingest all Markdown files into per-file collaborative sessions
     Ingest,
-    /// Sync (ingest + report dirty)
+    /// Ingest all Markdown files and report whether operations were emitted
     Sync,
 }
 
@@ -38,17 +46,16 @@ fn main() {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Status { json } => status_command(*json),
-        Commands::Init => init_command(),
-        Commands::Flush => flush_command(),
-        Commands::Ingest => ingest_command(),
-        Commands::Sync => sync_command(),
+        Commands::Status { json } => status_command(&cli.vault, *json),
+        Commands::Init => init_command(&cli.vault),
+        Commands::Flush => flush_command(&cli.vault),
+        Commands::Ingest => ingest_command(&cli.vault),
+        Commands::Sync => sync_command(&cli.vault),
     }
 }
 
-fn status_command(json: bool) {
-    let current_dir = current_dir_or_exit();
-    let vault = match Vault::open(&current_dir) {
+fn status_command(vault_root: &Path, json: bool) {
+    let vault = match Vault::open(vault_root) {
         Ok(vault) => vault,
         Err(err) => {
             eprintln!("Error: {err}");
@@ -56,12 +63,12 @@ fn status_command(json: bool) {
         }
     };
     let files = vault.files();
-    let state_root = current_dir.join(".mdcrdt").join("state");
+    let state_root = vault.path.join(".mdcrdt").join("state");
 
     let mut statuses = Vec::new();
     for file in files {
         let relative_path = file
-            .strip_prefix(&current_dir)
+            .strip_prefix(&vault.path)
             .unwrap_or(&file)
             .to_string_lossy()
             .into_owned();
@@ -110,9 +117,8 @@ fn status_command(json: bool) {
     }
 }
 
-fn init_command() {
-    let current_dir = current_dir_or_exit();
-    let vault = match Vault::open(&current_dir) {
+fn init_command(vault_root: &Path) {
+    let vault = match Vault::open(vault_root) {
         Ok(vault) => vault,
         Err(err) => {
             eprintln!("Error: {err}");
@@ -126,9 +132,8 @@ fn init_command() {
     println!("Initialized vault");
 }
 
-fn flush_command() {
-    let current_dir = current_dir_or_exit();
-    let vault = match Vault::open(&current_dir) {
+fn flush_command(vault_root: &Path) {
+    let vault = match Vault::open(vault_root) {
         Ok(vault) => vault,
         Err(err) => {
             eprintln!("Error: {err}");
@@ -142,9 +147,8 @@ fn flush_command() {
     println!("Flushed state");
 }
 
-fn ingest_command() {
-    let current_dir = current_dir_or_exit();
-    let mut session = match VaultSession::open(&current_dir) {
+fn ingest_command(vault_root: &Path) {
+    let mut session = match VaultSession::open(vault_root) {
         Ok(s) => s,
         Err(err) => {
             eprintln!("Error: {err}");
@@ -168,9 +172,8 @@ fn ingest_command() {
     }
 }
 
-fn sync_command() {
-    let current_dir = current_dir_or_exit();
-    let mut session = match VaultSession::open(&current_dir) {
+fn sync_command(vault_root: &Path) {
+    let mut session = match VaultSession::open(vault_root) {
         Ok(s) => s,
         Err(err) => {
             eprintln!("Error: {err}");
@@ -194,15 +197,5 @@ fn sync_command() {
             report.files_changed, report.ops_emitted
         );
         std::process::exit(2);
-    }
-}
-
-fn current_dir_or_exit() -> PathBuf {
-    match env::current_dir() {
-        Ok(dir) => dir,
-        Err(err) => {
-            eprintln!("Error: failed to get current directory: {err}");
-            std::process::exit(1);
-        }
     }
 }

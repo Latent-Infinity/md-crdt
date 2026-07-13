@@ -53,55 +53,73 @@ let op = EditOp::InsertText(InsertTextRun {
 doc.raw_apply_op(op, false).unwrap();
 ```
 
-Sync changes with `md-crdt` sync APIs:
+Exchange collaborative document changes between peers:
 
 ```rust
-use md_crdt::{OpId, Operation, StateVector, SyncState};
+use md_crdt::{CollaborativeDocument, EquivalenceMode, ValidationLimits};
 
-let mut doc_a = SyncState::new();
-let mut doc_b = SyncState::new();
+let mut alice = CollaborativeDocument::new(1);
+let mut bob = CollaborativeDocument::new(2);
 
-doc_a.apply_op(Operation {
-    id: OpId { counter: 1, peer: 1 },
-    payload: vec![1, 2, 3],
-});
+alice.insert_paragraph(None, "Hello from Alice")?;
+let changes = alice.encode_changes_since(&bob.state_vector());
+bob.apply_remote(changes, &ValidationLimits::default())?;
 
-let since = StateVector::new();
-let change = doc_a.encode_changes_since(&since);
-let _result = doc_b.apply_changes(change);
+assert_eq!(
+    bob.document().serialize(EquivalenceMode::Structural),
+    "Hello from Alice"
+);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Work with a vault using `md-crdt` filesync APIs:
+Manage independent collaborative sessions for multiple files in one vault:
 
 ```rust
-use md_crdt::Vault;
+use md_crdt::filesync::VaultSession;
 
-let vault = Vault::open(".")?;
-vault.init()?;
-vault.ingest()?;
-vault.flush()?;
+let mut vault = VaultSession::open("./notes")?;
+let report = vault.ingest_all()?;
+println!("ingested {} changed files", report.files_changed);
+
+let shared_peer = vault.peer();
+for path in ["projects/alpha.md", "journal/2026-07-13.md"] {
+    let document = vault.session_mut(path)?;
+    assert_eq!(document.peer(), shared_peer);
+}
+
+// Each path has an independent document and operation log. save_all writes the
+// open sessions beneath .mdcrdt/sessions/ using the vault-wide peer identity.
+vault.save_all()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+`VaultSession` opens documents lazily by vault-relative path. All documents share the vault's
+stable peer ID, but their CRDT state, clocks, and snapshots remain independent.
 
 **CLI Workflows**
-Run the CLI from the repo root:
+Target a vault from any working directory (the default is `--vault .`):
 
 ```sh
-cargo run --bin md-crdt -- status
+cargo run --bin md-crdt -- --vault ./notes status
 ```
 
-Initialize a vault and ingest changes:
+Initialize a vault, then ingest every `.md` file into its per-file collaborative session:
 
 ```sh
-cargo run --bin md-crdt -- init
-cargo run --bin md-crdt -- ingest
-cargo run --bin md-crdt -- flush
+cargo run --bin md-crdt -- --vault ./notes init
+cargo run --bin md-crdt -- --vault ./notes ingest
 ```
 
-Sync (ingest + dirty status):
+`sync` performs the same local ingest and returns exit code 2 when it emits operations, which is
+useful for automation. The host application is responsible for transporting encoded changes to
+other peers.
 
 ```sh
-cargo run --bin md-crdt -- sync
+cargo run --bin md-crdt -- --vault ./notes sync
 ```
+
+`flush` records the current Markdown fingerprints used by `status`; it does not export session
+snapshots or send changes over a network.
 
 **Development**
 Install `just` (optional but recommended):

@@ -6,6 +6,39 @@ use tempfile::tempdir;
 
 #[test]
 #[allow(deprecated)]
+fn help_describes_vault_root_and_multi_document_commands() {
+    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
+
+    cmd.arg("--help").assert().success().stdout(
+        predicate::str::contains("--vault <PATH>")
+            .and(predicate::str::contains("all Markdown files")),
+    );
+}
+
+#[test]
+#[allow(deprecated)]
+fn vault_option_ingests_multiple_documents_outside_current_directory() {
+    let dir = tempdir().unwrap();
+    let vault = dir.path().join("notes");
+    fs::create_dir_all(vault.join("nested")).unwrap();
+    fs::write(vault.join("one.md"), "one").unwrap();
+    fs::write(vault.join("nested").join("two.md"), "two").unwrap();
+
+    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
+    cmd.arg("--vault")
+        .arg(&vault)
+        .arg("ingest")
+        .current_dir(dir.path());
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("2 file(s) changed"));
+    assert!(vault.join(".mdcrdt/sessions/one.mdcrdt").exists());
+    assert!(vault.join(".mdcrdt/sessions/nested/two.mdcrdt").exists());
+}
+
+#[test]
+#[allow(deprecated)]
 fn test_init_creates_state_dir() {
     let dir = tempdir().unwrap();
 
