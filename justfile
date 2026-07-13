@@ -28,6 +28,7 @@ differential-test:
 # Run benchmarks
 bench:
     cargo bench
+    cargo bench --features sequence_incremental
 
 # Fetch external markdown test fixtures (markdown-it, Comrak, GFM spec)
 fuzz-fetch-fixtures:

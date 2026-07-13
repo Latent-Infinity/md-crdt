@@ -31,7 +31,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **PR-14** Block index / cached state vector / shared payloads | **done** | Nested BlockId path index; O(peers) state vector; `Arc<[u8]>` operation payloads; Criterion before/after |
 | **PR-15** Incremental sequence order | **done** | Sibling-local insertion behind default-off `sequence_incremental`; debug dual-path check; top-level/nested Criterion results |
 | **PR-16** Storage V2 generation protocol | **done** | Frozen V1 dual-read fixture; V2 CRC trailer; alternating metadata/payload slots; file + directory sync; crash fallback |
-| PR-17+ | pending | Bench consolidation, module splits, FFI/README honesty, … |
+| **PR-17** Criterion benchmark suite | **done** | Sequence, nested text, public `insert_text`, serialization, block index, state-vector, and change-encoding probes; default + incremental `just bench` |
+| PR-18+ | pending | Module splits, FFI/README honesty, CLI/session examples, … |
 
 ## Phase B checklist
 
@@ -81,6 +82,8 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | Run-length text | **Defer** | Incremental ordering removed about 95.4% of the measured insertion cost; 10k structural serialization was already 17.57 µs. No profile justified storage/wire/mark complexity or any OpId representation change |
 | V2 snapshot payload layout | Pair `segment_a`/`segment_b` with superblock A/B | A single replaced `segment` invalidates the older checksum, so metadata-only alternation cannot recover a previous generation. Two payload slots cost up to one extra active snapshot but make the crash/corruption fallback real |
 | Durability boundary | Atomic temp write + file sync + rename + directory sync on Unix; same atomic sequence without directory sync elsewhere | Rust's portable filesystem API cannot guarantee directory fsync on every platform; the documented crash-safety claim is therefore explicit about the Unix durability boundary |
+| Benchmark configurations | Run the default rebuild control and `sequence_incremental` treatment | An all-features-only run loses the control measurement; two explicit invocations make performance regressions and feature value comparable |
+| Public text benchmark setup | Restore a prepared session snapshot outside the timed interval, then time one middle `insert_text` | Measures block lookup, unit construction, wire encoding, document apply, and sync-log integration without charging fixture construction |
 
 ## Phase C checklist
 
@@ -129,6 +132,17 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 - [x] Writes alternate a single metadata/payload slot and preserve the previous generation
 - [x] Payload and superblock temp files are synced before rename; containing directory is synced on Unix
 - [x] Missing/corrupt newest metadata and interrupted payload publication fall back to the prior valid generation
+
+## Phase H checklist (partial)
+
+- [x] Criterion suite exists under `benches/` and is registered in Cargo
+- [x] Sequence middle insert and nested `Sequence<TextUnit>` insert at 1k/10k
+- [x] Public `CollaborativeDocument::insert_text` at 1k/10k
+- [x] Structural serialization at 1k/10k
+- [x] `just bench` runs default and incremental ordering configurations
+- [ ] Module splits after churn settles (PR-18)
+- [ ] FFI implementation or explicit unpublish decision (PR-19)
+- [ ] CLI and README multi-document workflow polish (PR-20)
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -240,8 +254,30 @@ Run-length text was deliberately not implemented. The insertion profile no longe
 
 **Audit (verified):** crash-safety traced sound — writes target the lower-generation slot so the newer slot is always an intact fallback; `atomic_write_durable` fsyncs the temp file, renames, then fsyncs the directory (Unix), and the segment is durable before the superblock (the commit point); both superblock (CRC trailer) and segment (checksum-in-superblock) are integrity-checked; `decode_superblock` tries V2 (CRC + rkyv) then falls back to V1 (generation 0, so V2 always supersedes). Tests cover alternating slots + monotonic generations, corrupt-newest read fallback, crash-after-segment-before-superblock, and the frozen V1 fixture read+upgrade. **TDD gap closed:** `read_slot_generation` swallows a corrupt slot's decode error to `None`, making that slot the next write target (self-repair) — but only the *read-side* fallback was tested. Added `write_after_corruption_repairs_bad_slot_without_clobbering_good_fallback` (`src/storage/mod.rs`): corrupt the newest slot, write again, and assert the write repairs the bad slot while the sole surviving good slot keeps its original generation and the newest read is the repair. **Non-blocking notes:** after a V1→V2 upgrade the legacy `segment` file lingers indefinitely (harmless dead weight, never read once both slots are V2); double-buffering roughly doubles on-disk snapshot bytes (inherent crash-safety cost, and the `active_storage_bytes` overhead assertion was correctly relaxed to match). Op-segment checksums remain a documented follow-up.
 
+## PR-17 Criterion benchmark suite — **done**
+
+- `benches/performance.rs` covers sequence middle insertion, nested text-unit insertion, public session `insert_text`, structural serialization, BlockId lookup, state-vector generation, and delta encoding.
+- The public text probe prepares a real `CollaborativeDocument`, restores its snapshot outside the timed interval for each sample, and times one middle-grapheme insertion through validation, wire encoding, document apply, and sync logging.
+- `Cargo.toml` registers the Criterion target and `just bench` executes both the default rebuild control and `sequence_incremental` treatment.
+
+### Public insert_text ablation (20 samples, 1 s measurement)
+
+| Benchmark | Full rebuild | Incremental | Change |
+| --- | ---: | ---: | ---: |
+| Session middle insert, 1k graphemes | 143.68 µs | 11.34 µs | -92.1% |
+| Session middle insert, 10k graphemes | 2.216 ms | 155.6 µs | -92.7% |
+
+The session result retains the same scaling signal as the lower-level sequence probe while exposing the fixed validation/codec/log overhead. Keeping both probes is justified: the sequence benchmark attributes ordering cost; the session benchmark represents the caller-visible keystroke path.
+
+**Audit (verified):** all seven probes present and wired into `criterion_group!`; the new `session_insert_text` correctly restores the snapshot *outside* the timed `Instant` window so only the insertion is measured. Beyond compile-checking (clippy `--all-targets --all-features`), both configurations were **executed** to confirm no runtime panic or ordering divergence: `cargo bench --bench performance` and `cargo bench --bench performance --features sequence_incremental` each ran all 14 parameterized cases to completion (EXIT 0). No phase language in bench code; `architecture-evolution.md` Phase H item 1 correctly flipped to done. No defects found — benchmark-only slice, no production behavior changed.
+
 ## Gate
 
+- `cargo bench --bench performance --no-run` and `--features sequence_incremental --no-run` — **passed**; both complete Criterion configurations compile in the bench profile
+- Targeted `session_insert_text` Criterion run in both configurations — **passed**; 1k/10k results recorded above
+- `just check` — **passed** after PR-17 audit (365 tests, 0 warnings; benchmark target linted via `--all-targets`)
+- `cargo bench --bench performance` and `… --features sequence_incremental` — **both executed to completion** during audit (all 14 cases, EXIT 0, no panic/divergence)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed** for PR-17; 90.82% repository line coverage / 89.54% region coverage, with no regression
 - `just check` — **passed** after PR-16 audit (365 tests, 0 warnings; added write-side corrupt-slot repair test)
 - `just check` — **passed** for PR-16 (364 tests, 0 warnings)
 - `cargo llvm-cov --workspace --all-features --summary-only` — **passed**; 90.80% repository line coverage / 89.48% region coverage, above the PR-15 baseline; `src/storage/mod.rs` is 96.10% line-covered

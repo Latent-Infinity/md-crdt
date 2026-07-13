@@ -1,4 +1,5 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use md_crdt::CollaborativeDocument;
 use md_crdt::core::{OpId, Sequence, SequenceOp, StateVector};
 use md_crdt::doc::{
     Block, BlockKind, Document, EquivalenceMode, Parser, TextUnit, block_id_from_op,
@@ -149,6 +150,32 @@ fn nested_text_insert(c: &mut Criterion) {
     group.finish();
 }
 
+fn session_insert_text(c: &mut Criterion) {
+    let mut group = c.benchmark_group("session_insert_text");
+    for count in [1_000usize, 10_000] {
+        let mut base = CollaborativeDocument::new(1);
+        let block_elem = base.insert_paragraph(None, &"x".repeat(count)).unwrap();
+        let block_id = block_id_from_op(block_elem);
+        let snapshot = base.save_snapshot().unwrap();
+        group.throughput(Throughput::Elements(1));
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, _| {
+            b.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let mut session =
+                        CollaborativeDocument::restore_from_snapshot(snapshot.clone()).unwrap();
+                    let start = Instant::now();
+                    let inserted = session.insert_text(block_id, count / 2, "y").unwrap();
+                    elapsed += start.elapsed();
+                    black_box((session, inserted));
+                }
+                elapsed
+            });
+        });
+    }
+    group.finish();
+}
+
 fn document_serialize(c: &mut Criterion) {
     let mut group = c.benchmark_group("document_serialize");
     for count in [1_000usize, 10_000] {
@@ -168,6 +195,7 @@ criterion_group!(
     encode_changes,
     sequence_insert_middle,
     nested_text_insert,
+    session_insert_text,
     document_serialize
 );
 criterion_main!(benches);

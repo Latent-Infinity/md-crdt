@@ -103,6 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default-off `sequence_incremental` feature for sibling-local insertion without a full sequence rebuild
 - Debug dual-path validation against the full rebuild after each completed apply, including released pending batches
 - Differential coverage for varied right origins and Criterion probes for top-level, nested-text, and serialization paths
+- Public `CollaborativeDocument::insert_text` benchmark at 1k/10k graphemes; `just bench` runs both default and incremental ordering strategies
 - `Document` remains `Send + Sync`; public top-level sequence mutation invalidates or self-repairs the index
 
 ## [0.1.0] - 2025-02-04
