@@ -1,6 +1,6 @@
 [package]
 name = "md-crdt-naive-oracle"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/latenty-infinity/md-crdt"
@@ -8,4 +8,4 @@ description = "Naive reference implementation for differential testing"
 publish = false
 
 [dependencies]
-md-crdt = { version = "0.1.0", path = "..", default-features = false }
+md-crdt = { version = "0.2.0", path = "..", default-features = false }

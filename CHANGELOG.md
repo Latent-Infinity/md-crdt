@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-14
+
 ### Added
 
 #### Durable operation history and checkpoint/rebase (`storage` / `sync` / `session`)
@@ -233,4 +235,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive CONTRIBUTING.md guide
 - MIT license
 
+[Unreleased]: https://github.com/latenty-infinity/md-crdt/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/latenty-infinity/md-crdt/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/latenty-infinity/md-crdt/releases/tag/v0.1.0
