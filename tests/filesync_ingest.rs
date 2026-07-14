@@ -94,6 +94,134 @@ fn ingest_preserves_list_structure_and_text() {
 }
 
 #[test]
+fn table_ingest_preserves_table_row_and_unrelated_prose_ids() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("table.md"),
+        "before\n\n| name | value |\n| --- | ---: |\n| a | 1 |\n| b | 2 |\n\nafter",
+    )
+    .unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    let first = vault.ingest_all().unwrap();
+    assert_eq!(first.files_skipped, 0);
+    let (prose_ids, table_id, row_ids) = {
+        let blocks = vault
+            .session_mut("table.md")
+            .unwrap()
+            .document()
+            .blocks_in_order();
+        let BlockKind::Table { table } = &blocks[1].kind else {
+            panic!("table expected")
+        };
+        (
+            (blocks[0].id, blocks[2].id),
+            blocks[1].id,
+            table.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        )
+    };
+
+    fs::write(
+        dir.path().join("table.md"),
+        "before\n\n| name | value |\n| :--- | ---: |\n| b | 22 |\n| a | 1 |\n\nafter",
+    )
+    .unwrap();
+    let changed = vault.ingest_all().unwrap();
+    assert_eq!(changed.files_changed, 1);
+    let doc = vault.session_mut("table.md").unwrap().document();
+    let blocks = doc.blocks_in_order();
+    assert_eq!((blocks[0].id, blocks[2].id), prose_ids);
+    assert_eq!(blocks[1].id, table_id);
+    let BlockKind::Table { table } = &blocks[1].kind else {
+        panic!("table expected")
+    };
+    assert_eq!(
+        table
+            .rows
+            .iter()
+            .map(|row| row.id)
+            .collect::<std::collections::HashSet<_>>(),
+        row_ids
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+    );
+    assert_eq!(
+        table
+            .rows
+            .iter()
+            .map(|row| row.cells.get())
+            .collect::<Vec<_>>(),
+        vec![
+            vec![String::from("b"), String::from("22")],
+            vec![String::from("a"), String::from("1")],
+        ]
+    );
+}
+
+#[test]
+fn external_semantic_replacement_projects_existing_mark_over_unicode() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("mark.md"), "**a🇺🇸b**").unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    vault.ingest_all().unwrap();
+    fs::write(dir.path().join("mark.md"), "a🇺🇸xb").unwrap();
+    vault.ingest_all().unwrap();
+    let doc = vault.session_mut("mark.md").unwrap().document();
+    let block = doc.blocks_in_order()[0];
+    let spans = doc.render_paragraph_spans(block.id).unwrap();
+    assert_eq!(spans.len(), 1);
+    assert_eq!((spans[0].start, spans[0].end), (0, 4));
+    assert_eq!(doc.serialize(EquivalenceMode::Structural), "**a🇺🇸xb**");
+}
+
+#[test]
+fn whole_external_replacement_drops_unjustified_mark() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("mark.md"), "**old**").unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    vault.ingest_all().unwrap();
+    fs::write(dir.path().join("mark.md"), "new").unwrap();
+    vault.ingest_all().unwrap();
+    let doc = vault.session_mut("mark.md").unwrap().document();
+    assert_eq!(doc.serialize(EquivalenceMode::Structural), "new");
+    assert!(
+        doc.blocks_in_order()[0]
+            .marks
+            .iter_active_intervals()
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn parsed_frontmatter_ingests_as_collaborative_lossless_state() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("frontmatter.md"),
+        "---\n# note\ntitle: 'old'\n---\n\nbody",
+    )
+    .unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    vault.ingest_all().unwrap();
+    assert_eq!(
+        vault
+            .session_mut("frontmatter.md")
+            .unwrap()
+            .document()
+            .frontmatter_field("title"),
+        Some("'old'")
+    );
+    fs::write(
+        dir.path().join("frontmatter.md"),
+        "---\n# note\ntitle: 'new'\n---\n\nbody",
+    )
+    .unwrap();
+    vault.ingest_all().unwrap();
+    let doc = vault.session_mut("frontmatter.md").unwrap().document();
+    assert_eq!(doc.frontmatter_field("title"), Some("'new'"));
+    assert!(doc.serialize(EquivalenceMode::Exact).contains("# note\n"));
+}
+
+#[test]
 fn second_ingest_is_noop_when_file_unchanged() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.md"), "stable").unwrap();

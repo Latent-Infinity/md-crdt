@@ -119,8 +119,15 @@ impl DocumentSource {
         }
     }
 
-    pub(crate) fn render(&self, blocks: &Sequence<Block>) -> String {
-        let mut output = self.original[..self.preamble_end].to_string();
+    pub(crate) fn render_with_frontmatter(
+        &self,
+        blocks: &Sequence<Block>,
+        frontmatter: Option<&str>,
+    ) -> String {
+        let mut output = frontmatter.map_or_else(
+            || self.original[..self.preamble_end].to_string(),
+            |frontmatter| self.render_replaced_frontmatter(frontmatter),
+        );
         let mut emitted_block = false;
         let mut previous_source_position = None;
         for block in blocks.iter_asc() {
@@ -153,6 +160,29 @@ impl DocumentSource {
         if emitted_block || !output.is_empty() {
             output.push_str(&self.original[self.trailer_start..]);
         }
+        output
+    }
+
+    fn render_replaced_frontmatter(&self, frontmatter: &str) -> String {
+        let preamble = &self.original[..self.preamble_end];
+        let remainder = if preamble.starts_with("---") {
+            let first_line_end = preamble.find('\n').map_or(preamble.len(), |at| at + 1);
+            preamble[first_line_end..]
+                .find("\n---")
+                .map(|relative| {
+                    let closing = first_line_end + relative + 1;
+                    let after = preamble[closing..]
+                        .find('\n')
+                        .map_or(preamble.len(), |relative| closing + relative + 1);
+                    &preamble[after..]
+                })
+                .unwrap_or("")
+        } else {
+            preamble
+        };
+        let mut output = format!("---\n{frontmatter}\n---");
+        output.push('\n');
+        output.push_str(remainder);
         output
     }
 

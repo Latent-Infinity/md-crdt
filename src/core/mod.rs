@@ -532,7 +532,7 @@ impl<T: Clone> Sequence<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LwwRegister<T> {
     value: T,
     op_id: OpId,

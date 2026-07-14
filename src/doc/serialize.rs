@@ -2,10 +2,10 @@ use super::*;
 
 pub(super) fn serialize_block(block: &Block) -> String {
     match &block.kind {
-        BlockKind::Paragraph { text } => paragraph_visible_string(text),
+        BlockKind::Paragraph { text } => super::inline::serialize_text(block, text),
         BlockKind::Heading { level, text } => {
             let hashes = "#".repeat((*level).clamp(1, 6) as usize);
-            format!("{} {}", hashes, paragraph_visible_string(text))
+            format!("{} {}", hashes, super::inline::serialize_text(block, text))
         }
         BlockKind::List { ordered, items } => serialize_list(*ordered, items, 0),
         BlockKind::CodeFence { info, text } => {

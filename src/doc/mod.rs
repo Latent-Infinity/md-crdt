@@ -11,6 +11,8 @@ use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
+pub mod frontmatter;
+mod inline;
 pub mod mark_ops;
 mod parser;
 mod serialize;
@@ -19,6 +21,7 @@ pub mod text;
 
 pub(crate) use source::DocumentSource;
 
+pub use frontmatter::{Frontmatter, FrontmatterError};
 pub use parser::Parser;
 use serialize::{
     grapheme_offset_to_byte, is_grapheme_boundary, normalize_structural, serialize_block,
@@ -40,7 +43,7 @@ pub fn block_id_from_op(op: OpId) -> BlockId {
 
 #[derive(Debug)]
 pub struct Document {
-    pub frontmatter: Option<String>,
+    pub frontmatter: Option<Frontmatter>,
     pub blocks: IndexedBlocks,
     source: Option<DocumentSource>,
     block_index: RwLock<Option<CachedBlockIndex>>,
@@ -440,6 +443,60 @@ impl Table {
         self.header.set(cells, op_id);
     }
 
+    pub fn row_by_id(&self, row_id: RowId) -> Option<&TableRow> {
+        self.rows.iter().find(|row| row.id == row_id)
+    }
+
+    pub(crate) fn move_row(
+        &mut self,
+        row_id: RowId,
+        id: OpId,
+        after: Option<OpId>,
+        right_origin: Option<OpId>,
+    ) -> bool {
+        let Some(mut row) = self.row_by_id(row_id).cloned() else {
+            if self.rows.get_element(&id).is_none() {
+                let tombstone = TableRow {
+                    id: row_id,
+                    elem_id: id,
+                    deleted: crate::core::LwwRegister::new(true, id),
+                    cells: crate::core::LwwRegister::new(Vec::new(), id),
+                };
+                self.rows.apply(SequenceOp::Insert {
+                    after,
+                    id,
+                    value: tombstone,
+                    right_origin,
+                });
+                self.rows.delete(id, id);
+            }
+            return false;
+        };
+        let already_moved = block_id_from_op(row.elem_id) != row.id;
+        if already_moved && row.elem_id >= id {
+            if self.rows.get_element(&id).is_none() {
+                row.elem_id = id;
+                self.rows.apply(SequenceOp::Insert {
+                    after,
+                    id,
+                    value: row,
+                    right_origin,
+                });
+                self.rows.delete(id, id);
+            }
+            return false;
+        }
+        self.rows.delete(row.elem_id, id);
+        row.elem_id = id;
+        self.rows.apply(SequenceOp::Insert {
+            after,
+            id,
+            value: row,
+            right_origin,
+        });
+        true
+    }
+
     pub fn rows_in_order(&self) -> Vec<TableRow> {
         self.rows.iter().cloned().collect()
     }
@@ -825,6 +882,112 @@ impl Document {
             .and_then(|c| c.compute_right_origin(after))
     }
 
+    /// Current container placement for a logical block (`None` is top-level).
+    pub fn block_parent(&self, block_id: BlockId) -> Option<Option<OpId>> {
+        self.ensure_block_index();
+        let path = self
+            .block_index_read()
+            .as_ref()?
+            .index
+            .by_block_id
+            .get(&block_id)?
+            .clone();
+        Some(path.containers.last().map(|container| match container {
+            BlockContainerPath::BlockQuote(id) => *id,
+            BlockContainerPath::ListItem { item, .. } => *item,
+        }))
+    }
+
+    /// Whether `candidate` is the block itself or one of its descendant containers.
+    pub fn block_contains_container(&self, block_id: BlockId, candidate: OpId) -> bool {
+        fn contains(block: &Block, candidate: OpId) -> bool {
+            if block.elem_id == candidate {
+                return true;
+            }
+            match &block.kind {
+                BlockKind::BlockQuote { children } => {
+                    children.iter().any(|child| contains(child, candidate))
+                }
+                BlockKind::List { items, .. } => items.iter().any(|item| {
+                    item.elem_id == candidate
+                        || item.children.iter().any(|child| contains(child, candidate))
+                }),
+                _ => false,
+            }
+        }
+        self.find_block_by_id(block_id)
+            .is_some_and(|block| contains(block, candidate))
+    }
+
+    /// Apply an atomic identity-preserving placement change. Returns false when a newer
+    /// concurrent move already won or any prerequisite is missing/invalid.
+    pub(crate) fn move_blocks_at(
+        &mut self,
+        to_parent: Option<OpId>,
+        moves: &[crate::codec::MovedBlockWire],
+        move_id: OpId,
+    ) -> bool {
+        if moves.is_empty() || self.container_children(to_parent).is_none() {
+            return false;
+        }
+        let mut prepared = Vec::with_capacity(moves.len());
+        let mut loses = false;
+        for moved in moves {
+            let Some(block) = self.find_block_by_id(moved.block_id).cloned() else {
+                prepared.push((
+                    Block {
+                        id: moved.block_id,
+                        elem_id: moved.id,
+                        kind: BlockKind::RawBlock { raw: String::new() },
+                        marks: MarkSet::new(),
+                    },
+                    None,
+                ));
+                loses = true;
+                continue;
+            };
+            if to_parent.is_some_and(|parent| self.block_contains_container(block.id, parent)) {
+                return false;
+            }
+            let already_moved = block_id_from_op(block.elem_id) != block.id;
+            if already_moved && block.elem_id >= moved.id {
+                loses = true;
+            }
+            let Some(parent) = self.block_parent(block.id) else {
+                return false;
+            };
+            prepared.push((block, Some(parent)));
+        }
+        if loses {
+            // Materialize then tombstone losing concurrent placements so every replica has
+            // the same RGA history, not merely the same visible order.
+            for ((mut block, _), moved) in prepared.into_iter().zip(moves) {
+                if self
+                    .container_children(to_parent)
+                    .is_some_and(|children| children.get_element(&moved.id).is_some())
+                {
+                    continue;
+                }
+                block.elem_id = moved.id;
+                self.insert_block_at(to_parent, moved.after, moved.id, block, moved.right_origin);
+                self.delete_block_at(to_parent, moved.id, move_id);
+            }
+            return false;
+        }
+        for (block, parent) in &prepared {
+            self.delete_block_at(
+                parent.expect("winning moves have a source"),
+                block.elem_id,
+                move_id,
+            );
+        }
+        for ((mut block, _), moved) in prepared.into_iter().zip(moves) {
+            block.elem_id = moved.id;
+            self.insert_block_at(to_parent, moved.after, moved.id, block, moved.right_origin);
+        }
+        true
+    }
+
     /// Find a block by its stable `BlockId` anywhere in the tree.
     pub fn find_block_by_id(&self, block_id: BlockId) -> Option<&Block> {
         self.ensure_block_index();
@@ -1105,15 +1268,78 @@ impl Document {
         block_id: BlockId,
     ) -> Result<Vec<crate::core::mark::Span>, EditError> {
         let block = self
-            .blocks_in_order()
-            .into_iter()
-            .find(|b| b.id == block_id)
+            .find_block_by_id(block_id)
             .ok_or(EditError::BlockNotFound)?;
         let Some(text) = block_text_seq(&block.kind) else {
             return Err(EditError::InvalidOffset);
         };
         let order = paragraph_visible_ids(text);
         Ok(block.marks.render_spans(&order, order.len()))
+    }
+
+    /// Convert a non-empty half-open grapheme range to stable unit anchors.
+    pub fn grapheme_range_to_anchors(
+        &self,
+        block_id: BlockId,
+        range: std::ops::Range<usize>,
+    ) -> Result<(Anchor, Anchor), EditError> {
+        let block = self
+            .find_block_by_id(block_id)
+            .ok_or(EditError::BlockNotFound)?;
+        let text = block_text_seq(&block.kind).ok_or(EditError::InvalidOffset)?;
+        let ids = paragraph_visible_ids(text);
+        if range.start >= range.end || range.end > ids.len() {
+            return Err(EditError::InvalidOffset);
+        }
+        Ok((
+            Anchor {
+                elem_id: ids[range.start],
+                bias: crate::core::mark::AnchorBias::Before,
+            },
+            Anchor {
+                elem_id: ids[range.end - 1],
+                bias: crate::core::mark::AnchorBias::After,
+            },
+        ))
+    }
+
+    /// Convert a UTF-8 byte range whose endpoints are grapheme boundaries to anchors.
+    pub fn byte_range_to_anchors(
+        &self,
+        block_id: BlockId,
+        range: std::ops::Range<usize>,
+    ) -> Result<(Anchor, Anchor), EditError> {
+        let block = self
+            .find_block_by_id(block_id)
+            .ok_or(EditError::BlockNotFound)?;
+        let text = block_text_seq(&block.kind).ok_or(EditError::InvalidOffset)?;
+        let visible = paragraph_visible_string(text);
+        if range.start >= range.end || range.end > visible.len() {
+            return Err(EditError::InvalidOffset);
+        }
+        if !is_grapheme_boundary(&visible, range.start)
+            || !is_grapheme_boundary(&visible, range.end)
+        {
+            return Err(EditError::InvalidGraphemeBoundary);
+        }
+        let start = visible[..range.start].graphemes(true).count();
+        let end = visible[..range.end].graphemes(true).count();
+        self.grapheme_range_to_anchors(block_id, start..end)
+    }
+
+    pub fn frontmatter_field(&self, key: &str) -> Option<&str> {
+        self.frontmatter.as_ref()?.get(key)
+    }
+
+    pub fn set_frontmatter_field(
+        &mut self,
+        key: String,
+        value: Option<String>,
+        op_id: OpId,
+    ) -> Result<(), FrontmatterError> {
+        self.frontmatter
+            .get_or_insert_with(Frontmatter::empty)
+            .set(key, value, op_id)
     }
 
     pub fn serialize(&self, mode: EquivalenceMode) -> String {
@@ -1129,13 +1355,18 @@ impl Document {
             && config.prefer_raw_source
             && let Some(source) = &self.source
         {
-            return source.render(&self.blocks);
+            let replacement = self
+                .frontmatter
+                .as_ref()
+                .filter(|frontmatter| frontmatter.is_dirty())
+                .map(Frontmatter::render);
+            return source.render_with_frontmatter(&self.blocks, replacement.as_deref());
         }
 
         let mut output = String::new();
         if let Some(frontmatter) = &self.frontmatter {
             output.push_str("---\n");
-            output.push_str(frontmatter);
+            output.push_str(&frontmatter.render());
             output.push_str("\n---\n\n");
         }
 

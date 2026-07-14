@@ -5,7 +5,7 @@
 | **Document title** | Architecture Evolution Design for md-crdt |
 | **Author** | Travis Silvers |
 | **Date** | 2026-07-09 |
-| **Status** | Draft (revision 9 — joint lossless-workspace roadmap for md-crdt + md-mcp) |
+| **Status** | Draft (revision 10 — Phase J semantic Markdown implementation complete) |
 | **Repository** | `/Users/firestrand/Projects/latenty-infinity/md-crdt` |
 | **Current version** | `0.1.0` (pre-1.0; breaking changes allowed with changelog discipline) |
 | **License** | MIT |
@@ -25,6 +25,7 @@
 | **7** | Added native move/reorder, parsed-table ingest, mark-preserving external replacement, safe V1 segment cleanup, and an adapter-facing efficiency phase for `md-mcp` | Closes known product gaps and lets agents locate, edit, and verify bounded Markdown regions without full-document serialization or rediscovery |
 | **8** | Rewrote all unfinished work after Phase H as a coordinated four-phase joint-release roadmap; added honest lossless editing, stable workspace identity, semantic inline/frontmatter/link support, durable Markdown export, multi-document operations, and long-running compaction | The live `md-mcp` service duplicates the Markdown engine and both projects overclaim exact serialization after mutation; correctness and source fidelity must precede protocol optimization |
 | **9** | Removed legacy snapshot/storage compatibility from the release contract and added a final breaking cleanup slice | The two projects ship together before 1.0; retaining V1/V2 snapshot readers and V1 storage migration paths adds code, fixtures, and ambiguity without user value |
+| **10** | Completed authoritative inline/frontmatter semantics, native moves, parsed table ingest, and mark-preserving external replacement | Closes the semantic Markdown gaps before Phase K freezes bounded agent-facing mutation and summary primitives |
 
 **Compatibility policy (supersedes earlier migration notes):** completed sections below retain
 historical implementation details, but they are not release requirements. The joint release accepts
@@ -1293,7 +1294,7 @@ Rename ambiguous APIs so `save_state`/`save_all_state` persist CRDT snapshots wh
 
 ---
 
-### Phase J — Semantic Markdown completeness
+### Phase J — Semantic Markdown completeness — complete
 
 #### J1 — Authoritative inline model: marks, links, and source trivia
 
@@ -1320,6 +1321,27 @@ Remove the table-containing-file skip. First ingest emits an empty table plus me
 Extend grapheme diff with deterministic insertion affinity and mark boundary projection. Retained units keep anchors; partial deletion splits/trims; whole replacement preserves only marks justified by mapped semantic ranges and never silently broadens formatting. Expose byte/grapheme range-to-anchor helpers for downstream exact targeting.
 
 Property and cross-vault tests cover emoji/combining sequences, nested marks/links, whole-paragraph rewrites, exchange, snapshot, and reopen.
+
+#### Phase J implementation outcome
+
+- Supported bold/italic/code/link syntax parses to semantic grapheme units plus causal intervals;
+  source delimiter attributes render dirty blocks and mark history crosses wire/snapshot boundaries.
+- Frontmatter owns a lossless raw base plus per-key LWW values. Comments, order, quoting, and
+  untouched values survive field edits; malformed/nested YAML stays opaque and rejects mutation.
+- `MoveBlocks` is the atomic block/section envelope. Fresh placement ids preserve `BlockId`, all
+  descendants, text units, rows, marks, and links. Highest placement id wins concurrent moves;
+  logical-id deletion wins move/delete races; section membership is captured when the move commits.
+- Table files no longer skip ingest. Metadata, row insert/update/delete, and row placement operations
+  preserve matched table/row identities while block moves preserve unrelated prose identities.
+- External replacements use grapheme LCS. Insertions strictly inside a retained interval inherit it;
+  boundary insertions do not. Partial replacements trim/project to retained semantic endpoints and a
+  zero-retention whole replacement drops the interval. Byte/grapheme range helpers share anchors.
+
+**Move ablation:** a permanent per-`BlockId` placement register duplicated ordering state already
+owned by `Sequence` and still needed a separate atomic range envelope. The chosen atomic move clones
+the logical payload under fresh placement ids and tombstones prior placements. It is smaller, keeps
+section moves indivisible, and uses the existing RGA history; losing placements are materialized as
+tombstones so replicas converge on the same history.
 
 ---
 
@@ -1721,18 +1743,29 @@ No panics in `apply_remote` / codec / storage library paths.
 
     **Rationale:** No published compatibility promise exists. Removing migration code reduces the state space, while bounded storage must still preserve supported peers.
 
+37. **Moves use one atomic range envelope and fresh sequence placements, not a permanent placement register.** Highest placement id wins concurrent moves; logical-id delete wins a concurrent move/delete race; a section contains the contiguous ids observed at commit time, so concurrently inserted children remain at their insertion site.
+
+    **Rationale:** One ordering authority avoids duplicated state, preserves every logical descendant identity, and makes section movement indivisible.
+
+38. **Mark replacement affinity is outside at both interval boundaries and expanding for insertions strictly inside.** LCS-retained semantic endpoints justify projected intervals; no retained unit means no inherited mark.
+
+    **Rationale:** This never silently broadens formatting at a boundary while retaining expected formatting for edits inside marked text.
+
+39. **Frontmatter combines a lossless source base with per-key LWW registers; unsupported YAML is opaque and immutable through structured APIs.**
+
+    **Rationale:** Field collaboration must not canonicalize comments, order, quoting, nested YAML, or malformed user bytes.
+
 ---
 
 ## Open Questions
 
-Resolved recommendations are Key Decisions 1–36 (rev 8). Remaining questions:
+Resolved recommendations are Key Decisions 1–39 (rev 10). Remaining questions:
 
 1. **Snapshot encoding:** serde_json vs rkyv for `SessionSnapshot` segment body? (Lean rkyv when `storage` enabled; JSON for debug dumps.)
 2. **SemanticConflict CLI surfacing:** log only vs JSON field? (Lean: library returns data; CLI prints count at debug.) — only relevant after optional PR-05.
 3. **0.2.0 vs 0.1.x** version label after B/C — release management, not technical.
 4. **When to revisit N6-c / run-length:** only after production profiles show paste-as-block or large-paragraph cost; not scheduled.
-5. **Concurrent move winner rule:** placement register vs atomic source/destination op is intentionally unresolved until PR-26 ablation; the wire shape must not freeze first.
-6. **History retention:** time-based peer leases vs explicit checkpoint acknowledgement remains open until PR-33 measures long-offline peer behavior.
+5. **History retention:** time-based peer leases vs explicit checkpoint acknowledgement remains open until PR-33 measures long-offline peer behavior.
 
 ---
 

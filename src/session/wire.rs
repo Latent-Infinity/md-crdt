@@ -38,7 +38,7 @@ pub(super) fn operation_extent(env: &Envelope) -> (OpId, u64) {
                 span,
             )
         }
-        OpBody::Doc(DocOp::DeleteBlock { id, .. }) => (*id, 1),
+        OpBody::Doc(DocOp::DeleteBlock { id, .. } | DocOp::DeleteBlockById { id, .. }) => (*id, 1),
         OpBody::Doc(DocOp::InsertText { units, .. }) => {
             // Empty InsertText should not appear on the wire; treat as span 1 with peer-0 id 0
             // only for defensive extent — producers never emit empty InsertText.
@@ -62,6 +62,17 @@ pub(super) fn operation_extent(env: &Envelope) -> (OpId, u64) {
             (OpId { counter: hi, peer }, span)
         }
         OpBody::Doc(DocOp::DeleteText { id, .. }) => (*id, 1),
+        OpBody::Doc(DocOp::SetMark { id, .. } | DocOp::RemoveMark { id, .. }) => (*id, 1),
+        OpBody::Doc(DocOp::SetFrontmatterField { id, .. }) => (*id, 1),
+        OpBody::Doc(DocOp::InitializeFrontmatter { id, .. }) => (*id, 1),
+        OpBody::Doc(DocOp::MoveBlocks { id, blocks, .. }) => {
+            let lo = blocks
+                .iter()
+                .map(|block| block.id.counter)
+                .min()
+                .unwrap_or(id.counter);
+            (*id, id.counter.saturating_sub(lo).saturating_add(1))
+        }
         OpBody::Doc(DocOp::SplitBlock { id, .. }) => (*id, 1),
         OpBody::Doc(DocOp::MergeBlocks { id, units, .. }) => {
             let hi = units
@@ -80,7 +91,10 @@ pub(super) fn operation_extent(env: &Envelope) -> (OpId, u64) {
         OpBody::Doc(
             DocOp::InsertTableRow { id, .. }
             | DocOp::SetTableRowCells { id, .. }
-            | DocOp::DeleteTableRow { id, .. },
+            | DocOp::DeleteTableRow { id, .. }
+            | DocOp::DeleteTableRowById { id, .. }
+            | DocOp::SetTableMetadata { id, .. }
+            | DocOp::MoveTableRow { id, .. },
         ) => (*id, 1),
     }
 }
@@ -128,7 +142,7 @@ pub(super) fn check_peer_consistency(op: &Operation, env: &Envelope) -> Result<(
             }
             check_kind_peers(peer, &block.kind)?;
         }
-        OpBody::Doc(DocOp::DeleteBlock { id, .. }) => {
+        OpBody::Doc(DocOp::DeleteBlock { id, .. } | DocOp::DeleteBlockById { id, .. }) => {
             if id.peer != peer {
                 return Err(SessionError::PeerMismatch);
             }
@@ -145,6 +159,26 @@ pub(super) fn check_peer_consistency(op: &Operation, env: &Envelope) -> Result<(
                 return Err(SessionError::PeerMismatch);
             }
         }
+        OpBody::Doc(DocOp::SetMark { id, .. } | DocOp::RemoveMark { id, .. }) => {
+            if id.peer != peer {
+                return Err(SessionError::PeerMismatch);
+            }
+        }
+        OpBody::Doc(DocOp::SetFrontmatterField { id, .. }) => {
+            if id.peer != peer {
+                return Err(SessionError::PeerMismatch);
+            }
+        }
+        OpBody::Doc(DocOp::InitializeFrontmatter { id, .. }) => {
+            if id.peer != peer {
+                return Err(SessionError::PeerMismatch);
+            }
+        }
+        OpBody::Doc(DocOp::MoveBlocks { id, blocks, .. }) => {
+            if id.peer != peer || blocks.iter().any(|block| block.id.peer != peer) {
+                return Err(SessionError::PeerMismatch);
+            }
+        }
         OpBody::Doc(DocOp::SplitBlock { .. }) => {}
         OpBody::Doc(DocOp::MergeBlocks { units, .. }) => {
             if units
@@ -157,7 +191,10 @@ pub(super) fn check_peer_consistency(op: &Operation, env: &Envelope) -> Result<(
         OpBody::Doc(
             DocOp::InsertTableRow { id, .. }
             | DocOp::SetTableRowCells { id, .. }
-            | DocOp::DeleteTableRow { id, .. },
+            | DocOp::DeleteTableRow { id, .. }
+            | DocOp::DeleteTableRowById { id, .. }
+            | DocOp::SetTableMetadata { id, .. }
+            | DocOp::MoveTableRow { id, .. },
         ) => {
             if id.peer != peer {
                 return Err(SessionError::PeerMismatch);
@@ -303,6 +340,20 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
         OpBody::Doc(DocOp::DeleteBlock { parent, target, id }) => {
             document.delete_block_at(*parent, *target, *id);
         }
+        OpBody::Doc(DocOp::DeleteBlockById {
+            parent,
+            target,
+            block_id,
+            id,
+        }) => {
+            if let Some(block) = document.find_block_by_id(*block_id) {
+                let current = block.elem_id;
+                let current_parent = document.block_parent(*block_id).flatten();
+                document.delete_block_at(current_parent, current, *id);
+            } else {
+                document.delete_block_at(*parent, *target, *id);
+            }
+        }
         OpBody::Doc(DocOp::InsertText {
             block_elem, units, ..
         }) => {
@@ -340,6 +391,47 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
                     });
                 }
             });
+        }
+        OpBody::Doc(DocOp::SetMark {
+            block_elem,
+            id,
+            kind,
+            start,
+            end,
+            attrs,
+            ..
+        }) => {
+            let _ = document.with_block_mut(*block_elem, |block| {
+                block
+                    .marks
+                    .set_mark(*id, kind.clone(), *start, *end, attrs.clone(), *id);
+            });
+        }
+        OpBody::Doc(DocOp::RemoveMark {
+            block_elem,
+            interval_id,
+            id,
+            observed,
+            ..
+        }) => {
+            let _ = document.with_block_mut(*block_elem, |block| {
+                block.marks.remove_mark(*interval_id, observed.clone(), *id);
+            });
+        }
+        OpBody::Doc(DocOp::SetFrontmatterField { id, key, value }) => {
+            let _ = document.set_frontmatter_field(key.clone(), value.clone(), *id);
+        }
+        OpBody::Doc(DocOp::InitializeFrontmatter { frontmatter, .. }) => {
+            if document.frontmatter.is_none() {
+                document.frontmatter = Some(frontmatter.clone());
+            }
+        }
+        OpBody::Doc(DocOp::MoveBlocks {
+            to_parent,
+            id,
+            blocks,
+        }) => {
+            document.move_blocks_at(*to_parent, blocks, *id);
         }
         OpBody::Doc(DocOp::SplitBlock {
             parent,
@@ -470,6 +562,56 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
             let _ = document.with_block_mut(*table_elem, |block| {
                 if let BlockKind::Table { table } = &mut block.kind {
                     table.remove_row(*target, *id);
+                }
+            });
+        }
+        OpBody::Doc(DocOp::DeleteTableRowById {
+            table_elem,
+            target,
+            row_id,
+            id,
+            ..
+        }) => {
+            let _ = document.with_block_mut(*table_elem, |block| {
+                if let BlockKind::Table { table } = &mut block.kind {
+                    let current = table.row_by_id(*row_id).map_or(*target, |row| row.elem_id);
+                    table.remove_row(current, *id);
+                }
+            });
+        }
+        OpBody::Doc(DocOp::SetTableMetadata {
+            table_elem,
+            id,
+            columns,
+            header,
+            ..
+        }) => {
+            let _ = document.with_block_mut(*table_elem, |block| {
+                if let BlockKind::Table { table } = &mut block.kind {
+                    table.set_columns(
+                        columns
+                            .iter()
+                            .map(|alignment| ColumnDef {
+                                alignment: alignment_from_wire(*alignment),
+                            })
+                            .collect(),
+                        *id,
+                    );
+                    table.set_header(header.clone(), *id);
+                }
+            });
+        }
+        OpBody::Doc(DocOp::MoveTableRow {
+            table_elem,
+            row_id,
+            id,
+            after,
+            right_origin,
+            ..
+        }) => {
+            let _ = document.with_block_mut(*table_elem, |block| {
+                if let BlockKind::Table { table } = &mut block.kind {
+                    table.move_row(*row_id, *id, *after, *right_origin);
                 }
             });
         }

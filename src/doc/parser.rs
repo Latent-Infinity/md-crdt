@@ -18,7 +18,7 @@ impl Parser {
             let mut index = 1;
             while index < lines.len() {
                 if lines[index].trim() == "---" {
-                    frontmatter = Some(fm_lines.join("\n"));
+                    frontmatter = Some(Frontmatter::parse(fm_lines.join("\n")));
                     start_index = index + 1;
                     break;
                 }
@@ -232,8 +232,12 @@ fn parse_blocks_with_spans(
         // ATX heading: # .. ######
         if let Some((level, title)) = parse_atx_heading(trimmed) {
             let elem_id = next_op_id(counter);
-            let text = units_from_str(title, counter, 0);
-            let block = Block::new(BlockKind::Heading { level, text }, elem_id);
+            let block = inline::parse_text_block(
+                |text| BlockKind::Heading { level, text },
+                title,
+                elem_id,
+                counter,
+            );
             record_span(&mut spans, block.id, index, index + 1);
             out.push(block);
             index += 1;
@@ -255,8 +259,12 @@ fn parse_blocks_with_spans(
         {
             let title = trimmed;
             let elem_id = next_op_id(counter);
-            let text = units_from_str(title, counter, 0);
-            let block = Block::new(BlockKind::Heading { level, text }, elem_id);
+            let block = inline::parse_text_block(
+                |text| BlockKind::Heading { level, text },
+                title,
+                elem_id,
+                counter,
+            );
             record_span(&mut spans, block.id, index, index + 2);
             out.push(block);
             index += 2;
@@ -283,8 +291,12 @@ fn parse_blocks_with_spans(
             end_index += 1;
         }
         let elem_id = next_op_id(counter);
-        let text = units_from_str(&paragraph_lines.join("\n"), counter, 0);
-        let block = Block::new(BlockKind::Paragraph { text }, elem_id);
+        let block = inline::parse_text_block(
+            |text| BlockKind::Paragraph { text },
+            &paragraph_lines.join("\n"),
+            elem_id,
+            counter,
+        );
         record_span(&mut spans, block.id, index, end_index);
         out.push(block);
         index = end_index;
@@ -517,8 +529,12 @@ fn parse_list(
                 if !para_lines.is_empty() {
                     let joined = para_lines.join("\n");
                     let eid = next_op_id(counter);
-                    let text = units_from_str(&joined, counter, 0);
-                    children.push(Block::new(BlockKind::Paragraph { text }, eid));
+                    children.push(inline::parse_text_block(
+                        |text| BlockKind::Paragraph { text },
+                        &joined,
+                        eid,
+                        counter,
+                    ));
                     para_lines.clear();
                 }
                 let (nested, next) = parse_list(lines, i, counter, cind);
@@ -539,8 +555,12 @@ fn parse_list(
         if !para_lines.is_empty() {
             let joined = para_lines.join("\n");
             let eid = next_op_id(counter);
-            let text = units_from_str(&joined, counter, 0);
-            children.push(Block::new(BlockKind::Paragraph { text }, eid));
+            children.push(inline::parse_text_block(
+                |text| BlockKind::Paragraph { text },
+                &joined,
+                eid,
+                counter,
+            ));
         }
 
         let child_seq =
@@ -564,7 +584,7 @@ fn parse_list(
     (block, i)
 }
 
-fn next_op_id(counter: &mut u64) -> OpId {
+pub(super) fn next_op_id(counter: &mut u64) -> OpId {
     let id = OpId {
         counter: *counter,
         peer: 0,

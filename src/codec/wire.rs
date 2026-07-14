@@ -4,9 +4,12 @@
 //! `Sequence` maps, pending buffers, and runtime `Block` state are never
 //! encoded here.
 
-use crate::core::OpId;
+use crate::core::mark::{Anchor, MarkKind, MarkValue};
+use crate::core::{OpId, StateVector};
 use crate::doc::BlockId;
+use crate::doc::Frontmatter;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Current wire protocol version for [`Envelope`].
 pub const WIRE_VERSION: u16 = 1;
@@ -53,6 +56,16 @@ pub struct MovedTextUnitWire {
     pub grapheme: String,
 }
 
+/// One logical block placement inside an atomic move range.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MovedBlockWire {
+    pub block_id: BlockId,
+    pub target: OpId,
+    pub id: OpId,
+    pub after: Option<OpId>,
+    pub right_origin: Option<OpId>,
+}
+
 /// Text-bearing block metadata needed to materialize the second half of a split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TextBlockKindWire {
@@ -90,6 +103,13 @@ pub enum DocOp {
         /// Delete-op id; also `Operation.id` when this is the sole effect.
         id: OpId,
     },
+    /// Delete a logical block regardless of its winning concurrent placement.
+    DeleteBlockById {
+        parent: Option<OpId>,
+        target: OpId,
+        block_id: BlockId,
+        id: OpId,
+    },
     /// Nested RGA inserts into a paragraph body (one element per grapheme).
     InsertText {
         block_elem: OpId,
@@ -105,6 +125,38 @@ pub enum DocOp {
         id: OpId,
         /// Existing unit element ids to tombstone.
         targets: Vec<OpId>,
+    },
+    /// Create/update one causal mark interval over stable text-unit anchors.
+    SetMark {
+        block_elem: OpId,
+        block_id: BlockId,
+        id: OpId,
+        kind: MarkKind,
+        start: Anchor,
+        end: Anchor,
+        attrs: BTreeMap<String, MarkValue>,
+    },
+    /// Causally remove one complete mark interval.
+    RemoveMark {
+        block_elem: OpId,
+        block_id: BlockId,
+        interval_id: OpId,
+        id: OpId,
+        observed: StateVector,
+    },
+    /// LWW update/delete of one supported top-level frontmatter key.
+    SetFrontmatterField {
+        id: OpId,
+        key: String,
+        value: Option<String>,
+    },
+    /// Establish the lossless frontmatter base on first ingest.
+    InitializeFrontmatter { id: OpId, frontmatter: Frontmatter },
+    /// Atomically move one block or a contiguous heading section.
+    MoveBlocks {
+        to_parent: Option<OpId>,
+        id: OpId,
+        blocks: Vec<MovedBlockWire>,
     },
     /// Split one text-bearing block, transferring the visible suffix to a new sibling.
     SplitBlock {
@@ -153,6 +205,32 @@ pub enum DocOp {
         table_id: BlockId,
         target: OpId,
         id: OpId,
+    },
+    /// Delete a logical row regardless of its winning concurrent placement.
+    DeleteTableRowById {
+        table_elem: OpId,
+        table_id: BlockId,
+        target: OpId,
+        row_id: BlockId,
+        id: OpId,
+    },
+    /// Update table header and column alignment atomically.
+    SetTableMetadata {
+        table_elem: OpId,
+        table_id: BlockId,
+        id: OpId,
+        columns: Vec<ColumnAlignmentWire>,
+        header: Vec<String>,
+    },
+    /// Move one logical row under a fresh placement id.
+    MoveTableRow {
+        table_elem: OpId,
+        table_id: BlockId,
+        row_id: BlockId,
+        target: OpId,
+        id: OpId,
+        after: Option<OpId>,
+        right_origin: Option<OpId>,
     },
 }
 
@@ -228,13 +306,22 @@ pub fn insert_block_paragraph_is_empty(envelope: &Envelope) -> bool {
         },
         OpBody::Doc(
             DocOp::DeleteBlock { .. }
+            | DocOp::DeleteBlockById { .. }
             | DocOp::InsertText { .. }
             | DocOp::DeleteText { .. }
+            | DocOp::SetMark { .. }
+            | DocOp::RemoveMark { .. }
+            | DocOp::SetFrontmatterField { .. }
+            | DocOp::InitializeFrontmatter { .. }
+            | DocOp::MoveBlocks { .. }
             | DocOp::SplitBlock { .. }
             | DocOp::MergeBlocks { .. }
             | DocOp::InsertTableRow { .. }
             | DocOp::SetTableRowCells { .. }
-            | DocOp::DeleteTableRow { .. },
+            | DocOp::DeleteTableRow { .. }
+            | DocOp::DeleteTableRowById { .. }
+            | DocOp::SetTableMetadata { .. }
+            | DocOp::MoveTableRow { .. },
         ) => true,
     }
 }
@@ -247,13 +334,22 @@ pub(crate) fn validate_envelope_structure(envelope: &Envelope) -> Result<(), sup
         }
         OpBody::Doc(
             DocOp::DeleteBlock { .. }
+            | DocOp::DeleteBlockById { .. }
             | DocOp::InsertText { .. }
             | DocOp::DeleteText { .. }
+            | DocOp::SetMark { .. }
+            | DocOp::RemoveMark { .. }
+            | DocOp::SetFrontmatterField { .. }
+            | DocOp::InitializeFrontmatter { .. }
+            | DocOp::MoveBlocks { .. }
             | DocOp::SplitBlock { .. }
             | DocOp::MergeBlocks { .. }
             | DocOp::InsertTableRow { .. }
             | DocOp::SetTableRowCells { .. }
-            | DocOp::DeleteTableRow { .. },
+            | DocOp::DeleteTableRow { .. }
+            | DocOp::DeleteTableRowById { .. }
+            | DocOp::SetTableMetadata { .. }
+            | DocOp::MoveTableRow { .. },
         ) => {}
     }
     Ok(())

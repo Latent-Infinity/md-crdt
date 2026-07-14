@@ -6,8 +6,12 @@ use super::{
     Vault, VaultError, block_content, fingerprint_document, hash_string, match_blocks,
 };
 use crate::codec::JsonOpCodec;
+use crate::core::mark::{MarkKind, MarkValue};
 use crate::core::{OpId, PeerId, Sequence, StateVector};
-use crate::doc::{Block, BlockId, BlockKind, Document, ListItem, Parser, paragraph_visible_string};
+use crate::doc::{
+    Block, BlockId, BlockKind, Document, ListItem, Parser, RowId, Table, block_id_from_op,
+    paragraph_visible_string,
+};
 use crate::session::{CollaborativeDocument, SessionApplyResult, SessionError, SnapshotError};
 use crate::storage::{Storage, StorageError};
 use crate::sync::{ChangeMessage, ValidationLimits};
@@ -352,26 +356,21 @@ impl VaultSession {
         }
 
         let parsed = Parser::parse(&content);
-        // Table row ops are wire-ready, but ingest doesn't yet turn a parsed multi-row table
-        // into InsertBlock(empty) + InsertTableRow ops, so skip the whole file (don't record its
-        // hash, so it gets picked up once table diff lands). No silent flatten, no vault-wide abort.
-        if document_contains_table(&parsed) {
-            return Ok(IngestOutcome::Skipped);
-        }
-
         // Ensure session is loaded before matching against its CRDT state.
         self.session_mut(&rel)?;
         let ops = {
             let session = self.docs.get_mut(&rel).expect("session opened above");
+            let mut ops = sync_frontmatter(session, &parsed)?;
             let empty = session.document().blocks_in_order().is_empty();
             if empty {
                 // First ingest: insert the parsed tree recursively (blockquotes preserved).
                 let blocks = parsed.blocks_in_order();
-                insert_tree(session, None, &blocks)?
+                ops += insert_tree(session, None, &blocks)?;
             } else {
                 // Re-ingest: recursive structure match (including nested blockquotes).
-                apply_structure_ingest(session, &parsed)?
+                ops += apply_structure_ingest(session, &parsed)?;
             }
+            ops
         };
 
         self.docs
@@ -672,19 +671,8 @@ pub enum IngestOutcome {
     NoOp,
     /// File ingested; approximate structure-op count.
     Changed(usize),
-    /// File contains not-yet-ingestable blocks (e.g. tables).
+    /// File contains a block type that cannot yet be represented structurally.
     Skipped,
-}
-
-fn document_contains_table(doc: &Document) -> bool {
-    fn walk(blocks: &[&Block]) -> bool {
-        blocks.iter().any(|b| match &b.kind {
-            BlockKind::Table { .. } => true,
-            BlockKind::BlockQuote { children } => walk(&children.iter_asc().collect::<Vec<_>>()),
-            _ => false,
-        })
-    }
-    walk(&doc.blocks_in_order())
 }
 
 /// Insert a parsed block tree into `parent`'s children (top-level when `None`),
@@ -723,6 +711,55 @@ fn apply_structure_ingest(
         .collect();
     let new = parsed.blocks_in_order();
     sync_tree(session, None, &old, &new)
+}
+
+fn sync_frontmatter(
+    session: &mut CollaborativeDocument,
+    parsed: &Document,
+) -> Result<usize, VaultError> {
+    match (&session.document().frontmatter, &parsed.frontmatter) {
+        (None, Some(frontmatter)) => {
+            session
+                .initialize_frontmatter(frontmatter.clone())
+                .map_err(session_err)?;
+            Ok(1)
+        }
+        (Some(current), Some(desired)) if current.is_structured() && desired.is_structured() => {
+            let current: BTreeMap<String, Option<String>> = current
+                .entries()
+                .map(|(key, value)| (key.to_string(), value.map(str::to_string)))
+                .collect();
+            let desired: BTreeMap<String, Option<String>> = desired
+                .entries()
+                .map(|(key, value)| (key.to_string(), value.map(str::to_string)))
+                .collect();
+            let keys: HashSet<String> = current.keys().chain(desired.keys()).cloned().collect();
+            let mut ops = 0;
+            for key in keys {
+                let old = current.get(&key).cloned().flatten();
+                let new = desired.get(&key).cloned().flatten();
+                if old != new {
+                    session
+                        .set_frontmatter_field(key, new)
+                        .map_err(session_err)?;
+                    ops += 1;
+                }
+            }
+            Ok(ops)
+        }
+        (Some(current), None) if current.is_structured() => {
+            let keys: Vec<String> = current.entries().map(|(key, _)| key.to_string()).collect();
+            let mut ops = 0;
+            for key in keys {
+                session
+                    .set_frontmatter_field(key, None)
+                    .map_err(session_err)?;
+                ops += 1;
+            }
+            Ok(ops)
+        }
+        _ => Ok(0),
+    }
 }
 
 /// Fingerprint used at one tree level. Quotes are structure tokens so nested text
@@ -805,6 +842,28 @@ fn sync_tree(
         matched_by_new.insert(new_idx, old_id);
     }
 
+    // Position-pair residual tables so metadata/cell rewrites keep table and row identities.
+    let rem_old_tables: Vec<BlockId> = old
+        .iter()
+        .filter(|block| {
+            removed.contains(&block.id) && matches!(block.kind, BlockKind::Table { .. })
+        })
+        .map(|block| block.id)
+        .collect();
+    let rem_new_tables: Vec<usize> = new
+        .iter()
+        .enumerate()
+        .filter(|(index, block)| {
+            added.contains(index) && matches!(block.kind, BlockKind::Table { .. })
+        })
+        .map(|(index, _)| index)
+        .collect();
+    for (old_id, new_index) in rem_old_tables.into_iter().zip(rem_new_tables) {
+        removed.remove(&old_id);
+        added.remove(&new_index);
+        matched_by_new.insert(new_index, old_id);
+    }
+
     let mut ops = 0usize;
 
     // Structural deletes (unpaired removed blocks) first.
@@ -824,7 +883,37 @@ fn sync_tree(
             let Some(ob) = old_by_id.get(old_id) else {
                 continue;
             };
-            after = Some(ob.elem_id);
+            let current_elem = session
+                .document()
+                .find_block_by_id(*old_id)
+                .map(|block| block.elem_id)
+                .ok_or(VaultError::UnsupportedIngestBlock("missing matched block"))?;
+            let current_ids: Vec<OpId> = session
+                .document()
+                .container_children(parent)
+                .ok_or(VaultError::UnsupportedIngestBlock("missing parent"))?
+                .iter()
+                .map(|block| block.elem_id)
+                .collect();
+            let predecessor = current_ids
+                .iter()
+                .position(|id| *id == current_elem)
+                .and_then(|position| position.checked_sub(1))
+                .map(|position| current_ids[position]);
+            let current_elem = if predecessor != after {
+                session
+                    .move_block(*old_id, parent, after)
+                    .map_err(session_err)?;
+                ops += 1;
+                session
+                    .document()
+                    .find_block_by_id(*old_id)
+                    .expect("moved block remains addressable")
+                    .elem_id
+            } else {
+                current_elem
+            };
+            after = Some(current_elem);
             match (&ob.kind, &nb.kind) {
                 (
                     BlockKind::BlockQuote { children: old_kids },
@@ -841,14 +930,19 @@ fn sync_tree(
                         })
                         .unwrap_or_else(|| old_kids.iter_asc().cloned().collect());
                     let new_refs: Vec<&Block> = new_kids.iter_asc().collect();
-                    ops += sync_tree(session, Some(ob.elem_id), &live_old, &new_refs)?;
+                    ops += sync_tree(session, Some(current_elem), &live_old, &new_refs)?;
                 }
-                (BlockKind::Paragraph { text: old_t }, BlockKind::Paragraph { text: new_t }) => {
+                (BlockKind::Table { .. }, BlockKind::Table { table }) => {
+                    ops += sync_table(session, ob.id, table)?;
+                }
+                (BlockKind::Paragraph { text: old_t }, BlockKind::Paragraph { text: new_t })
+                | (
+                    BlockKind::Heading { text: old_t, .. },
+                    BlockKind::Heading { text: new_t, .. },
+                ) => {
                     let old_s = paragraph_visible_string(old_t);
                     let new_s = paragraph_visible_string(new_t);
-                    if old_s != new_s {
-                        ops += apply_paragraph_text_diff(session, ob.id, &old_s, &new_s)?;
-                    }
+                    ops += apply_paragraph_text_diff(session, ob.id, &old_s, &new_s, nb)?;
                 }
                 // Matched non-paragraph leaves with different content: leave as-is for now
                 // (code/raw full replace would be delete+insert; content match already paired equals).
@@ -875,13 +969,48 @@ fn apply_paragraph_text_diff(
     block_id: BlockId,
     old_text: &str,
     new_text: &str,
+    desired_block: &Block,
 ) -> Result<usize, VaultError> {
     let old_g = graphemes_of(old_text);
     let new_g = graphemes_of(new_text);
-    if old_g == new_g {
+    let desired_marks = mark_specs(desired_block);
+    let current_marks = session
+        .document()
+        .find_block_by_id(block_id)
+        .map(mark_specs)
+        .unwrap_or_default();
+    if old_g == new_g && mark_semantics(&current_marks) == mark_semantics(&desired_marks) {
         return Ok(0);
     }
     let steps = lcs_steps(&old_g, &new_g);
+    let old_to_new: HashMap<usize, usize> = steps
+        .iter()
+        .filter_map(|step| match step {
+            super::diff::GraphemeStep::Equal { old, new } => Some((*old, *new)),
+            _ => None,
+        })
+        .collect();
+    let projected = if desired_marks.is_empty() {
+        current_marks
+            .iter()
+            .filter_map(|(_, kind, range, attrs)| {
+                let mapped: Vec<usize> = range
+                    .clone()
+                    .filter_map(|old| old_to_new.get(&old).copied())
+                    .collect();
+                Some((
+                    kind.clone(),
+                    *mapped.first()?..mapped.last()?.saturating_add(1),
+                    attrs.clone(),
+                ))
+            })
+            .collect::<Vec<_>>()
+    } else {
+        desired_marks
+            .iter()
+            .map(|(_, kind, range, attrs)| (kind.clone(), range.clone(), attrs.clone()))
+            .collect()
+    };
     let mut ops = 0usize;
 
     // Deletes first (high index → low) so offsets stay valid.
@@ -919,6 +1048,220 @@ fn apply_paragraph_text_diff(
             .map_err(session_err)?;
         ops += 1;
     }
+
+    let active_ids: Vec<OpId> = session
+        .document()
+        .find_block_by_id(block_id)
+        .map(|block| {
+            block
+                .marks
+                .iter_active_intervals()
+                .map(|mark| mark.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    for interval_id in active_ids {
+        session
+            .remove_mark(block_id, interval_id)
+            .map_err(session_err)?;
+        ops += 1;
+    }
+    for (kind, range, attrs) in projected {
+        if range.start < range.end && range.end <= new_g.len() {
+            session
+                .set_mark(block_id, range, kind, attrs)
+                .map_err(session_err)?;
+            ops += 1;
+        }
+    }
+    Ok(ops)
+}
+
+type MarkSpec = (
+    OpId,
+    MarkKind,
+    std::ops::Range<usize>,
+    BTreeMap<String, MarkValue>,
+);
+
+fn mark_specs(block: &Block) -> Vec<MarkSpec> {
+    let Some(text) = crate::doc::block_text_seq(&block.kind) else {
+        return Vec::new();
+    };
+    let ids = crate::doc::paragraph_visible_ids(text);
+    block
+        .marks
+        .resolved_intervals(&ids)
+        .into_iter()
+        .map(|(interval, start, end)| {
+            (
+                interval.id,
+                interval.kind.clone(),
+                start..end,
+                interval
+                    .attrs
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.get()))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn mark_semantics(
+    specs: &[MarkSpec],
+) -> Vec<(
+    MarkKind,
+    std::ops::Range<usize>,
+    BTreeMap<String, MarkValue>,
+)> {
+    let mut values: Vec<_> = specs
+        .iter()
+        .map(|(_, kind, range, attrs)| (kind.clone(), range.clone(), attrs.clone()))
+        .collect();
+    values.sort_by(|left, right| {
+        (&left.1.start, &left.1.end, &left.0, &left.2).cmp(&(
+            &right.1.start,
+            &right.1.end,
+            &right.0,
+            &right.2,
+        ))
+    });
+    values
+}
+
+fn apply_parsed_marks(
+    session: &mut CollaborativeDocument,
+    parsed: &Block,
+    block_id: BlockId,
+) -> Result<usize, VaultError> {
+    let mut ops = 0;
+    for (_, kind, range, attrs) in mark_specs(parsed) {
+        session
+            .set_mark(block_id, range, kind, attrs)
+            .map_err(session_err)?;
+        ops += 1;
+    }
+    Ok(ops)
+}
+
+fn sync_table(
+    session: &mut CollaborativeDocument,
+    table_id: BlockId,
+    parsed: &Table,
+) -> Result<usize, VaultError> {
+    let current = session
+        .document()
+        .find_block_by_id(table_id)
+        .and_then(|block| match &block.kind {
+            BlockKind::Table { table } => Some(table.clone()),
+            _ => None,
+        })
+        .ok_or(VaultError::UnsupportedIngestBlock("matched table missing"))?;
+    let mut ops = 0usize;
+    if current.columns.get_ref() != parsed.columns.get_ref()
+        || current.header.get_ref() != parsed.header.get_ref()
+    {
+        session
+            .set_table_metadata(table_id, parsed.columns.get(), parsed.header.get())
+            .map_err(session_err)?;
+        ops += 1;
+    }
+
+    let old_rows = current.rows_in_order();
+    let new_rows = parsed.rows_in_order();
+    let mut used_old = HashSet::new();
+    let mut mapping: Vec<Option<RowId>> = vec![None; new_rows.len()];
+    for (new_index, new_row) in new_rows.iter().enumerate() {
+        if let Some(old_row) = old_rows.iter().find(|old_row| {
+            !used_old.contains(&old_row.id) && old_row.cells.get_ref() == new_row.cells.get_ref()
+        }) {
+            used_old.insert(old_row.id);
+            mapping[new_index] = Some(old_row.id);
+        }
+    }
+    let remaining_old: Vec<_> = old_rows
+        .iter()
+        .filter(|row| !used_old.contains(&row.id))
+        .collect();
+    let remaining_new: Vec<_> = mapping
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| row.is_none().then_some(index))
+        .collect();
+    for (old_row, new_index) in remaining_old.iter().zip(&remaining_new) {
+        used_old.insert(old_row.id);
+        mapping[*new_index] = Some(old_row.id);
+        if old_row.cells.get_ref() != new_rows[*new_index].cells.get_ref() {
+            session
+                .set_table_row_cells(table_id, old_row.elem_id, new_rows[*new_index].cells.get())
+                .map_err(session_err)?;
+            ops += 1;
+        }
+    }
+    for old_row in old_rows.iter().filter(|row| !used_old.contains(&row.id)) {
+        session
+            .delete_table_row(table_id, old_row.elem_id)
+            .map_err(session_err)?;
+        ops += 1;
+    }
+    for new_index in remaining_new.into_iter().skip(remaining_old.len()) {
+        let after = mapping[..new_index]
+            .iter()
+            .rev()
+            .flatten()
+            .find_map(|row_id| {
+                session
+                    .document()
+                    .find_block_by_id(table_id)
+                    .and_then(|block| match &block.kind {
+                        BlockKind::Table { table } => {
+                            table.row_by_id(*row_id).map(|row| row.elem_id)
+                        }
+                        _ => None,
+                    })
+            });
+        let elem = session
+            .insert_table_row(table_id, after, new_rows[new_index].cells.get())
+            .map_err(session_err)?;
+        mapping[new_index] = Some(block_id_from_op(elem));
+        ops += 1;
+    }
+
+    let desired: Vec<RowId> = mapping.into_iter().flatten().collect();
+    let mut after = None;
+    for row_id in desired {
+        let (elem, predecessor) = session
+            .document()
+            .find_block_by_id(table_id)
+            .and_then(|block| match &block.kind {
+                BlockKind::Table { table } => {
+                    let rows: Vec<_> = table.rows.iter().collect();
+                    let position = rows.iter().position(|row| row.id == row_id)?;
+                    Some((
+                        rows[position].elem_id,
+                        position.checked_sub(1).map(|index| rows[index].elem_id),
+                    ))
+                }
+                _ => None,
+            })
+            .ok_or(VaultError::UnsupportedIngestBlock("row disappeared"))?;
+        if predecessor != after {
+            session
+                .move_table_row(table_id, row_id, after)
+                .map_err(session_err)?;
+            ops += 1;
+            after = session
+                .document()
+                .find_block_by_id(table_id)
+                .and_then(|block| match &block.kind {
+                    BlockKind::Table { table } => table.row_by_id(row_id).map(|row| row.elem_id),
+                    _ => None,
+                });
+        } else {
+            after = Some(elem);
+        }
+    }
     Ok(ops)
 }
 
@@ -936,7 +1279,8 @@ fn insert_one(
             let id = session
                 .insert_paragraph_in(parent, after, &body)
                 .map_err(session_err)?;
-            Ok((id, n))
+            let marks = apply_parsed_marks(session, block, block_id_from_op(id))?;
+            Ok((id, n + marks))
         }
         BlockKind::Heading { level, text } => {
             // Insert heading skeleton with body via insert_block + insert_text when non-empty.
@@ -957,6 +1301,7 @@ fn insert_one(
                 session.insert_text(bid, 0, &body).map_err(session_err)?;
                 n += 1;
             }
+            n += apply_parsed_marks(session, block, block_id_from_op(id))?;
             Ok((id, n))
         }
         BlockKind::List { ordered, items } => {
@@ -1033,7 +1378,23 @@ fn insert_one(
             let nested = insert_tree(session, Some(q), &kids)?;
             Ok((q, 1 + nested))
         }
-        BlockKind::Table { .. } => Err(VaultError::UnsupportedIngestBlock("table")),
+        BlockKind::Table { table } => {
+            let id = session
+                .insert_table_in(parent, after, table.columns.get(), table.header.get())
+                .map_err(session_err)?;
+            let table_id = block_id_from_op(id);
+            let mut row_after = None;
+            let mut ops = 1;
+            for row in table.rows.iter() {
+                row_after = Some(
+                    session
+                        .insert_table_row(table_id, row_after, row.cells.get())
+                        .map_err(session_err)?,
+                );
+                ops += 1;
+            }
+            Ok((id, ops))
+        }
     }
 }
 

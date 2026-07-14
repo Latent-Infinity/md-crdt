@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Snapshot format v3 persistence for lossless source state while retaining v1/v2 reads
 - Scoped edits re-render only their owning region; unsupported raw blocks remain byte-preserved and reject structured text mutation
 
+#### Semantic inline Markdown and frontmatter (`md-crdt::doc` / `codec` / `session`)
+- Supported bold, italic, code, and link syntax now parses to semantic grapheme text plus unit-anchored causal intervals
+- Dirty structural serialization renders mark/link delimiter attributes; wire exchange and snapshots retain mark history
+- Lossless frontmatter bases preserve comments, order, and quoting while per-key LWW operations collaborate on supported top-level fields
+- Unsupported or malformed YAML remains opaque and rejects structured mutation
+- Public byte/grapheme range helpers resolve exact text ranges to stable unit anchors
+
+#### Identity-preserving moves and replacement (`md-crdt::session` / `filesync`)
+- Atomic block and heading-section moves preserve block, descendant, text-unit, row, and mark/link identities under fresh placement ids
+- Concurrent moves converge by placement id; logical-id delete wins move/delete races; cycle and anchor rejection do not burn clock ids
+- External grapheme replacement projects marks through retained Unicode semantic ranges with outside-boundary/inside-expanding affinity
+
 #### Wire Codec (`md-crdt::codec`)
 - Versioned `Envelope` / `DocOp` DTOs for collaborative ops (`InsertBlock`, `DeleteBlock`, `InsertText`, `DeleteText`)
 - `JsonOpCodec` encode/decode with nest-depth limits and unknown-version rejection
@@ -56,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Nested paragraph apply via `Sequence::with_value_mut` (no full block clone per unit)
 - Concurrent multi-peer same-paragraph insert/delete convergence tests
 - Nested collaborative editing: `DocOp::InsertBlock`/`DeleteBlock` carry an optional `parent` container id; session `insert_block_in`/`insert_paragraph_in` and recursive text apply support editing blocks inside blockquotes (arbitrary depth)
-- Vault ingest preserves blockquote nesting (no longer flattened) and skips table files per-file (`IngestReport.files_skipped`) instead of aborting the whole vault
+- Vault ingest preserves blockquote nesting (no longer flattened); table-bearing files ingest structurally instead of being skipped
 
 #### Mark unification (`md-crdt::core::mark`)
 - Single public `MarkSet` is the rich causal remove-wins CRDT (`MarkKind`, `Anchor`, spans)
@@ -100,6 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Canonical table serialization and stable parse/serialize round trips
 - Table block metadata on `InsertBlock`; rows use independent insert/update/delete wire operations
 - Collaborative table APIs with concurrent row-insert convergence and LWW row-cell updates
+- Parsed table ingest emits metadata and row insert/update/delete/reorder operations while preserving matched table/row and unrelated prose identities
 
 #### Collaborative block split and merge (`md-crdt::codec` / `session`)
 - Wire `DocOp::SplitBlock` / `MergeBlocks` operations for paragraph and heading siblings

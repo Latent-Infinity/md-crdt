@@ -117,6 +117,18 @@ fn invalid_table_mutations_do_not_advance_clock() {
         ),
         Err(SessionError::NotTable)
     ));
+    assert!(matches!(
+        session.delete_table_row(paragraph_id, paragraph),
+        Err(SessionError::NotTable)
+    ));
+    assert!(matches!(
+        session.set_table_metadata(paragraph_id, Vec::new(), Vec::new()),
+        Err(SessionError::NotTable)
+    ));
+    assert!(matches!(
+        session.move_table_row(paragraph_id, paragraph_id, None),
+        Err(SessionError::NotTable)
+    ));
     assert_eq!(session.peek_next_id(), before);
 
     let table_elem = session
@@ -147,6 +159,20 @@ fn invalid_table_mutations_do_not_advance_clock() {
         Err(SessionError::TableRowNotFound)
     ));
     assert_eq!(session.peek_next_id(), before);
+    let row = session
+        .insert_table_row(table_id, None, vec!["row".into()])
+        .unwrap();
+    let row_id = block_id_from_op(row);
+    let before_move = session.peek_next_id();
+    assert!(matches!(
+        session.move_table_row(table_id, row_id, Some(row)),
+        Err(SessionError::InvalidMove)
+    ));
+    assert!(matches!(
+        session.move_table_row(table_id, row_id, Some(missing)),
+        Err(SessionError::InvalidMove)
+    ));
+    assert_eq!(session.peek_next_id(), before_move);
 }
 
 #[test]
@@ -176,4 +202,84 @@ fn nonempty_table_block_requires_row_operations() {
         Err(SessionError::NonEmptyTableOnInsertBlock)
     ));
     assert_eq!(session.peek_next_id(), id);
+}
+
+#[test]
+fn table_metadata_move_and_logical_delete_exchange() {
+    let mut first = CollaborativeDocument::new(1);
+    let table_elem = first
+        .insert_table(
+            None,
+            vec![ColumnDef {
+                alignment: ColumnAlignment::Left,
+            }],
+            vec!["old".into()],
+        )
+        .unwrap();
+    let table_id = block_id_from_op(table_elem);
+    let row_a = first
+        .insert_table_row(table_id, None, vec!["a".into()])
+        .unwrap();
+    let row_b = first
+        .insert_table_row(table_id, Some(row_a), vec!["b".into()])
+        .unwrap();
+    let row_b_id = block_id_from_op(row_b);
+    let mut second = CollaborativeDocument::new(2);
+    exchange(&first, &mut second);
+
+    first
+        .set_table_metadata(
+            table_id,
+            vec![ColumnDef {
+                alignment: ColumnAlignment::Center,
+            }],
+            vec!["new".into()],
+        )
+        .unwrap();
+    first.move_table_row(table_id, row_b_id, None).unwrap();
+    first.delete_table_row(table_id, row_a).unwrap();
+    exchange(&first, &mut second);
+    assert_eq!(first.document(), second.document());
+    assert_eq!(
+        second.document().serialize(EquivalenceMode::Structural),
+        "| new |\n| :---: |\n| b |"
+    );
+}
+
+#[test]
+fn concurrent_row_move_and_delete_converge_with_delete_wins() {
+    let mut first = CollaborativeDocument::new(1);
+    let table_elem = first
+        .insert_table(
+            None,
+            vec![ColumnDef {
+                alignment: ColumnAlignment::Left,
+            }],
+            vec!["h".into()],
+        )
+        .unwrap();
+    let table_id = block_id_from_op(table_elem);
+    let target = first
+        .insert_table_row(table_id, None, vec!["target".into()])
+        .unwrap();
+    let anchor = first
+        .insert_table_row(table_id, Some(target), vec!["anchor".into()])
+        .unwrap();
+    let target_id = block_id_from_op(target);
+    let mut second = CollaborativeDocument::new(2);
+    exchange(&first, &mut second);
+
+    first
+        .move_table_row(table_id, target_id, Some(anchor))
+        .unwrap();
+    second.delete_table_row(table_id, target).unwrap();
+    exchange(&first, &mut second);
+    exchange(&second, &mut first);
+    assert_eq!(first.document(), second.document());
+    assert!(
+        !first
+            .document()
+            .serialize(EquivalenceMode::Structural)
+            .contains("target")
+    );
 }

@@ -4,10 +4,11 @@
 //! crash recovery and late join. Full op log growth is accepted for 0.1
 //! (compaction is a later concern).
 
+use crate::core::mark::MarkSet;
 use crate::core::{Element, LwwRegister, OpId, PeerId, Sequence};
 use crate::doc::{
     Block, BlockId, BlockKind, CellContent, ColumnAlignment, ColumnDef, Document, DocumentSource,
-    Table, TableRow, TextUnit, units_from_str,
+    Frontmatter, Table, TableRow, TextUnit, units_from_str,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -54,7 +55,7 @@ pub struct SessionSnapshot {
 /// Serializable document: ordered sequence elements (incl. tombstones).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentDto {
-    pub frontmatter: Option<String>,
+    pub frontmatter: Option<Frontmatter>,
     pub blocks: Vec<ElementDto<BlockDto>>,
     #[serde(default)]
     pub(crate) source: Option<DocumentSource>,
@@ -73,6 +74,8 @@ pub struct BlockDto {
     pub id: BlockId,
     pub elem_id: OpId,
     pub kind: BlockKindDto,
+    #[serde(default)]
+    pub marks: MarkSet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +232,7 @@ fn walk_block_seq_max_peer(peer: PeerId, seq: &Sequence<Block>, max: &mut u64) {
             *max = (*max).max(elem.id.counter);
         }
         if let Some(block) = elem.value.as_ref() {
+            walk_marks_max_peer(peer, &block.marks, max);
             walk_kind_max_peer(peer, &block.kind, max);
         }
     }
@@ -248,6 +252,27 @@ fn walk_kind_max_peer(peer: PeerId, kind: &BlockKind, max: &mut u64) {
             }
         }
         _ => {}
+    }
+}
+
+fn walk_marks_max_peer(peer: PeerId, marks: &MarkSet, max: &mut u64) {
+    for interval in marks.iter_all_intervals() {
+        for id in [interval.id, interval.op_id] {
+            if id.peer == peer {
+                *max = (*max).max(id.counter);
+            }
+        }
+        for register in interval.attrs.values() {
+            let id = register.op_id();
+            if id.peer == peer {
+                *max = (*max).max(id.counter);
+            }
+        }
+    }
+    for (_, remove) in marks.iter_removes() {
+        if remove.op_id.peer == peer {
+            *max = (*max).max(remove.op_id.counter);
+        }
     }
 }
 
@@ -288,6 +313,7 @@ fn block_to_dto(block: &Block) -> BlockDto {
         id: block.id,
         elem_id: block.elem_id,
         kind: kind_to_dto(&block.kind),
+        marks: block.marks.clone(),
     }
 }
 
@@ -296,7 +322,7 @@ fn block_from_dto(dto: BlockDto) -> Block {
         id: dto.id,
         elem_id: dto.elem_id,
         kind: kind_from_dto(dto.kind),
-        marks: crate::core::mark::MarkSet::new(),
+        marks: dto.marks,
     }
 }
 

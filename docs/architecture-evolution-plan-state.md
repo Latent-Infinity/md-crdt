@@ -4,7 +4,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 | Field | Value |
 | --- | --- |
-| **Plan** | `docs/architecture-evolution.md` (Draft revision 9) |
+| **Plan** | `docs/architecture-evolution.md` (Draft revision 10) |
 | **Last updated** | 2026-07-13 |
 | **Tracking unit** | PR slices under design phases A–L |
 | **Joint consumer plan** | `../md-mcp/docs/joint-md-crdt-v2-implementation-plan.md` |
@@ -45,11 +45,11 @@ reinitialized and re-ingested from Markdown.
 | **PR-21** Joint workspace contract | **done** | Persistent vault/document identity, opaque revisions, direct Rust consumer contract |
 | **PR-22** Lossless source model | **done** | Per-root source regions preserve untouched bytes and opaque syntax |
 | **PR-23** Stateful ingest/durable export | **done** | Revision-checked refresh and crash-safe single-document Markdown publication |
-| **PR-24** Inline marks/links | **planned** | One unit-anchored semantic model with preserved source trivia |
-| **PR-25** Collaborative frontmatter | **planned** | Structured field operations plus opaque lossless fallback |
-| **PR-26** Block/section move | **planned** | Identity-preserving atomic range moves with frozen concurrency semantics |
-| **PR-27** Parsed table ingest | **planned** | Remove whole-file skip; structural row/metadata diffs preserve ids |
-| **PR-28** Mark-preserving replacement | **planned** | Deterministic boundary affinity and Unicode-safe range mapping |
+| **PR-24** Inline marks/links | **done** | Semantic grapheme text + causal mark/link intervals; delimiter attrs, wire, and snapshot history |
+| **PR-25** Collaborative frontmatter | **done** | Lossless raw base, per-key LWW ops, comment/order preservation, opaque rejection |
+| **PR-26** Block/section move | **done** | Atomic fresh-placement range moves; identity preservation; move/delete and cycle semantics |
+| **PR-27** Parsed table ingest | **done** | Table metadata and row insert/update/delete/reorder; table/prose ids preserved |
+| **PR-28** Mark-preserving replacement | **done** | Boundary affinity, retained-range projection, whole-replace drop, Unicode anchor helpers |
 | **PR-29** Descriptors/change summaries | **planned** | Borrow-first hierarchy and affected-id deltas for bounded consumers |
 | **PR-30** Atomic document batches | **planned** | Expected-revision precondition, no partial mutation/clock burn, compact receipt |
 | **PR-31** File lifecycle/multi-doc transaction | **planned** | Create/rename/delete and crash-recoverable cross-document publication |
@@ -84,11 +84,11 @@ reinitialized and re-ingested from Markdown.
 | Peer id format | Decimal `u64` text in `.mdcrdt/peer_id`; non-zero | Shared clock domain for all file sessions in a vault |
 | Ingest D1 scope | Structure only (add/remove); matched different text deferred to D2 | Ship block ops without grapheme LCS |
 | Ingest new paragraphs | `insert_paragraph` (N6-d) | Empty InsertBlock + InsertText body |
-| Pure reorder | Match preserves BlockIds; no move op yet | CRDT order may lag file order until move/reorder support |
+| Pure reorder | `MoveBlocks` allocates fresh placements while preserving logical ids | Re-ingest and explicit moves now update CRDT order instead of only retaining match ids |
 | Nested machinery packaging | Landed in same commit as PR-09 + plan-state | Prefer: feature commit (code+tests) then plan/docs commit, or a dedicated PR slice |
 | Quote editing via vault | Structure re-ingest supported; in-quote *text* LCS still PR-10 | Nested structure add/remove/re-ingest preserve quote + matched child ids |
 | Structure match floor | `min_match_score: 5000` for re-ingest | Default 2000 allowed content_sim=0 matches via position alone |
-| Text ingest LCS | Visible graphemes; deletes high→low then inserts; batch insert runs | Preserves unit OpIds on LCS; marks on deleted units dropped (D non-goal) |
+| Text ingest LCS | Visible graphemes; deletes high→low then inserts; batch insert runs | Preserves unit OpIds on LCS and Phase J projects mark ranges through retained semantic endpoints |
 | Unmatched paragraph pairing | Zip remaining removed/added paragraphs by order | Lets full rewrite still keep BlockId via LCS |
 | List indentation | Expand tabs to CommonMark four-column tab stops | Counting a tab as one character made indented list continuations normalize differently on the second parse; column expansion is deterministic and fixture-compatible |
 | Structured serialization | Canonical ATX headings and `-` / `1.` list markers | The runtime model intentionally does not retain source marker style; structural serialization prioritizes stable semantics and idempotence |
@@ -120,6 +120,12 @@ reinitialized and re-ingested from Markdown.
 | Move identity | Preserve block, descendant, unit, row, and mark ids; section moves are atomic | Agent targets remain valid and peers never observe a half-moved section |
 | Table ingest boundary | Emit table and row/metadata operations; never skip the containing file | Prose in a table-bearing file remains discoverable/editable |
 | Replacement mark policy | Split/trim/project anchored intervals deterministically; never silently broaden | Preserve justified formatting without inventing marked content |
+| Move placement ablation | Atomic range envelope over permanent per-id placement register | Sequence remains the single ordering authority; fresh placements preserve payload identities and make sections indivisible |
+| Concurrent move winner | Highest fresh placement id wins; losing placements materialize as tombstones | All replicas retain the same sequence history independent of delivery order |
+| Move/delete race | Logical-id delete wins | A delete targets the current winning placement, so delivery order cannot resurrect a concurrently deleted block/row |
+| Section membership | Capture the contiguous heading range at commit time | Concurrently inserted section children stay where inserted; the move payload is finite and deterministic |
+| Mark insertion affinity | Outside at start/end boundaries; expand strictly inside | Prevents boundary broadening while matching editor expectations inside formatted text |
+| Frontmatter fallback | Lossless raw base + per-key LWW; unsupported YAML is opaque | Structured edits preserve comments/order/quotes and fail closed rather than canonicalizing complex YAML |
 | `md-mcp` boundary | Core owns identity/semantics/deltas/batches; MCP owns schemas/search/cursors/token budgets | Correctness stays at the state owner and presentation policy at the protocol boundary |
 | Multi-document publication | Intent journal with idempotent recovery | Cross-file edits cannot report success with partially published Markdown |
 | Storage compatibility | Current V2 dual-slot format only at release; remove V1 reader/fixture and upgrade branches in PR-35 | Two V2 generations provide crash recovery without preserving an unpublished legacy format |
@@ -141,8 +147,8 @@ reinitialized and re-ingested from Markdown.
 - [x] Multi-file vault opens distinct sessions per path; shared peer id (PR-08)
 - [x] Open/save per-file session snapshots (PR-08)
 - [x] Structure ingest: hash gate → match → Insert/Delete block → snapshot (PR-09)
-- [x] Block reorder preserves ids via match_blocks (PR-09; no CRDT re-order yet)
-- [x] Blockquotes preserved on **first** ingest (not flattened); tables skipped, no vault-wide abort
+- [x] Block reorder preserves ids via matching; Phase J now emits native CRDT moves
+- [x] Blockquotes preserved on **first** ingest (not flattened); Phase J removed the historical table skip
 - [x] External in-paragraph text edit → InsertText/DeleteText (PR-10)
 - [x] **Nested re-ingest matching** (structure + in-quote text LCS via PR-10)
 - [x] Two vaults exchange ops after external edits
@@ -200,14 +206,14 @@ The companion `md-mcp` cutover fixture remains owned by its repository and is pa
 PR-34 release gate. This repository's Phase I fixture is `tests/workspace_contract.rs`; no sibling
 repository was modified during this slice.
 
-## Phase J checklist — planned
+## Phase J checklist — complete
 
-- [ ] PR-24: parse/serialize marks and links through one causal unit-anchored model
-- [ ] PR-24: snapshot and exchange preserve mark/link history and delimiter trivia
-- [ ] PR-25: frontmatter field edits preserve comments/order/unsupported YAML through opaque fallback
-- [ ] PR-26: top-level/nested/section moves preserve all logical identities and converge
-- [ ] PR-27: table-bearing files ingest structurally instead of returning `Skipped`
-- [ ] PR-28: external replacement follows tested mark-boundary affinity and Unicode mapping rules
+- [x] PR-24: parse/serialize marks and links through one causal unit-anchored model
+- [x] PR-24: snapshot and exchange preserve mark/link history and delimiter trivia
+- [x] PR-25: frontmatter field edits preserve comments/order/unsupported YAML through opaque fallback
+- [x] PR-26: top-level/nested/section moves preserve all logical identities and converge
+- [x] PR-27: table-bearing files ingest structurally instead of returning `Skipped`
+- [x] PR-28: external replacement follows tested mark-boundary affinity and Unicode mapping rules
 
 ## Phase K checklist — planned
 
@@ -415,6 +421,8 @@ The session result retains the same scaling signal as the lower-level sequence p
 
 ## Gate
 
+- `just check` — **passed** for Phase J (format, all-target/all-feature Clippy with warnings denied, full workspace tests, and 7 doctests)
+- `cargo llvm-cov --workspace --all-features --summary-only` — **passed** for Phase J; 92.98% repository line coverage, above the required Phase I 92.82% no-line-regression baseline. Region coverage is 91.02%, down 0.13 points from 91.15%; it is reported for transparency but is not the phase gate. The Phase J semantic modules are 100% (`frontmatter.rs`) and 97.81% (`inline.rs`) line-covered.
 - `just check` — **passed** after PR-21/22/23 audit (403 test-results, 0 warnings; +4 tests: export idempotence/nested-dir, lossless nested-root/unicode; removed misleading `RevisionToken: Ord`; gated the export test seam behind `cfg(test)`)
 - `cargo test --test workspace_contract --test doc_lossless_source --test filesync_export` — **passed** for PR-21–PR-23 (14 tests: persistent identity and opaque contract types, source-local exact serialization, stale refresh rejection, and durable export)
 - `just check` — **passed** for Phase I (format, all-target/all-feature Clippy with warnings denied, full workspace tests, and 7 doctests)

@@ -12,10 +12,10 @@ pub use snapshot::{
 
 use crate::codec::{
     BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, ColumnAlignmentWire, DocOp, Envelope,
-    JsonOpCodec, ListItemSkeleton, MovedTextUnitWire, OpBody, OpCodec, TextBlockKindWire,
-    TextUnitWire, WIRE_VERSION, insert_block_paragraph_is_empty,
+    JsonOpCodec, ListItemSkeleton, MovedBlockWire, MovedTextUnitWire, OpBody, OpCodec,
+    TextBlockKindWire, TextUnitWire, WIRE_VERSION, insert_block_paragraph_is_empty,
 };
-use crate::core::mark::MarkSet;
+use crate::core::mark::{MarkKind, MarkSet, MarkValue};
 use crate::core::{OpId, PeerId, Sequence, SequenceOp, StateVector};
 use crate::doc::{
     Block, BlockId, BlockKind, ColumnAlignment, ColumnDef, Document, ListItem, Table, TextUnit,
@@ -63,6 +63,12 @@ pub enum SessionError {
     BlocksNotAdjacent,
     #[error("grapheme offset out of range")]
     InvalidOffset,
+    #[error("move target/range or destination anchor is invalid")]
+    InvalidMove,
+    #[error("a block cannot be moved into itself or its descendants")]
+    MoveCycle,
+    #[error(transparent)]
+    Frontmatter(#[from] crate::doc::FrontmatterError),
 }
 
 fn codec_err<E: std::fmt::Display>(e: E) -> SessionError {
@@ -230,13 +236,13 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         parent: Option<OpId>,
         target: OpId,
     ) -> Result<OpId, SessionError> {
-        let found = matches!(
-            self.document.container_children(parent),
-            Some(children) if children.get_element(&target).is_some()
-        );
-        if !found {
-            return Err(SessionError::MissingDeleteTarget);
-        }
+        let block_id = self
+            .document
+            .container_children(parent)
+            .and_then(|children| children.get_element(&target))
+            .and_then(|element| element.value.as_ref())
+            .map(|block| block.id)
+            .ok_or(SessionError::MissingDeleteTarget)?;
 
         let b = self.next_counter;
         let delete_id = OpId {
@@ -245,9 +251,10 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         };
         let envelope = Envelope {
             version: WIRE_VERSION,
-            body: OpBody::Doc(DocOp::DeleteBlock {
+            body: OpBody::Doc(DocOp::DeleteBlockById {
                 parent,
                 target,
+                block_id,
                 id: delete_id,
             }),
         };
@@ -303,9 +310,19 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         columns: Vec<ColumnDef>,
         header: Vec<String>,
     ) -> Result<OpId, SessionError> {
+        self.insert_table_in(None, after, columns, header)
+    }
+
+    pub fn insert_table_in(
+        &mut self,
+        parent: Option<OpId>,
+        after: Option<OpId>,
+        columns: Vec<ColumnDef>,
+        header: Vec<String>,
+    ) -> Result<OpId, SessionError> {
         let elem_id = self.peek_next_id();
         let table = Table::new(block_id_from_op(elem_id), elem_id, columns, header, elem_id);
-        self.insert_block(after, BlockKind::Table { table })
+        self.insert_block_in(parent, after, BlockKind::Table { table })
     }
 
     /// Insert a row into a table's row sequence.
@@ -371,15 +388,104 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         table_id: BlockId,
         target: OpId,
     ) -> Result<OpId, SessionError> {
-        let table_elem = self.table_elem_with_row(table_id, target)?;
+        let (table_elem, row_id) = {
+            let block = self
+                .document
+                .find_block_by_id(table_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            let BlockKind::Table { table } = &block.kind else {
+                return Err(SessionError::NotTable);
+            };
+            let row = table
+                .rows
+                .get_element(&target)
+                .and_then(|element| element.value.as_ref())
+                .ok_or(SessionError::TableRowNotFound)?;
+            (block.elem_id, row.id)
+        };
         let id = self.peek_next_id();
         let envelope = Envelope {
             version: WIRE_VERSION,
-            body: OpBody::Doc(DocOp::DeleteTableRow {
+            body: OpBody::Doc(DocOp::DeleteTableRowById {
                 table_elem,
                 table_id,
                 target,
+                row_id,
                 id,
+            }),
+        };
+        self.commit_single_id(envelope, id)
+    }
+
+    pub fn set_table_metadata(
+        &mut self,
+        table_id: BlockId,
+        columns: Vec<ColumnDef>,
+        header: Vec<String>,
+    ) -> Result<OpId, SessionError> {
+        let table_elem = self
+            .document
+            .find_block_by_id(table_id)
+            .and_then(|block| {
+                matches!(block.kind, BlockKind::Table { .. }).then_some(block.elem_id)
+            })
+            .ok_or(SessionError::NotTable)?;
+        let id = self.peek_next_id();
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::SetTableMetadata {
+                table_elem,
+                table_id,
+                id,
+                columns: columns
+                    .iter()
+                    .map(|column| alignment_to_wire(&column.alignment))
+                    .collect(),
+                header,
+            }),
+        };
+        self.commit_single_id(envelope, id)
+    }
+
+    pub fn move_table_row(
+        &mut self,
+        table_id: BlockId,
+        row_id: crate::doc::RowId,
+        after: Option<OpId>,
+    ) -> Result<OpId, SessionError> {
+        let (table_elem, target, right_origin) = {
+            let block = self
+                .document
+                .find_block_by_id(table_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            let BlockKind::Table { table } = &block.kind else {
+                return Err(SessionError::NotTable);
+            };
+            let row = table
+                .row_by_id(row_id)
+                .ok_or(SessionError::TableRowNotFound)?;
+            if after == Some(row.elem_id)
+                || after.is_some_and(|anchor| table.rows.get_element(&anchor).is_none())
+            {
+                return Err(SessionError::InvalidMove);
+            }
+            (
+                block.elem_id,
+                row.elem_id,
+                table.rows.compute_right_origin(after),
+            )
+        };
+        let id = self.peek_next_id();
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::MoveTableRow {
+                table_elem,
+                table_id,
+                row_id,
+                target,
+                id,
+                after,
+                right_origin,
             }),
         };
         self.commit_single_id(envelope, id)
@@ -540,6 +646,219 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         });
         self.next_counter = delete_id.counter + 1;
         Ok(Some(delete_id))
+    }
+
+    /// Set a mark over a non-empty half-open grapheme range.
+    pub fn set_mark(
+        &mut self,
+        block_id: BlockId,
+        range: std::ops::Range<usize>,
+        kind: MarkKind,
+        attrs: BTreeMap<String, MarkValue>,
+    ) -> Result<OpId, SessionError> {
+        let block = self
+            .document
+            .find_block_by_id(block_id)
+            .ok_or(SessionError::BlockNotFound)?;
+        let block_elem = block.elem_id;
+        let (start, end) = self
+            .document
+            .grapheme_range_to_anchors(block_id, range)
+            .map_err(|_| SessionError::InvalidOffset)?;
+        let id = self.peek_next_id();
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::SetMark {
+                block_elem,
+                block_id,
+                id,
+                kind,
+                start,
+                end,
+                attrs,
+            }),
+        };
+        self.commit_single_id(envelope, id)
+    }
+
+    /// Remove one mark interval using the session's observed state.
+    pub fn remove_mark(
+        &mut self,
+        block_id: BlockId,
+        interval_id: OpId,
+    ) -> Result<OpId, SessionError> {
+        let block = self
+            .document
+            .find_block_by_id(block_id)
+            .ok_or(SessionError::BlockNotFound)?;
+        if block.marks.interval(&interval_id).is_none() {
+            return Err(SessionError::InvalidOffset);
+        }
+        let block_elem = block.elem_id;
+        let id = self.peek_next_id();
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::RemoveMark {
+                block_elem,
+                block_id,
+                interval_id,
+                id,
+                observed: self.state_vector(),
+            }),
+        };
+        self.commit_single_id(envelope, id)
+    }
+
+    /// Set or delete a supported top-level frontmatter field.
+    pub fn set_frontmatter_field(
+        &mut self,
+        key: impl Into<String>,
+        value: Option<String>,
+    ) -> Result<OpId, SessionError> {
+        let key = key.into();
+        let id = self.peek_next_id();
+        // Prevalidate without burning the clock or changing the live document.
+        let mut probe = self
+            .document
+            .frontmatter
+            .clone()
+            .unwrap_or_else(crate::doc::Frontmatter::empty);
+        probe.set(key.clone(), value.clone(), id)?;
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::SetFrontmatterField { id, key, value }),
+        };
+        self.commit_single_id(envelope, id)
+    }
+
+    /// Establish a lossless frontmatter base. Existing frontmatter is never overwritten.
+    pub fn initialize_frontmatter(
+        &mut self,
+        frontmatter: crate::doc::Frontmatter,
+    ) -> Result<Option<OpId>, SessionError> {
+        if self.document.frontmatter.is_some() {
+            return Ok(None);
+        }
+        let id = self.peek_next_id();
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::InitializeFrontmatter { id, frontmatter }),
+        };
+        self.commit_single_id(envelope, id).map(Some)
+    }
+
+    /// Atomically move one logical block, preserving its contents and descendant identities.
+    pub fn move_block(
+        &mut self,
+        block_id: BlockId,
+        to_parent: Option<OpId>,
+        after: Option<OpId>,
+    ) -> Result<OpId, SessionError> {
+        self.move_block_ids(&[block_id], to_parent, after)
+    }
+
+    /// Atomically move a top-level heading and every following block in its section.
+    pub fn move_section(
+        &mut self,
+        heading_id: BlockId,
+        after: Option<OpId>,
+    ) -> Result<OpId, SessionError> {
+        let blocks: Vec<&Block> = self.document.blocks().iter().collect();
+        let start = blocks
+            .iter()
+            .position(|block| block.id == heading_id)
+            .ok_or(SessionError::BlockNotFound)?;
+        let BlockKind::Heading { level, .. } = blocks[start].kind else {
+            return Err(SessionError::InvalidMove);
+        };
+        let end = blocks[start + 1..]
+            .iter()
+            .position(|block| matches!(block.kind, BlockKind::Heading { level: next, .. } if next <= level))
+            .map_or(blocks.len(), |relative| start + 1 + relative);
+        let ids: Vec<BlockId> = blocks[start..end].iter().map(|block| block.id).collect();
+        self.move_block_ids(&ids, None, after)
+    }
+
+    fn move_block_ids(
+        &mut self,
+        block_ids: &[BlockId],
+        to_parent: Option<OpId>,
+        after: Option<OpId>,
+    ) -> Result<OpId, SessionError> {
+        if block_ids.is_empty() {
+            return Err(SessionError::InvalidMove);
+        }
+        let destination = self
+            .document
+            .container_children(to_parent)
+            .ok_or(SessionError::InvalidMove)?;
+        if after.is_some_and(|anchor| destination.get_element(&anchor).is_none()) {
+            return Err(SessionError::MissingAfterAnchor);
+        }
+        let mut source_parent = None;
+        let mut targets = Vec::with_capacity(block_ids.len());
+        for block_id in block_ids {
+            let block = self
+                .document
+                .find_block_by_id(*block_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            let parent = self
+                .document
+                .block_parent(*block_id)
+                .ok_or(SessionError::InvalidMove)?;
+            if source_parent.is_some() && source_parent != Some(parent) {
+                return Err(SessionError::InvalidMove);
+            }
+            source_parent = Some(parent);
+            if to_parent.is_some_and(|candidate| {
+                self.document.block_contains_container(*block_id, candidate)
+            }) {
+                return Err(SessionError::MoveCycle);
+            }
+            targets.push((block.id, block.elem_id));
+        }
+        if after.is_some_and(|anchor| targets.iter().any(|(_, target)| *target == anchor)) {
+            return Err(SessionError::InvalidMove);
+        }
+        let base = self.next_counter;
+        let mut moves = Vec::with_capacity(targets.len());
+        let mut placement_after = after;
+        for (offset, (block_id, target)) in targets.into_iter().enumerate() {
+            let id = OpId {
+                peer: self.peer,
+                counter: base + offset as u64,
+            };
+            let right_origin = if offset == 0 {
+                destination.compute_right_origin(after)
+            } else {
+                None
+            };
+            moves.push(MovedBlockWire {
+                block_id,
+                target,
+                id,
+                after: placement_after,
+                right_origin,
+            });
+            placement_after = Some(id);
+        }
+        let id = moves.last().expect("non-empty move").id;
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(DocOp::MoveBlocks {
+                to_parent,
+                id,
+                blocks: moves,
+            }),
+        };
+        let payload = self.codec.encode(&envelope).map_err(codec_err)?;
+        apply_envelope_to_document(&mut self.document, &envelope);
+        self.sync.add_local_op(Operation {
+            id,
+            payload: payload.into(),
+        });
+        self.next_counter = id.counter + 1;
+        Ok(id)
     }
 
     /// Split a top-level paragraph or heading at a grapheme offset.

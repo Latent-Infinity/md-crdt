@@ -4,9 +4,10 @@
 //! supporting operations like bold, italic, links, and custom marks.
 
 use super::{LwwRegister, OpId, StateVector};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MarkKind {
     Bold,
     Italic,
@@ -15,19 +16,19 @@ pub enum MarkKind {
     Custom(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MarkValue {
     String(String),
     Bool(bool),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AnchorBias {
     Before,
     After,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Anchor {
     pub elem_id: OpId,
     pub bias: AnchorBias,
@@ -35,7 +36,7 @@ pub struct Anchor {
 
 pub type MarkIntervalId = OpId;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkInterval {
     pub id: MarkIntervalId,
     pub kind: MarkKind,
@@ -45,7 +46,7 @@ pub struct MarkInterval {
     pub op_id: OpId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveMark {
     pub observed: StateVector,
     pub op_id: OpId,
@@ -55,6 +56,46 @@ pub struct RemoveMark {
 pub struct MarkSet {
     intervals: BTreeMap<MarkIntervalId, MarkInterval>,
     removes: BTreeMap<MarkIntervalId, RemoveMark>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MarkSetSerde {
+    intervals: Vec<MarkInterval>,
+    removes: Vec<(MarkIntervalId, RemoveMark)>,
+}
+
+impl Serialize for MarkSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        MarkSetSerde {
+            intervals: self.intervals.values().cloned().collect(),
+            removes: self
+                .removes
+                .iter()
+                .map(|(id, remove)| (*id, remove.clone()))
+                .collect(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MarkSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = MarkSetSerde::deserialize(deserializer)?;
+        Ok(Self {
+            intervals: value
+                .intervals
+                .into_iter()
+                .map(|interval| (interval.id, interval))
+                .collect(),
+            removes: value.removes.into_iter().collect(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +212,14 @@ impl MarkSet {
             .filter(|interval| self.is_active(&interval.id))
     }
 
+    pub(crate) fn iter_all_intervals(&self) -> impl Iterator<Item = &MarkInterval> {
+        self.intervals.values()
+    }
+
+    pub(crate) fn iter_removes(&self) -> impl Iterator<Item = (&MarkIntervalId, &RemoveMark)> {
+        self.removes.iter()
+    }
+
     pub fn render_spans(&self, element_order: &[OpId], visible_len: usize) -> Vec<Span> {
         let mut index_map: BTreeMap<OpId, usize> = BTreeMap::new();
         for (visible_index, id) in element_order.iter().enumerate() {
@@ -217,6 +266,23 @@ impl MarkSet {
         }
 
         spans
+    }
+
+    /// Active intervals resolved to half-open visible grapheme ranges.
+    pub fn resolved_intervals(&self, element_order: &[OpId]) -> Vec<(&MarkInterval, usize, usize)> {
+        let index_map: BTreeMap<OpId, usize> = element_order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (*id, index))
+            .collect();
+        let len = element_order.len();
+        self.iter_active_intervals()
+            .map(|interval| {
+                let start = resolve_anchor(&interval.start, &index_map, len);
+                let end = resolve_anchor(&interval.end, &index_map, len);
+                (interval, start.min(end), start.max(end))
+            })
+            .collect()
     }
 }
 

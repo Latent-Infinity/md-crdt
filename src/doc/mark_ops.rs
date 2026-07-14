@@ -3,10 +3,8 @@
 //! This module provides operations for manipulating marks (formatting) on text,
 //! including expansion during insert and splitting during remove.
 
-use crate::core::mark::{
-    Anchor, AnchorBias, MarkInterval, MarkIntervalId, MarkKind, MarkSet, MarkValue,
-};
-use crate::core::{LwwRegister, OpId, StateVector};
+use crate::core::mark::{Anchor, AnchorBias, MarkInterval, MarkIntervalId, MarkSet};
+use crate::core::{LwwRegister, OpId};
 use std::collections::BTreeMap;
 
 pub fn expand_marks_for_insert(
@@ -102,14 +100,6 @@ pub fn lower_remove_mark_range(
     (new_intervals, removed)
 }
 
-pub fn remove_mark_observed(
-    interval_id: MarkIntervalId,
-    observed: StateVector,
-    op_id: OpId,
-) -> (MarkIntervalId, StateVector, OpId) {
-    (interval_id, observed, op_id)
-}
-
 fn resolve_anchor(anchor: &Anchor, order: &[OpId], len: usize) -> usize {
     let idx = order
         .iter()
@@ -119,25 +109,4 @@ fn resolve_anchor(anchor: &Anchor, order: &[OpId], len: usize) -> usize {
         AnchorBias::Before => idx,
         AnchorBias::After => (idx + 1).min(len),
     }
-}
-
-pub fn sample_interval(id: OpId, start: OpId, end: OpId) -> MarkInterval {
-    MarkInterval {
-        id,
-        kind: MarkKind::Bold,
-        start: Anchor {
-            elem_id: start,
-            bias: AnchorBias::Before,
-        },
-        end: Anchor {
-            elem_id: end,
-            bias: AnchorBias::After,
-        },
-        attrs: BTreeMap::new(),
-        op_id: id,
-    }
-}
-
-pub fn mark_value_string(value: &str) -> MarkValue {
-    MarkValue::String(value.to_string())
 }
