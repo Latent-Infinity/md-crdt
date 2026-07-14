@@ -31,7 +31,7 @@ fn session_wire_facade_still_applies_operations() {
     let mut a = CollaborativeDocument::new(1);
     a.insert_paragraph(None, "hi").expect("insert paragraph");
     let mut b = CollaborativeDocument::new(2);
-    let msg = a.encode_changes_since(&b.state_vector());
+    let msg = a.encode_changes_since(&b.state_vector()).unwrap();
     b.apply_remote(msg, &ValidationLimits::default())
         .expect("apply remote through wire translation");
     assert_eq!(

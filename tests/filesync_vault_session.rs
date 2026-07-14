@@ -2,9 +2,11 @@
 
 #![cfg(feature = "filesync")]
 
-use md_crdt::ValidationLimits;
 use md_crdt::doc::EquivalenceMode;
 use md_crdt::filesync::{VaultError, VaultSession};
+use md_crdt::{
+    CheckpointRequest, DocumentTombstonePolicy, StateVector, SyncResponse, ValidationLimits,
+};
 use std::fs;
 use tempfile::tempdir;
 
@@ -171,5 +173,32 @@ fn invalid_relative_path_rejected() {
     assert!(matches!(
         vs.session_mut("../x.md"),
         Err(VaultError::InvalidRelativePath(_))
+    ));
+}
+
+#[test]
+fn path_scoped_sync_reports_retention_and_returns_a_rebase_checkpoint() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("note.md"), "").unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    let document = vault.session_mut("note.md").unwrap();
+    document.insert_paragraph(None, "retained state").unwrap();
+    document
+        .checkpoint_history(&CheckpointRequest {
+            max_retained_ops: 0,
+            active_peer_leases: Vec::new(),
+            tombstones: DocumentTombstonePolicy::KeepAll,
+        })
+        .unwrap();
+
+    assert!(matches!(
+        vault
+            .encode_changes_since("note.md", &StateVector::new())
+            .unwrap_err(),
+        VaultError::RebaseRequired(_)
+    ));
+    assert!(matches!(
+        vault.sync_since("note.md", &StateVector::new()).unwrap(),
+        SyncResponse::Rebase { .. }
     ));
 }

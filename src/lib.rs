@@ -71,14 +71,6 @@ pub use core::mark::{
     Span,
 };
 
-/// Deprecated alias — use [`MarkSet`].
-#[deprecated(note = "use MarkSet")]
-pub type RichMarkSet = MarkSet;
-
-/// Deprecated alias — use [`MarkInterval`].
-#[deprecated(note = "use MarkInterval")]
-pub type RichMarkInterval = MarkInterval;
-
 // Re-export doc types
 pub use doc::{
     Block, BlockId, BlockKind, CellContent, ColumnAlignment, ColumnDef, Document, EditError,
@@ -91,8 +83,9 @@ pub use doc::mark_ops;
 
 // Re-export sync types
 pub use sync::{
-    ApplyResult, ChangeMessage, MalformedKind, Operation, SemanticConflict, SyncState,
-    ValidationError, ValidationLimits, validate_changes,
+    ApplyResult, ChangeMessage, CheckpointError, CheckpointReport, CheckpointRequest,
+    DocumentTombstonePolicy, MalformedKind, Operation, PeerLease, RebaseRequired, SemanticConflict,
+    SyncState, ValidationError, ValidationLimits, validate_changes,
 };
 
 // Re-export codec types
@@ -105,7 +98,7 @@ pub use codec::{
 // Re-export session types
 pub use session::{
     CollaborativeDocument, DocumentDto, SNAPSHOT_FORMAT_VERSION, SessionApplyResult, SessionError,
-    SessionSnapshot, SnapshotError,
+    SessionSnapshot, SnapshotError, SyncResponse,
 };
 
 pub use workspace::{

@@ -6,7 +6,7 @@ use md_crdt::session::{CollaborativeDocument, SessionError};
 use md_crdt::sync::ValidationLimits;
 
 fn exchange(source: &CollaborativeDocument, target: &mut CollaborativeDocument) {
-    let message = source.encode_changes_since(&target.state_vector());
+    let message = source.encode_changes_since(&target.state_vector()).unwrap();
     target
         .apply_remote(message, &ValidationLimits::default())
         .expect("apply remote table changes");

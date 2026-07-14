@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 fn exchange(from: &CollaborativeDocument, to: &mut CollaborativeDocument, since: &StateVector) {
     to.apply_remote(
-        from.encode_changes_since(since),
+        from.encode_changes_since(since).unwrap(),
         &ValidationLimits::default(),
     )
     .unwrap();
@@ -127,8 +127,8 @@ fn frontmatter_fields_converge_by_per_key_lww() {
         .unwrap();
     b.set_frontmatter_field("title", Some("right".into()))
         .unwrap();
-    let from_a = a.encode_changes_since(&StateVector::new());
-    let from_b = b.encode_changes_since(&StateVector::new());
+    let from_a = a.encode_changes_since(&StateVector::new()).unwrap();
+    let from_b = b.encode_changes_since(&StateVector::new()).unwrap();
     a.apply_remote(from_b, &ValidationLimits::default())
         .unwrap();
     b.apply_remote(from_a, &ValidationLimits::default())

@@ -125,7 +125,7 @@ proptest! {
         partial_sv.set(1, 1);
 
         // Get changes since partial state
-        let real_changes = doc.encode_changes_since(&partial_sv);
+        let real_changes = doc.encode_changes_since(&partial_sv).unwrap();
         let oracle_changes = oracle.changes_since(&partial_sv);
 
         // Should have same number of changes
@@ -226,7 +226,9 @@ fn test_two_peer_sync_simulation() {
     peer2_doc.apply_changes(message_to_peer2);
 
     // Simulate sync: peer 2 sends to peer 1
-    let peer2_changes = peer2_doc.encode_changes_since(&peer1_doc.state_vector());
+    let peer2_changes = peer2_doc
+        .encode_changes_since(&peer1_doc.state_vector())
+        .unwrap();
     peer1_doc.apply_changes(peer2_changes);
 
     // Both should now have the same state

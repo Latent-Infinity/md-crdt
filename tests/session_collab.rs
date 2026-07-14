@@ -22,7 +22,7 @@ fn string_mode(peer: u64) -> CollaborativeDocument {
 }
 
 fn exchange(from: &CollaborativeDocument, to: &mut CollaborativeDocument) {
-    let msg = from.encode_changes_since(&to.state_vector());
+    let msg = from.encode_changes_since(&to.state_vector()).unwrap();
     to.apply_remote(msg, &ValidationLimits::default())
         .expect("apply_remote");
 }
@@ -81,7 +81,9 @@ fn insert_then_delete_propagates() {
 fn operation_id_is_max_embedded_unit_on_insert_text() {
     let mut a = CollaborativeDocument::new(5);
     let elem = a.insert_paragraph(None, "xy").expect("insert");
-    let msg = a.encode_changes_since(&md_crdt::core::StateVector::new());
+    let msg = a
+        .encode_changes_since(&md_crdt::core::StateVector::new())
+        .unwrap();
     // InsertBlock (empty) + InsertText (two units)
     assert_eq!(msg.ops.len(), 2);
     assert_eq!(msg.ops[0].id, elem); // block-only span 1
@@ -106,7 +108,7 @@ fn out_of_order_remote_ops_buffer_then_apply() {
     let first = a.insert_paragraph(None, "one").expect("1");
     let _second = a.insert_paragraph(Some(first), "two").expect("2");
 
-    let msg = a.encode_changes_since(&b.state_vector());
+    let msg = a.encode_changes_since(&b.state_vector()).unwrap();
     // Each paragraph: InsertBlock + InsertText → 4 ops
     assert_eq!(msg.ops.len(), 4);
     let mut ops = msg.ops.clone();

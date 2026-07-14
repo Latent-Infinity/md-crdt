@@ -162,7 +162,7 @@ fn exchange_after_restore_continues() {
     let mut b = CollaborativeDocument::restore_from_snapshot(snap).expect("restore");
     // a continues editing
     a.insert_paragraph(None, "a2").expect("a2");
-    let msg = a.encode_changes_since(&b.state_vector());
+    let msg = a.encode_changes_since(&b.state_vector()).unwrap();
     b.apply_remote(msg, &ValidationLimits::default())
         .expect("remote");
     assert_eq!(
@@ -180,6 +180,27 @@ fn snapshot_bytes_round_trip() {
     let loaded = SessionSnapshot::from_bytes(&bytes).expect("from_bytes");
     assert_eq!(loaded.peer, snap.peer);
     assert_eq!(loaded.ops.len(), snap.ops.len());
+}
+
+#[test]
+fn non_current_snapshot_versions_require_reinitialize() {
+    let mut session = CollaborativeDocument::new(3);
+    session.insert_paragraph(None, "current").unwrap();
+    let current = session.save_snapshot().unwrap();
+
+    for format_version in [1, 2, 4] {
+        let mut old = current.clone();
+        old.format_version = format_version;
+        let error = SessionSnapshot::from_bytes(&old.to_bytes().unwrap()).unwrap_err();
+        assert!(matches!(
+            error,
+            SnapshotError::ReinitializeRequired {
+                found,
+                expected: SNAPSHOT_FORMAT_VERSION,
+            } if found == format_version
+        ));
+        assert!(error.to_string().contains("reinitialize and re-ingest"));
+    }
 }
 
 #[test]

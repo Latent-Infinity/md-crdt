@@ -64,6 +64,8 @@ pub enum VaultError {
     DuplicateDocumentBatch(PathBuf),
     #[error("transaction requires recovery from {journal}: {cause}")]
     RecoverableTransaction { journal: PathBuf, cause: String },
+    #[error(transparent)]
+    RebaseRequired(#[from] crate::RebaseRequired),
     #[error("stale document revision: expected {expected}, actual {actual}")]
     StaleRevision {
         expected: crate::RevisionToken,

@@ -61,7 +61,7 @@ let mut alice = CollaborativeDocument::new(1);
 let mut bob = CollaborativeDocument::new(2);
 
 alice.insert_paragraph(None, "Hello from Alice")?;
-let changes = alice.encode_changes_since(&bob.state_vector());
+let changes = alice.encode_changes_since(&bob.state_vector())?;
 bob.apply_remote(changes, &ValidationLimits::default())?;
 
 assert_eq!(
@@ -147,6 +147,18 @@ remote.apply_remote(
 
 `apply_remote` saves the updated per-file session snapshot. The application still chooses how the
 `ChangeMessage` reaches the other vault.
+
+Long-running hosts can bound retained operation history with `checkpoint_history`. Each checkpoint
+request names the active peers and the state vector each has acknowledged; peers omitted by the host
+are expired for that checkpoint. `encode_changes_since` returns `RebaseRequired` when a caller is
+older than the retained delta floor, while `sync_since` returns either a compact delta or a boxed V3
+session checkpoint that the lagging peer can install before incremental exchange resumes. Structural
+tombstones are retained because operation acknowledgement alone is not sufficient for causal garbage
+collection.
+
+Persistence accepts only V3 session snapshots and current V2 dual-slot storage. Older or legacy
+state fails with an explicit reinitialize/re-ingest error; re-ingest the authoritative Markdown files
+instead of attempting an in-place upgrade.
 
 **CLI Workflows**
 Target a vault from any working directory (the default is `--vault .`):

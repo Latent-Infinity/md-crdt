@@ -177,7 +177,7 @@ fn encoded_changes_share_immutable_payload_storage() {
         payload: payload.clone(),
     });
 
-    let changes = sync.encode_changes_since(&StateVector::new());
+    let changes = sync.encode_changes_since(&StateVector::new()).unwrap();
     assert_eq!(changes.ops.len(), 1);
     assert!(Arc::ptr_eq(&changes.ops[0].payload, &payload));
 }

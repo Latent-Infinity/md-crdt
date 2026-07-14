@@ -7,7 +7,7 @@ use md_crdt::session::{CollaborativeDocument, SessionError};
 use md_crdt::sync::{ChangeMessage, Operation, ValidationLimits};
 
 fn exchange(from: &CollaborativeDocument, to: &mut CollaborativeDocument) {
-    let msg = from.encode_changes_since(&to.state_vector());
+    let msg = from.encode_changes_since(&to.state_vector()).unwrap();
     to.apply_remote(msg, &ValidationLimits::default())
         .expect("apply_remote");
 }
@@ -26,7 +26,9 @@ fn insert_paragraph_emits_two_ops_for_nonempty_body() {
     assert_eq!(elem.counter, 1);
     assert_eq!(para_text(&a, 0), "hi");
 
-    let msg = a.encode_changes_since(&md_crdt::core::StateVector::new());
+    let msg = a
+        .encode_changes_since(&md_crdt::core::StateVector::new())
+        .unwrap();
     assert_eq!(msg.ops.len(), 2);
 
     let env0 = JsonOpCodec.decode(&msg.ops[0].payload).expect("dec0");
@@ -62,7 +64,9 @@ fn insert_paragraph_emits_two_ops_for_nonempty_body() {
 fn insert_paragraph_empty_is_block_only() {
     let mut a = CollaborativeDocument::new(1);
     let _ = a.insert_paragraph(None, "").expect("empty");
-    let msg = a.encode_changes_since(&md_crdt::core::StateVector::new());
+    let msg = a
+        .encode_changes_since(&md_crdt::core::StateVector::new())
+        .unwrap();
     assert_eq!(msg.ops.len(), 1);
     let env = JsonOpCodec.decode(&msg.ops[0].payload).expect("dec");
     assert!(matches!(env.body, OpBody::Doc(DocOp::InsertBlock { .. })));
@@ -75,7 +79,9 @@ fn insert_text_wire_round_trip_preserves_right_origin() {
     let bid = block_id_from_op(elem);
     a.insert_text(bid, 1, "bc").expect("paste");
 
-    let msg = a.encode_changes_since(&md_crdt::core::StateVector::new());
+    let msg = a
+        .encode_changes_since(&md_crdt::core::StateVector::new())
+        .unwrap();
     // InsertBlock + InsertText("a") + InsertText("bc")
     assert_eq!(msg.ops.len(), 3);
     let last = msg.ops.last().unwrap();
@@ -326,7 +332,9 @@ fn remote_insert_text_peer_mismatch_rejected() {
     let mut a = CollaborativeDocument::new(1);
     let elem = a.insert_paragraph(None, "").expect("empty p");
     let bid = block_id_from_op(elem);
-    let msg_base = a.encode_changes_since(&md_crdt::core::StateVector::new());
+    let msg_base = a
+        .encode_changes_since(&md_crdt::core::StateVector::new())
+        .unwrap();
 
     let mut b = CollaborativeDocument::new(2);
     b.apply_remote(msg_base, &ValidationLimits::default())

@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Durable operation history and checkpoint/rebase (`storage` / `sync` / `session`)
+- Operation segments now carry magic/version framing, an explicit payload length, and CRC32, and are
+  published with the durable atomic-write path
+- Segment reads require contiguous indices and fail closed on truncation, corruption, unsupported
+  framing, or gaps without advancing the committed snapshot generation
+- Caller-managed active-peer acknowledgements bound retained operation history through atomic
+  checkpoints with a persisted epoch and per-origin delta floor
+- Peers below the retained floor receive a full V3 snapshot rebase through `sync_since`, then resume
+  ordinary incremental delta exchange
+- Checkpoint benchmarks cover full versus retained-log delta encoding and snapshot restore
+
+#### Frozen producer contract and strict persistence formats
+- Versioned `workspace-contract-v1.json` fixture generated from the concrete public workspace,
+  mutation, receipt, recovery, checkpoint, and rebase DTOs
+- Session persistence accepts V3 only; storage accepts the current V2 dual-slot format only
+- Non-current snapshots and detected legacy storage artifacts return explicit reinitialize/re-ingest
+  errors instead of running migration branches
+- Removed V1/V2 snapshot conversion, V1 storage decoding and fixtures, and the deprecated
+  `RichMarkSet` / `RichMarkInterval` aliases
+
 #### Concrete workspace lifecycle (`md-crdt::workspace` / `filesync`)
 - Persistent, content-independent `VaultId` and `DocumentId` identities plus opaque `RevisionToken` and `DiskFingerprint` preconditions
 - Direct Rust workspace contracts for document handles, block descriptors, change summaries, edit batches, receipts, and export outcomes without a public generic engine trait
@@ -22,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Lossless source-backed documents (`md-crdt::doc`)
 - Per-root-block source regions with owned leading trivia and dirty-region exact serialization
 - Byte-identical no-op serialization for original line endings, blank lines, marker style, opaque blocks, and final-newline state
-- Snapshot format v3 persistence for lossless source state while retaining v1/v2 reads
+- Snapshot format v3 persistence for lossless source and checkpoint state; non-current formats fail with an explicit reinitialize/re-ingest error
 - Scoped edits re-render only their owning region; unsupported raw blocks remain byte-preserved and reject structured text mutation
 
 #### Semantic inline Markdown and frontmatter (`md-crdt::doc` / `codec` / `session`)
@@ -63,7 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Paragraph text units (`md-crdt::doc::text`)
 - `TextUnit` + `BlockKind::Paragraph { text: Sequence<TextUnit> }` (one grapheme per element)
 - Parse/serialize/insert_text operate on unit sequences; wire `Paragraph { text: String }` unchanged
-- Snapshot format v2 stores unit lists; v1 `text` string still loads via peer-0 synthetic unit ids
+- Snapshot format v3 stores unit lists directly; legacy plain-string snapshot conversion has been removed
 
 #### Text CRDT wire ops (`md-crdt::codec` / `session`)
 - Wire `DocOp::InsertText` / `DeleteText` with `TextUnitWire` (explicit unit ids + N4 `right_origin`)
@@ -79,7 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed generic `MarkSet<K,V>` / `TextAnchor` / LWW-only mark path from `core`
 - `Block.marks` and `EditOp::{SetMark,RemoveMark}` use the unified type
 - `Document::set_mark` / `remove_mark` (range split via `mark_ops`) and `render_paragraph_spans`
-- Temporary deprecated aliases: `RichMarkSet`, `RichMarkInterval`
+- Removed the temporary `RichMarkSet` and `RichMarkInterval` aliases; `MarkSet` and `MarkInterval` are the sole public names
 
 #### Vault multi-doc session (`md-crdt::filesync`)
 - `VaultSession`: lazy `Path` → `CollaborativeDocument` map with shared vault peer

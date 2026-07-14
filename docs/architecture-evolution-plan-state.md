@@ -4,14 +4,14 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 | Field | Value |
 | --- | --- |
-| **Plan** | `docs/architecture-evolution.md` (Draft revision 11) |
+| **Plan** | `docs/architecture-evolution.md` (Draft revision 12) |
 | **Last updated** | 2026-07-13 |
 | **Tracking unit** | PR slices under design phases A–L |
 | **Joint consumer plan** | `../md-mcp/docs/joint-md-crdt-v2-implementation-plan.md` |
 
 **Release compatibility policy:** only V3 session snapshots and current V2 dual-slot storage are
-accepted. Earlier completed entries record what landed historically; PR-35 removes the temporary
-snapshot V1/V2 and storage V1 readers, upgrade branches, and fixtures. Older vault state must be
+accepted. Earlier completed entries record what landed historically; the temporary snapshot V1/V2
+and storage V1 readers, upgrade branches, and fixtures are removed. Older vault state must be
 reinitialized and re-ingested from Markdown.
 
 ## Progress
@@ -36,7 +36,7 @@ reinitialized and re-ingested from Markdown.
 | **PR-13** SplitBlock / MergeBlocks | **done** | Atomic text-unit transfer for paragraph/heading siblings; nested APIs; identity-preserving split/merge with collision fallback |
 | **PR-14** Block index / cached state vector / shared payloads | **done** | Nested BlockId path index; O(peers) state vector; `Arc<[u8]>` operation payloads; Criterion before/after |
 | **PR-15** Incremental sequence order | **done** | Sibling-local insertion behind default-off `sequence_incremental`; debug dual-path check; top-level/nested Criterion results |
-| **PR-16** Storage V2 generation protocol | **done** | V2 CRC trailer; alternating metadata/payload slots; file + directory sync; crash fallback. Temporary V1 reader is scheduled for deletion in PR-35. |
+| **PR-16** Storage V2 generation protocol | **done** | V2 CRC trailer; alternating metadata/payload slots; file + directory sync; crash fallback. The temporary V1 reader was removed in PR-35. |
 | **PR-17** Criterion benchmark suite | **done** | Sequence, nested text, public `insert_text`, serialization, block index, state-vector, and change-encoding probes; default + incremental `just bench` |
 | **PR-18** Module splits | **done** | Document parser/serializer, session wire translation/application, and sync validation extracted behind unchanged module façades |
 | **PR-19** FFI publish decision | **done** | `md-crdt-ffi` remains unpublished and API-empty; placeholder function removed; manifest/README honesty enforced by test |
@@ -53,17 +53,17 @@ reinitialized and re-ingested from Markdown.
 | **PR-29** Descriptors/change summaries | **done** | Paginated body-free descriptors; before/after affected-id summaries (created/deleted/moved/updated); audit added `deleted`-categorization test |
 | **PR-30** Atomic document batches | **done** | Snapshot-probe apply + swap-on-success: all-or-nothing, no clock burn; revision precondition + preview token. Audit added `StaleRevision`/TOCTOU tests |
 | **PR-31** File lifecycle/multi-doc transaction | **done** | Create/rename/delete; journalled crash-recoverable multi-doc export. Audit added orphan-`.pending` sweep + test |
-| **PR-32** Operation-segment integrity | **planned** | Checksummed/length-framed operation segments with prior-state recovery |
-| **PR-33** History compaction/rebase | **planned** | Bounded growth with explicit lagging-peer checkpoint contract |
-| **PR-34** Frozen `md-mcp` contract | **planned** | Joint consumer fixtures and temporary-surface removal before the final purge |
-| **PR-35** Final compatibility purge | **planned** | Remove snapshot V1/V2 and storage V1 readers/fixtures; accept current formats only |
+| **PR-32** Operation-segment integrity | **done** | Durable magic/version/length/CRC framing; contiguous reads fail closed without advancing snapshot state |
+| **PR-33** History compaction/rebase | **done** | Caller-managed acknowledged leases, bounded retained log, delta floor, checkpoint epoch, and full-snapshot rebase |
+| **PR-34** Frozen `md-mcp` contract | **repository producer done; joint gate pending** | Versioned public-DTO fixture is committed; sibling consumption and token/task gate are outside this repository slice |
+| **PR-35** Final compatibility purge | **done** | Snapshot V1/V2 and storage V1 readers/fixtures/aliases removed; current formats only |
 
 ## Phase B checklist
 
 - [x] In-memory paragraph as `Sequence<TextUnit>` (PR-06a)
 - [x] Parse + serialize round-trip on units
 - [x] insert_text inserts grapheme units (local API)
-- [x] Unit-backed snapshot format landed; its temporary legacy readers are scheduled for PR-35 deletion
+- [x] Unit-backed V3 snapshot format landed; temporary legacy readers were removed in PR-35
 - [x] Wire InsertText/DeleteText + session commits (PR-06b)
 - [x] Concurrent multi-peer paragraph edits (PR-06b)
 
@@ -73,13 +73,13 @@ reinitialized and re-ingested from Markdown.
 | --- | --- | --- |
 | PR-05 before 06a? | **Skip optional PR-05** | MVP gate is 01–04 + 06a/b + 07 |
 | Unit OpIds on skeleton expand | `parent_elem.counter + 1 + i` same peer | Deterministic across peers; wire still only carries block id + string |
-| Snapshot paragraph body | Current V3 snapshot only at release; remove V1/V2 readers in PR-35 | The joint pre-1.0 release has no migration obligation; one accepted representation reduces branches and synthetic-id risk |
+| Snapshot paragraph body | Current V3 snapshot only; V1/V2 readers removed | The joint pre-1.0 release has no migration obligation; one accepted representation reduces branches and synthetic-id risk |
 | Span-aware sync (audit) | `Operation` covers a counter range `[e-span+1, e]`; `Operation.id` = max embedded id (N1); readiness gates on range start vs frontier | Lets one op reserve a contiguous id range (block + G units) without sparse op ids; span 1 = old behavior; unblocks multi-unit InsertText |
 | Unit-mode default | `CollaborativeDocument::new` → `unit_mode = true` | Phase B cutover; string-mode still available via `with_codec(..., false)` |
 | N6-d insert_paragraph | empty `InsertBlock` then `InsertText` (two commits) | Pure N1–N4; no skeleton range-seed |
 | Nested text apply | `Sequence::with_value_mut` on block element | Avoid full `Block` clone per unit |
 | Mark unification | Keep rich causal `core::mark::MarkSet`; delete generic `MarkSet<K,V>` / `TextAnchor` | Single public API; matches `render_spans` + text-unit anchors |
-| Deprecated aliases | `RichMarkSet` / `RichMarkInterval` type aliases for one release | Migration path for callers |
+| Deprecated aliases | `RichMarkSet` / `RichMarkInterval` removed | The joint pre-1.0 release does not retain an unused parallel naming surface |
 | Session snapshot dir | `.mdcrdt/sessions/<rel>.mdcrdt` (not `.mdcrdt/state/`) | Avoid collision with existing fingerprint `LastFlushedState` blobs in `state/` until ingest unifies storage |
 | Peer id format | Decimal `u64` text in `.mdcrdt/peer_id`; non-zero | Shared clock domain for all file sessions in a vault |
 | Ingest D1 scope | Structure only (add/remove); matched different text deferred to D2 | Ship block ops without grapheme LCS |
@@ -128,7 +128,12 @@ reinitialized and re-ingested from Markdown.
 | Frontmatter fallback | Lossless raw base + per-key LWW; unsupported YAML is opaque | Structured edits preserve comments/order/quotes and fail closed rather than canonicalizing complex YAML |
 | `md-mcp` boundary | Core owns identity/semantics/deltas/batches; MCP owns schemas/search/cursors/token budgets | Correctness stays at the state owner and presentation policy at the protocol boundary |
 | Multi-document publication | Intent journal with idempotent recovery | Cross-file edits cannot report success with partially published Markdown |
-| Storage compatibility | Current V2 dual-slot format only at release; remove V1 reader/fixture and upgrade branches in PR-35 | Two V2 generations provide crash recovery without preserving an unpublished legacy format |
+| Storage compatibility | Current V2 dual-slot format only; V1 reader/fixture and upgrade branches removed | Two V2 generations provide crash recovery without preserving an unpublished legacy format |
+| Operation-segment frame | Magic + version + payload length + CRC32, published with the durable atomic-write helper | A torn append fails independently and cannot alter the prior snapshot generation or readable log |
+| Peer retention lease | Caller includes every currently supported peer and its acknowledged frontier on each checkpoint; omission expires it | Deterministic inputs replace nondeterministic wall-clock expiry and keep policy at the host boundary |
+| Tombstone checkpoint policy | `KeepAll` only | Peer operation acknowledgement is insufficient proof that structural causal references are collectible |
+| Lagging-peer recovery | Per-origin delta floor plus full V3 `SessionSnapshot` rebase | Bounds retained history without silently abandoning a supported peer |
+| Joint contract fixture | Versioned serialized public-DTO producer fixture in this repository | Freezes a concrete cross-repo shape without introducing MCP response types into the core |
 | Lossless representation ablation | Per-root semantic block source regions with owned leading trivia | Smallest option that preserves unsupported bytes and localizes edits. A piece table still needs semantic ownership mapping; a compact CST duplicates the authoritative CRDT tree and increases synchronization risk. |
 | Workspace identity files | UUID text in `.mdcrdt/vault_id` and path-scoped `.mdcrdt/document_ids/` entries, published durably | Content-independent handles survive edits/reopen; invalid identity bytes fail closed instead of silently replacing identity. |
 | Revision representation | Opaque 128-bit digest of the session snapshot | Detects observable state changes without exposing log or hashing details as API. |
@@ -224,15 +229,41 @@ repository was modified during this slice.
 - [x] PR-31: file create/rename/delete and cross-document batches recover from every crash point
 - [ ] `../md-mcp`: direct concrete workspace powers context → preview → apply → scoped verify (joint consumer; PR-34)
 
-## Phase L checklist — planned
+## Phase L checklist — repository work complete; joint release gate pending
 
-- [ ] PR-32: operation segments reject corruption/truncation and preserve the prior readable state
-- [ ] PR-33: checkpoint/compaction bounds history and deterministically rebases lagging peers
+- [x] PR-32: operation segments reject corruption/truncation and preserve the prior readable state
+- [x] PR-33: checkpoint/compaction bounds history and deterministically rebases lagging peers
+- [x] PR-34: versioned `md-crdt` producer fixture freezes the concrete public DTO surface
 - [ ] PR-34: pinned `md-mcp` consumer suite passes; temporary adapters and duplicate engines are deleted
-- [ ] PR-35: delete session-snapshot V1/V2 and storage V1 readers, constants, upgrade branches, and fixtures
-- [ ] PR-35: reject every non-current persisted format with an explicit reinitialize/re-ingest error
-- [ ] PR-35: remove remaining deprecated compatibility surfaces unused by the pinned consumer
+- [x] PR-35: delete session-snapshot V1/V2 and storage V1 readers, constants, upgrade branches, and fixtures
+- [x] PR-35: reject every non-current persisted format with an explicit reinitialize/re-ingest error
+- [x] PR-35: remove remaining deprecated compatibility surfaces in this repository
 - [ ] Joint token/task-success and lossless/crash-recovery release gates pass again after cleanup
+
+## Phase L implementation outcome
+
+- Operation segments are independently framed by magic, format version, payload length, and CRC32.
+  Append uses the existing durable atomic-write boundary; sorted reads require contiguous segment
+  indices and fail closed on header, length, checksum, truncation, or gap errors.
+- Checkpoints prune only the number of oldest operations needed to satisfy
+  `max_retained_ops`, and only when every active caller-supplied lease acknowledges them. A blocked
+  checkpoint is non-mutating. Successful checkpoints advance an epoch and per-origin delta floor,
+  persist both in V3 snapshots, and return a full checkpoint through `sync_since` when a peer is
+  below the floor. After rebase, incremental deltas resume normally.
+- Caller-managed acknowledgement leases were selected over wall-clock expiry because the latter
+  makes identical checkpoint requests depend on runtime timing. Tombstone GC remains `KeepAll`:
+  acknowledgements do not prove that retained structural references are unreachable.
+- The producer fixture at `tests/fixtures/workspace-contract-v1.json` is generated from actual
+  public DTO serialization and covers handles, descriptors, summaries, edit batches, receipts,
+  export/recovery, checkpoint requests, and rebase errors. The sibling consumer gate was not run
+  because this slice is restricted to `md-crdt`.
+- V3 is the only accepted session snapshot and current V2 dual-slot storage is the only accepted
+  superblock. Non-current versions and detected legacy storage artifacts return an actionable
+  reinitialize/re-ingest error. Synthetic legacy conversion and deprecated rich-mark aliases are
+  removed.
+- Criterion control/treatment: encoding 10,000 retained operations was 40.588–41.815 µs versus
+  0.841–0.897 µs with 128 retained (about 47× faster); restoring 1,002 operations was
+  118.54–122.36 µs versus 51.33–53.11 µs with 64 retained (about 2.3× faster).
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -429,8 +460,31 @@ All three verified **TRUE** with no functional bug in the atomicity/recovery cor
 
 **PR-31 file lifecycle/multi-doc transaction — TRUE (crash-recoverable all-or-nothing).** A real write-ahead journal is fsync'd *before* any target file is modified, with idempotent redo replay on `open()`; rename preserves `DocumentId` + CRDT history, delete retires identity, and preconditions are prevalidated for the whole batch (one stale request → zero writes). **Fixed (real durability-litter bug):** a crash *after* content pendings were fsynced but *before* the journal left orphan `.pending`/`.backup` temps that recovery (which only scanned `*.json`) never cleaned. Now `recover_pending_transactions` sweeps orphan transaction temps (strict `.<name>.<uuid>.pending|.backup` match), and `export_markdown_transaction` creates the transactions dir *before* writing pendings so the sweep also fires for a first-transaction crash. Added `recovery_sweeps_orphan_transaction_pendings_left_without_a_journal` (with negative cases proving unrelated dotfiles survive). Residual (documented): transaction crash-recovery tests replay fabricated journals — no crash-injection hook on the transaction install path; `RecoveryReport` counts for the real cases remain unasserted.
 
+## Audit — PR-32 / PR-33 / PR-34 / PR-35 (Phase L, fanned out over three verifiers + independent checks)
+
+All verified with no functional bug; the critical CRDT-safety property (PR-33) holds. Gaps were test coverage. (Plan-doc revision was consistent this round.)
+
+**PR-33 history compaction/rebase — TRUE (the critical slice; compaction is provably safe).** An op is pruned only when **every** active lease has acknowledged its counter (`.all(...)` — the minimum-acknowledged-across-all-leases, never the max); pruning removes a contiguous per-peer prefix and `delta_floor[peer]` records every pruned peer's max pruned counter. Any peer whose `since` falls below the floor is unconditionally routed to a full-snapshot rebase (`SyncResponse::Rebase`) that restores the whole document + true frontier and resumes incremental deltas — no path to a silent partial delta or a floor advancing past an unacknowledged op; blocked checkpoints are non-mutating. **Critical TDD gap closed:** every prior test used 0 or 1 lease, so the min-across-leases semantics (the heart of the safety guarantee) was untested — a `.any()`/max regression would not have been caught. Added `checkpoint_uses_the_minimum_acknowledgement_across_multiple_leases` (two leases at ack 4 and 2 → prune capped at 2, `RetentionBlocked { required: 4, eligible: 2 }`, needed ops 3/4/5 survive) and `checkpoint_rejects_duplicate_peer_leases`. **Accuracy notes (documented, not bugs):** `checkpoint_epoch` is currently **inert** — monotonic metadata carried in reports/rebase/snapshots but never compared to detect stale sync; `delta_floor` is the real and sufficient guard. `max_retained_ops` is **advisory** — retention correctly overrides it (a lease-blocked checkpoint leaves the log above the bound rather than dropping needed ops). `DocumentTombstonePolicy::KeepAll` is the only (conservative) policy.
+
+**PR-32 operation-segment integrity — TRUE (fail-closed).** `encode_op_segment` frames magic(8)+version(2)+length(8)+CRC(4)+payload; decode validates all four (header floor, magic, version, declared-length==actual, CRC over the payload slice), so truncation / bad magic / bad version / length / CRC all return `CorruptOperationSegment`. A corrupt or missing **middle** segment fails the whole read (no silent op drop); ordering is numeric (`parse::<usize>` + numeric sort), not lexicographic; appends are atomic+durable. **TDD gaps closed:** added `operation_segment_bad_magic_version_and_short_header_fail_closed` and `operation_segments_read_in_numeric_order_and_reject_a_middle_gap` (bad magic, bad version, header-floor truncation, ≥10 numeric ordering, and the non-contiguous middle-gap path were all untested). **Noted:** the op-segment machinery is complete + tested but **not yet wired into any recovery path** (no production caller) — forward-prep, unit-proven only.
+
+**PR-34 frozen `md-mcp` contract (producer side) — TRUE.** `workspace_fixture.rs` builds live instances of every public workspace DTO (handle, descriptors, `EditBatch` with a rich `WorkspaceEdit` mix, receipts, `CheckpointRequest`/`PeerLease`/`RebaseRequired`) and asserts byte-equality against the committed, versioned `fixtures/workspace-contract-v1.json` — a genuine field-by-field regression guard that fails on any renamed/removed/retyped public field. Sibling `md-mcp` consumption + token/task gate remain correctly out-of-repo (PR-34 "joint gate pending").
+
+**PR-35 final compatibility purge — TRUE (fail-closed, complete).** `SNAPSHOT_FORMAT_VERSION = 3`; both snapshot loaders reject any non-V3 with a clear `ReinitializeRequired { found, expected }` (no panic, no silent-empty), and storage returns `ReinitializeRequired` when `LEGACY_SEGMENT_FILE` exists. Grep confirms no leftover dead references (`SuperblockV1`/`ArchivedSuperblockV1`/`SNAPSHOT_FORMAT_VERSION_V1`/`RichMarkSet`/`RichMarkInterval` all removed). Old on-disk state fails closed with a reinitialize-and-re-ingest error rather than corrupting.
+
 ## Gate
 
+- `just check` — **passed** after PR-32/33/34/35 audit (461 test-results, 0 warnings; +4 tests: multi-lease min-ack + duplicate-lease checkpoint, op-segment magic/version/ordering/gap)
+- `just check` — **passed** for Phase L (format, all-target/all-feature Clippy with warnings denied,
+  457 workspace tests, and 7 doctests)
+- `cargo llvm-cov --workspace --all-features --summary-only --quiet` — **passed**; 93.07%
+  repository line coverage, above the Phase K 93.01% baseline. New checkpoint/rebase modules are
+  94.19–97.46% line-covered, storage is 94.98%, and the path-scoped filesync session is 90.56%.
+- `cargo bench --bench performance checkpoint_history -- --sample-size 10 --measurement-time 0.2`
+  — **passed**; control/treatment results are recorded in the Phase L outcome.
+- `cargo test --test workspace_fixture` — **passed**; committed versioned fixture matches current
+  public DTO serialization. The sibling `md-mcp` fixture consumer and joint release gate remain
+  explicitly unverified in this repository-only slice.
 - `just check` — **passed** after PR-29/30/31 audit (447 test-results, 0 warnings; +4 tests: batch StaleRevision/TOCTOU, deleted-summary, orphan-pending sweep; orphan-`.pending` cleanup + doc-comment fixes)
 - `just check` — **passed** for Phase J (format, all-target/all-feature Clippy with warnings denied, full workspace tests, and 7 doctests)
 - `cargo llvm-cov --workspace --all-features --summary-only` — **passed** for Phase J; 92.98% repository line coverage, above the required Phase I 92.82% no-line-regression baseline. Region coverage is 91.02%, down 0.13 points from 91.15%; it is reported for transparency but is not the phase gate. The Phase J semantic modules are 100% (`frontmatter.rs`) and 97.81% (`inline.rs`) line-covered.

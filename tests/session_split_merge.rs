@@ -7,7 +7,7 @@ use md_crdt::session::{CollaborativeDocument, SessionError};
 use md_crdt::sync::{ChangeMessage, Operation, ValidationLimits};
 
 fn exchange(from: &CollaborativeDocument, to: &mut CollaborativeDocument) {
-    let message = from.encode_changes_since(&to.state_vector());
+    let message = from.encode_changes_since(&to.state_vector()).unwrap();
     to.apply_remote(message, &ValidationLimits::default())
         .expect("apply remote changes");
 }
@@ -45,7 +45,7 @@ fn split_block_preserves_suffix_unit_ids_and_converges() {
         ("pha".into(), original_ids[2..].to_vec())
     );
 
-    let message = a.encode_changes_since(&b.state_vector());
+    let message = a.encode_changes_since(&b.state_vector()).unwrap();
     let envelope = JsonOpCodec
         .decode(&message.ops.last().expect("split op").payload)
         .expect("decode split");
@@ -218,7 +218,7 @@ fn remote_merge_rejects_foreign_replacement_ids() {
 
     a.merge_blocks(left_id, block_id_from_op(right))
         .expect("merge");
-    let mut message = a.encode_changes_since(&b.state_vector());
+    let mut message = a.encode_changes_since(&b.state_vector()).unwrap();
     let operation = message.ops.last_mut().expect("merge operation");
     let mut envelope = JsonOpCodec
         .decode(&operation.payload)
@@ -263,8 +263,8 @@ fn concurrent_splits_of_same_block_converge() {
     a.split_block(id, 2).expect("split a"); // "al" | "pha"
     b.split_block(id, 4).expect("split b"); // "alph" | "a"
 
-    let from_a = a.encode_changes_since(&b.state_vector());
-    let from_b = b.encode_changes_since(&a.state_vector());
+    let from_a = a.encode_changes_since(&b.state_vector()).unwrap();
+    let from_b = b.encode_changes_since(&a.state_vector()).unwrap();
     b.apply_remote(from_a, &ValidationLimits::default())
         .expect("b applies a");
     a.apply_remote(from_b, &ValidationLimits::default())

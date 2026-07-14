@@ -20,6 +20,62 @@ pub struct ChangeMessage {
     pub ops: Vec<Operation>,
 }
 
+/// Tombstone policy for a history checkpoint.
+///
+/// Operation acknowledgement alone does not prove that structural anchors can be
+/// garbage-collected, so the current safe policy retains all document tombstones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DocumentTombstonePolicy {
+    KeepAll,
+}
+
+/// One peer supported for incremental deltas at this checkpoint.
+///
+/// Lease lifetime is caller-managed: including the peer renews it for this checkpoint;
+/// omitting it expires the lease and permits an explicit snapshot rebase later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerLease {
+    pub peer: crate::core::PeerId,
+    pub acknowledged: StateVector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointRequest {
+    pub max_retained_ops: usize,
+    pub active_peer_leases: Vec<PeerLease>,
+    pub tombstones: DocumentTombstonePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointReport {
+    pub checkpoint_epoch: u64,
+    pub pruned_ops: usize,
+    pub retained_ops: usize,
+    pub delta_floor: StateVector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CheckpointError {
+    #[error("duplicate active peer lease for peer {0}")]
+    DuplicatePeerLease(crate::core::PeerId),
+    #[error(
+        "active peer leases allow pruning {eligible_prune} operations, but {required_prune} are required"
+    )]
+    RetentionBlocked {
+        required_prune: usize,
+        eligible_prune: usize,
+    },
+    #[error("checkpoint epoch overflow")]
+    EpochOverflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[error("peer is behind checkpoint epoch {checkpoint_epoch}")]
+pub struct RebaseRequired {
+    pub checkpoint_epoch: u64,
+    pub delta_floor: StateVector,
+}
+
 mod validation;
 
 pub use validation::{MalformedKind, ValidationError, ValidationLimits, validate_changes};
@@ -80,6 +136,8 @@ pub struct SyncState {
     outbox: BTreeSet<OpId>,
     /// Operations that have been sent but not confirmed
     sent: BTreeSet<OpId>,
+    checkpoint_epoch: u64,
+    delta_floor: StateVector,
 }
 
 impl SyncState {
@@ -90,6 +148,8 @@ impl SyncState {
             pending: BTreeMap::new(),
             outbox: BTreeSet::new(),
             sent: BTreeSet::new(),
+            checkpoint_epoch: 0,
+            delta_floor: StateVector::new(),
         }
     }
 
@@ -198,7 +258,20 @@ impl SyncState {
     }
 
     /// Encode all operations since a given state vector
-    pub fn encode_changes_since(&self, since: &StateVector) -> ChangeMessage {
+    pub fn encode_changes_since(
+        &self,
+        since: &StateVector,
+    ) -> Result<ChangeMessage, RebaseRequired> {
+        if self
+            .delta_floor
+            .iter()
+            .any(|(peer, floor)| since.get(peer).unwrap_or(0) < floor)
+        {
+            return Err(RebaseRequired {
+                checkpoint_epoch: self.checkpoint_epoch,
+                delta_floor: self.delta_floor.clone(),
+            });
+        }
         let mut ops = Vec::new();
         for (op_id, payload) in &self.ops {
             let seen = since.get(op_id.peer).unwrap_or(0);
@@ -209,10 +282,91 @@ impl SyncState {
                 });
             }
         }
-        ChangeMessage {
+        Ok(ChangeMessage {
             since: since.clone(),
             ops,
+        })
+    }
+
+    /// Compact applied history without silently invalidating an active peer lease.
+    pub fn checkpoint(
+        &mut self,
+        request: &CheckpointRequest,
+    ) -> Result<CheckpointReport, CheckpointError> {
+        let mut leased_peers = BTreeSet::new();
+        for lease in &request.active_peer_leases {
+            if !leased_peers.insert(lease.peer) {
+                return Err(CheckpointError::DuplicatePeerLease(lease.peer));
+            }
         }
+        let required_prune = self.ops.len().saturating_sub(request.max_retained_ops);
+        if required_prune == 0 {
+            return Ok(CheckpointReport {
+                checkpoint_epoch: self.checkpoint_epoch,
+                pruned_ops: 0,
+                retained_ops: self.ops.len(),
+                delta_floor: self.delta_floor.clone(),
+            });
+        }
+        let eligible: Vec<OpId> = self
+            .ops
+            .keys()
+            .copied()
+            .filter(|id| {
+                request
+                    .active_peer_leases
+                    .iter()
+                    .all(|lease| lease.acknowledged.get(id.peer).unwrap_or(0) >= id.counter)
+            })
+            .collect();
+        if eligible.len() < required_prune {
+            return Err(CheckpointError::RetentionBlocked {
+                required_prune,
+                eligible_prune: eligible.len(),
+            });
+        }
+        let pruned: Vec<OpId> = eligible.into_iter().take(required_prune).collect();
+        let checkpoint_epoch = self
+            .checkpoint_epoch
+            .checked_add(1)
+            .ok_or(CheckpointError::EpochOverflow)?;
+        for id in &pruned {
+            self.ops.remove(id);
+            self.outbox.remove(id);
+            self.sent.remove(id);
+            let floor = self.delta_floor.get(id.peer).unwrap_or(0).max(id.counter);
+            self.delta_floor.set(id.peer, floor);
+        }
+        self.checkpoint_epoch = checkpoint_epoch;
+        Ok(CheckpointReport {
+            checkpoint_epoch,
+            pruned_ops: pruned.len(),
+            retained_ops: self.ops.len(),
+            delta_floor: self.delta_floor.clone(),
+        })
+    }
+
+    /// Monotonic count of successful checkpoints, persisted and surfaced in
+    /// `RebaseRequired`/reports. Currently informational only: staleness/rebase decisions
+    /// are driven entirely by [`Self::delta_floor`], not by comparing epochs. Reserved for a
+    /// future cross-epoch staleness guard — do not treat it as one today.
+    pub fn checkpoint_epoch(&self) -> u64 {
+        self.checkpoint_epoch
+    }
+
+    pub fn delta_floor(&self) -> &StateVector {
+        &self.delta_floor
+    }
+
+    pub(crate) fn restore_history(
+        &mut self,
+        state_vector: StateVector,
+        checkpoint_epoch: u64,
+        delta_floor: StateVector,
+    ) {
+        self.state_vector = state_vector;
+        self.checkpoint_epoch = checkpoint_epoch;
+        self.delta_floor = delta_floor;
     }
 
     /// Apply a batch of changes (log only). Promotes ready pending after each apply.
@@ -374,7 +528,7 @@ mod tests {
         let mut sv = StateVector::new();
         sv.set(1, 1);
 
-        let message = doc.encode_changes_since(&sv);
+        let message = doc.encode_changes_since(&sv).unwrap();
         let ids: Vec<_> = message.ops.iter().map(|op| op.id).collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&OpId {

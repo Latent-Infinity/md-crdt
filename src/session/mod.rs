@@ -23,8 +23,8 @@ use crate::doc::{
     paragraph_visible_string, units_from_str,
 };
 use crate::sync::{
-    ChangeMessage, IntegrateResult, Operation, SyncState, ValidationError, ValidationLimits,
-    validate_changes,
+    ChangeMessage, CheckpointError, CheckpointReport, CheckpointRequest, IntegrateResult,
+    Operation, RebaseRequired, SyncState, ValidationError, ValidationLimits, validate_changes,
 };
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -89,6 +89,12 @@ fn codec_err<E: std::fmt::Display>(e: E) -> SessionError {
 pub struct SessionApplyResult {
     pub applied: Vec<OpId>,
     pub buffered: Vec<OpId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncResponse {
+    Delta(ChangeMessage),
+    Rebase { checkpoint: Box<SessionSnapshot> },
 }
 
 /// Document + sync log + local peer clock for collaborative editing.
@@ -158,8 +164,27 @@ impl<C: OpCodec> CollaborativeDocument<C> {
     }
 
     /// Encode ops not yet seen by `since` (for exchange with peers).
-    pub fn encode_changes_since(&self, since: &StateVector) -> ChangeMessage {
+    pub fn encode_changes_since(
+        &self,
+        since: &StateVector,
+    ) -> Result<ChangeMessage, RebaseRequired> {
         self.sync.encode_changes_since(since)
+    }
+
+    pub fn sync_since(&self, since: &StateVector) -> Result<SyncResponse, SnapshotError> {
+        match self.encode_changes_since(since) {
+            Ok(message) => Ok(SyncResponse::Delta(message)),
+            Err(_) => Ok(SyncResponse::Rebase {
+                checkpoint: Box::new(self.save_snapshot()?),
+            }),
+        }
+    }
+
+    pub fn checkpoint_history(
+        &mut self,
+        request: &CheckpointRequest,
+    ) -> Result<CheckpointReport, CheckpointError> {
+        self.sync.checkpoint(request)
     }
 
     /// Insert a top-level block after `after` (None = start). Returns the block `elem_id`.
@@ -1131,6 +1156,9 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             peer: self.peer,
             next_counter: self.next_counter,
             unit_mode: self.unit_mode,
+            state_vector: self.sync.state_vector(),
+            checkpoint_epoch: self.sync.checkpoint_epoch(),
+            delta_floor: self.sync.delta_floor().clone(),
             document: DocumentDto::from_document(&self.document),
             ops,
             pending,
@@ -1163,11 +1191,11 @@ impl<C: OpCodec> CollaborativeDocument<C> {
 impl CollaborativeDocument<JsonOpCodec> {
     /// Crash recovery for the **same** peer: restore peer id and `next_counter`.
     pub fn restore_from_snapshot(snap: SessionSnapshot) -> Result<Self, SnapshotError> {
-        if snap.format_version != SNAPSHOT_FORMAT_VERSION
-            && snap.format_version != snapshot::SNAPSHOT_FORMAT_VERSION_V1
-            && snap.format_version != snapshot::SNAPSHOT_FORMAT_VERSION_V2
-        {
-            return Err(SnapshotError::UnsupportedVersion(snap.format_version));
+        if snap.format_version != SNAPSHOT_FORMAT_VERSION {
+            return Err(SnapshotError::ReinitializeRequired {
+                found: snap.format_version,
+                expected: SNAPSHOT_FORMAT_VERSION,
+            });
         }
         let doc = snap.document.clone().into_document();
         let mut max = max_counter_for_peer(snap.peer, &snap.ops, &doc);
@@ -1201,6 +1229,7 @@ impl CollaborativeDocument<JsonOpCodec> {
             })
             .collect();
         sync.restore_pending(pending_ops);
+        sync.restore_history(snap.state_vector, snap.checkpoint_epoch, snap.delta_floor);
 
         Ok(Self {
             peer: snap.peer,
@@ -1211,6 +1240,16 @@ impl CollaborativeDocument<JsonOpCodec> {
             unit_mode: snap.unit_mode,
             pending_envelopes: BTreeMap::new(),
         })
+    }
+
+    /// Install a full checkpoint for a lagging peer while retaining the local peer identity.
+    pub fn rebase_from_snapshot(
+        snap: SessionSnapshot,
+        local_peer: PeerId,
+    ) -> Result<Self, SnapshotError> {
+        let mut session = Self::restore_from_snapshot(snap)?;
+        session.rebind_peer(local_peer);
+        Ok(session)
     }
 
     /// Late join: load compact state as `local_peer` (does not adopt snapshot peer).

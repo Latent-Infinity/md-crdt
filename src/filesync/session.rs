@@ -12,7 +12,7 @@ use crate::doc::{
     Block, BlockId, BlockKind, Document, ListItem, Parser, RowId, Table, block_id_from_op,
     paragraph_visible_string,
 };
-use crate::session::{CollaborativeDocument, SessionError, SnapshotError};
+use crate::session::{CollaborativeDocument, SessionError, SnapshotError, SyncResponse};
 use crate::storage::{Storage, StorageError};
 use crate::sync::{ChangeMessage, ValidationLimits};
 use crate::workspace::{capture_outline, replace_moved_ids, summarize_outline_change};
@@ -684,7 +684,18 @@ impl VaultSession {
         rel_path: impl AsRef<Path>,
         since: &StateVector,
     ) -> Result<ChangeMessage, VaultError> {
-        Ok(self.session_mut(rel_path)?.encode_changes_since(since))
+        Ok(self.session_mut(rel_path)?.encode_changes_since(since)?)
+    }
+
+    /// Return an incremental delta or a full checkpoint when the peer is behind history retention.
+    pub fn sync_since(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        since: &StateVector,
+    ) -> Result<SyncResponse, VaultError> {
+        self.session_mut(rel_path)?
+            .sync_since(since)
+            .map_err(|error| VaultError::Snapshot(error.to_string()))
     }
 
     /// Apply remote operations to one document and persist the updated session snapshot.
@@ -1541,7 +1552,7 @@ fn summarize_session_transition(
     before: &crate::workspace::DocumentOutline,
     before_vector: &StateVector,
 ) -> Result<crate::ChangeSummary, VaultError> {
-    let message = session.encode_changes_since(before_vector);
+    let message = session.encode_changes_since(before_vector)?;
     let operation_count = message.ops.len();
     let mut explicit_moved = std::collections::BTreeSet::new();
     for operation in &message.ops {

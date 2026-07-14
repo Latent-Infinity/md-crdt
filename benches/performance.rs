@@ -1,11 +1,11 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use md_crdt::CollaborativeDocument;
 use md_crdt::core::{OpId, Sequence, SequenceOp, StateVector};
 use md_crdt::doc::{
     Block, BlockKind, Document, EquivalenceMode, Parser, TextUnit, block_id_from_op,
     units_from_str_at,
 };
 use md_crdt::sync::{Operation, SyncState};
+use md_crdt::{CheckpointRequest, CollaborativeDocument, DocumentTombstonePolicy};
 use std::time::{Duration, Instant};
 
 fn op(counter: u64, peer: u64) -> OpId {
@@ -83,7 +83,14 @@ fn encode_changes(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::from_parameter(payload_size),
             &payload_size,
-            |b, _| b.iter(|| black_box(sync.encode_changes_since(black_box(&since)))),
+            |b, _| {
+                b.iter(|| {
+                    black_box(
+                        sync.encode_changes_since(black_box(&since))
+                            .expect("benchmark vector is current"),
+                    )
+                })
+            },
         );
     }
     group.finish();
@@ -204,6 +211,61 @@ fn descriptor_page(c: &mut Criterion) {
     group.finish();
 }
 
+fn checkpoint_history(c: &mut Criterion) {
+    let mut group = c.benchmark_group("checkpoint_history");
+    let full = sync_with_ops(10_000, 10, 32);
+    let mut compact = full.clone();
+    compact
+        .checkpoint(&CheckpointRequest {
+            max_retained_ops: 128,
+            active_peer_leases: Vec::new(),
+            tombstones: DocumentTombstonePolicy::KeepAll,
+        })
+        .unwrap();
+    let current = compact.delta_floor().clone();
+    group.bench_function("encode_full_10000", |b| {
+        b.iter(|| {
+            black_box(
+                full.encode_changes_since(black_box(&StateVector::new()))
+                    .unwrap(),
+            )
+        })
+    });
+    group.bench_function("encode_retained_128", |b| {
+        b.iter(|| black_box(compact.encode_changes_since(black_box(&current)).unwrap()))
+    });
+
+    let mut session = CollaborativeDocument::new(1);
+    let block = session.insert_paragraph(None, "x").unwrap();
+    for offset in 0..1_000 {
+        session
+            .insert_text(block_id_from_op(block), offset + 1, "x")
+            .unwrap();
+    }
+    let full_snapshot = session.save_snapshot().unwrap();
+    session
+        .checkpoint_history(&CheckpointRequest {
+            max_retained_ops: 64,
+            active_peer_leases: Vec::new(),
+            tombstones: DocumentTombstonePolicy::KeepAll,
+        })
+        .unwrap();
+    let compact_snapshot = session.save_snapshot().unwrap();
+    group.bench_function("restore_full_1002", |b| {
+        b.iter(|| {
+            black_box(CollaborativeDocument::restore_from_snapshot(full_snapshot.clone()).unwrap())
+        })
+    });
+    group.bench_function("restore_retained_64", |b| {
+        b.iter(|| {
+            black_box(
+                CollaborativeDocument::restore_from_snapshot(compact_snapshot.clone()).unwrap(),
+            )
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     block_lookup,
@@ -213,6 +275,7 @@ criterion_group!(
     nested_text_insert,
     session_insert_text,
     document_serialize,
-    descriptor_page
+    descriptor_page,
+    checkpoint_history
 );
 criterion_main!(benches);

@@ -12,23 +12,16 @@ use std::path::{Path, PathBuf};
 
 const SUPERBLOCK_A: &str = "superblock_a";
 const SUPERBLOCK_B: &str = "superblock_b";
-const SEGMENT_FILE: &str = "segment";
+const LEGACY_SEGMENT_FILE: &str = "segment";
 const SEGMENT_A: &str = "segment_a";
 const SEGMENT_B: &str = "segment_b";
 const OPS_DIR: &str = "ops";
 const ARCHIVE_DIR: &str = "archive";
 const TOMBSTONES_FILE: &str = "tombstones.bin";
-const V1_VERSION: u32 = 1;
+const OP_SEGMENT_MAGIC: &[u8; 8] = b"MDCRDTOP";
+const OP_SEGMENT_VERSION: u16 = 1;
+const OP_SEGMENT_HEADER_LEN: usize = 8 + 2 + 8 + 4;
 const V2_VERSION: u32 = 2;
-
-#[derive(Debug, Archive, Serialize, Deserialize, Clone)]
-struct SuperblockV1 {
-    version: u32,
-    seq_ref_index_flag: bool,
-    pending_ops: Vec<u8>,
-    segment_checksum: u32,
-    segment_len: u64,
-}
 
 #[derive(Debug, Archive, Serialize, Deserialize, Clone)]
 struct SuperblockV2Body {
@@ -64,13 +57,6 @@ struct SuperblockMetadata {
     pending_ops: Vec<u8>,
     segment_checksum: u32,
     segment_len: u64,
-    format: SuperblockFormat,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SuperblockFormat {
-    V1,
-    V2,
 }
 
 #[derive(Debug)]
@@ -84,8 +70,14 @@ pub enum StorageError {
     Io(#[from] io::Error),
     #[error("corrupt storage: {0}")]
     Corrupt(&'static str),
+    #[error("corrupt operation segment {path}: {reason}")]
+    CorruptOperationSegment { path: PathBuf, reason: &'static str },
     #[error("missing storage")]
     Missing,
+    #[error(
+        "storage format version {found:?} is unsupported; expected {expected}; reinitialize and re-ingest from Markdown"
+    )]
+    ReinitializeRequired { found: Option<u32>, expected: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +107,12 @@ impl Storage {
         pending_ops: &[u8],
         seq_ref_index_flag: bool,
     ) -> Result<(), StorageError> {
+        if self.root.join(LEGACY_SEGMENT_FILE).exists() {
+            return Err(StorageError::ReinitializeRequired {
+                found: None,
+                expected: V2_VERSION,
+            });
+        }
         let slot_generations = [
             read_slot_generation(&self.root, STORAGE_SLOTS[0])?,
             read_slot_generation(&self.root, STORAGE_SLOTS[1])?,
@@ -147,7 +145,6 @@ impl Storage {
         encoded.extend_from_slice(&body);
         encoded.extend_from_slice(&checksum_bytes(&body).to_le_bytes());
         atomic_write_durable(&self.root, target.superblock, &encoded)?;
-
         Ok(())
     }
 
@@ -172,11 +169,7 @@ impl Storage {
 
         candidates.sort_by_key(|(_, metadata)| std::cmp::Reverse(metadata.generation));
         for (slot, metadata) in candidates {
-            let segment_name = match metadata.format {
-                SuperblockFormat::V1 => SEGMENT_FILE,
-                SuperblockFormat::V2 => slot.segment,
-            };
-            let segment = match fs::read(self.root.join(segment_name)) {
+            let segment = match fs::read(self.root.join(slot.segment)) {
                 Ok(segment) => segment,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     last_corruption = "missing segment";
@@ -195,7 +188,12 @@ impl Storage {
             return Ok((segment, metadata.pending_ops, metadata.seq_ref_index_flag));
         }
 
-        if saw_superblock {
+        if self.root.join(LEGACY_SEGMENT_FILE).exists() {
+            Err(StorageError::ReinitializeRequired {
+                found: None,
+                expected: V2_VERSION,
+            })
+        } else if saw_superblock {
             Err(StorageError::Corrupt(last_corruption))
         } else {
             Err(StorageError::Missing)
@@ -206,9 +204,50 @@ impl Storage {
         let ops_dir = self.root.join(OPS_DIR);
         fs::create_dir_all(&ops_dir)?;
         let index = next_index(&ops_dir, "op_")?;
-        let path = ops_dir.join(format!("op_{index}"));
-        fs::write(&path, payload)?;
-        Ok(path)
+        let name = format!("op_{index}");
+        let encoded = encode_op_segment(payload);
+        atomic_write_durable(&ops_dir, &name, &encoded)?;
+        Ok(ops_dir.join(name))
+    }
+
+    /// Read and validate all operation segments in append order.
+    pub fn read_op_segments(&self) -> Result<Vec<Vec<u8>>, StorageError> {
+        let ops_dir = self.root.join(OPS_DIR);
+        if !ops_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(&ops_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(index) = name
+                .strip_prefix("op_")
+                .and_then(|value| value.parse::<usize>().ok())
+            else {
+                continue;
+            };
+            paths.push((index, entry.path()));
+        }
+        paths.sort_by_key(|(index, _)| *index);
+        for (expected, (actual, path)) in paths.iter().enumerate() {
+            if expected != *actual {
+                return Err(StorageError::CorruptOperationSegment {
+                    path: path.clone(),
+                    reason: "non-contiguous index",
+                });
+            }
+        }
+        paths
+            .into_iter()
+            .map(|(_, path)| {
+                let bytes = fs::read(&path)?;
+                decode_op_segment(&path, &bytes)
+            })
+            .collect()
     }
 
     pub fn compact(
@@ -223,7 +262,7 @@ impl Storage {
         fs::create_dir_all(&archive_dir)?;
 
         let mut archived_segments = 0usize;
-        for segment_name in [SEGMENT_FILE, SEGMENT_A, SEGMENT_B] {
+        for segment_name in [SEGMENT_A, SEGMENT_B] {
             let segment_path = self.root.join(segment_name);
             if segment_path.exists() {
                 let index = next_index(&archive_dir, "segment_")?;
@@ -281,63 +320,46 @@ impl Storage {
 
 fn read_slot_generation(root: &Path, slot: StorageSlot) -> Result<Option<u64>, StorageError> {
     match fs::read(root.join(slot.superblock)) {
-        Ok(bytes) => Ok(decode_superblock(&bytes)
-            .ok()
-            .map(|metadata| metadata.generation)),
+        Ok(bytes) => match decode_superblock(&bytes) {
+            Ok(metadata) => Ok(Some(metadata.generation)),
+            Err(StorageError::Corrupt(_)) => Ok(None),
+            Err(error) => Err(error),
+        },
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(StorageError::Io(error)),
     }
 }
 
 fn decode_superblock(bytes: &[u8]) -> Result<SuperblockMetadata, StorageError> {
-    let mut v2_version = None;
-    if bytes.len() >= 4 {
-        let body_len = bytes.len() - 4;
-        let (body, trailer) = bytes.split_at(body_len);
-        let stored_checksum = u32::from_le_bytes(
-            trailer
-                .try_into()
-                .map_err(|_| StorageError::Corrupt("superblock checksum"))?,
-        );
-        if checksum_bytes(body) == stored_checksum
-            && let Ok(archived) =
-                rkyv::access::<ArchivedSuperblockV2Body, rkyv::rancor::Error>(body)
-        {
-            let version: u32 = archived.version.into();
-            v2_version = Some(version);
-            if version == V2_VERSION {
-                return Ok(SuperblockMetadata {
-                    generation: archived.generation.into(),
-                    seq_ref_index_flag: archived.seq_ref_index_flag,
-                    pending_ops: archived.pending_ops.to_vec(),
-                    segment_checksum: archived.segment_checksum.into(),
-                    segment_len: archived.segment_len.into(),
-                    format: SuperblockFormat::V2,
-                });
-            }
-        }
+    if bytes.len() < 4 {
+        return Err(StorageError::Corrupt("superblock checksum"));
     }
-
-    if let Ok(archived) = rkyv::access::<ArchivedSuperblockV1, rkyv::rancor::Error>(bytes) {
-        let version: u32 = archived.version.into();
-        if version != V1_VERSION {
-            return Err(StorageError::Corrupt("version"));
-        }
-        return Ok(SuperblockMetadata {
-            generation: 0,
-            seq_ref_index_flag: archived.seq_ref_index_flag,
-            pending_ops: archived.pending_ops.to_vec(),
-            segment_checksum: archived.segment_checksum.into(),
-            segment_len: archived.segment_len.into(),
-            format: SuperblockFormat::V1,
+    let body_len = bytes.len() - 4;
+    let (body, trailer) = bytes.split_at(body_len);
+    let stored_checksum = u32::from_le_bytes(
+        trailer
+            .try_into()
+            .map_err(|_| StorageError::Corrupt("superblock checksum"))?,
+    );
+    if checksum_bytes(body) != stored_checksum {
+        return Err(StorageError::Corrupt("superblock checksum"));
+    }
+    let archived = rkyv::access::<ArchivedSuperblockV2Body, rkyv::rancor::Error>(body)
+        .map_err(|_| StorageError::Corrupt("decode"))?;
+    let version: u32 = archived.version.into();
+    if version != V2_VERSION {
+        return Err(StorageError::ReinitializeRequired {
+            found: Some(version),
+            expected: V2_VERSION,
         });
     }
-
-    if v2_version.is_some() {
-        Err(StorageError::Corrupt("version"))
-    } else {
-        Err(StorageError::Corrupt("superblock checksum"))
-    }
+    Ok(SuperblockMetadata {
+        generation: archived.generation.into(),
+        seq_ref_index_flag: archived.seq_ref_index_flag,
+        pending_ops: archived.pending_ops.to_vec(),
+        segment_checksum: archived.segment_checksum.into(),
+        segment_len: archived.segment_len.into(),
+    })
 }
 
 fn atomic_write_durable(root: &Path, name: &str, bytes: &[u8]) -> Result<(), StorageError> {
@@ -370,6 +392,47 @@ fn checksum_bytes(bytes: &[u8]) -> u32 {
     let mut hasher = Hasher::new();
     hasher.update(bytes);
     hasher.finalize()
+}
+
+fn encode_op_segment(payload: &[u8]) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(OP_SEGMENT_HEADER_LEN + payload.len());
+    encoded.extend_from_slice(OP_SEGMENT_MAGIC);
+    encoded.extend_from_slice(&OP_SEGMENT_VERSION.to_le_bytes());
+    encoded.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    encoded.extend_from_slice(&checksum_bytes(payload).to_le_bytes());
+    encoded.extend_from_slice(payload);
+    encoded
+}
+
+fn decode_op_segment(path: &Path, bytes: &[u8]) -> Result<Vec<u8>, StorageError> {
+    let corrupt = |reason| StorageError::CorruptOperationSegment {
+        path: path.to_path_buf(),
+        reason,
+    };
+    if bytes.len() < OP_SEGMENT_HEADER_LEN {
+        return Err(corrupt("truncated header"));
+    }
+    if &bytes[..8] != OP_SEGMENT_MAGIC {
+        return Err(corrupt("magic"));
+    }
+    let version = u16::from_le_bytes(bytes[8..10].try_into().expect("fixed slice"));
+    if version != OP_SEGMENT_VERSION {
+        return Err(corrupt("version"));
+    }
+    let payload_len = u64::from_le_bytes(bytes[10..18].try_into().expect("fixed slice"));
+    let payload_len = usize::try_from(payload_len).map_err(|_| corrupt("length overflow"))?;
+    let expected_len = OP_SEGMENT_HEADER_LEN
+        .checked_add(payload_len)
+        .ok_or_else(|| corrupt("length overflow"))?;
+    if bytes.len() != expected_len {
+        return Err(corrupt("length mismatch"));
+    }
+    let expected_checksum = u32::from_le_bytes(bytes[18..22].try_into().expect("fixed slice"));
+    let payload = &bytes[OP_SEGMENT_HEADER_LEN..];
+    if checksum_bytes(payload) != expected_checksum {
+        return Err(corrupt("checksum mismatch"));
+    }
+    Ok(payload.to_vec())
 }
 
 fn next_index(dir: &Path, prefix: &str) -> Result<usize, StorageError> {
@@ -413,13 +476,6 @@ mod tests {
     use std::fs;
     use std::io::Read;
     use tempfile::tempdir;
-
-    // Frozen bytes emitted by the pre-V2 Superblock layout for:
-    // pending_ops="legacy-pending", payload="legacy", flag=true.
-    const V1_FIXTURE: &[u8] = &[
-        108, 101, 103, 97, 99, 121, 45, 112, 101, 110, 100, 105, 110, 103, 0, 0, 1, 0, 0, 0, 1, 0,
-        0, 0, 232, 255, 255, 255, 14, 0, 0, 0, 238, 9, 203, 23, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
-    ];
 
     fn read_v2_generation(path: &Path) -> u64 {
         let bytes = fs::read(path).unwrap();
@@ -525,34 +581,20 @@ mod tests {
     }
 
     #[test]
-    fn reads_v1_bytes_then_upgrades_without_destroying_fallback() {
+    fn legacy_storage_artifact_requires_reinitialize() {
         let dir = tempdir().unwrap();
         let storage = Storage::open(dir.path()).unwrap();
-        let payload = b"legacy";
-        fs::write(dir.path().join(SEGMENT_FILE), payload).unwrap();
-        fs::write(dir.path().join(SUPERBLOCK_A), V1_FIXTURE).unwrap();
-        fs::write(dir.path().join(SUPERBLOCK_B), V1_FIXTURE).unwrap();
+        fs::write(dir.path().join(LEGACY_SEGMENT_FILE), b"legacy").unwrap();
 
-        assert_eq!(
-            storage.read_snapshot().unwrap(),
-            (payload.to_vec(), b"legacy-pending".to_vec(), true)
-        );
-
-        storage.write_snapshot(b"v2", b"v2-pending", false).unwrap();
-        assert_eq!(storage.read_snapshot().unwrap().0, b"v2");
-        assert!(dir.path().join(SEGMENT_FILE).exists());
-        assert_eq!(
-            [SUPERBLOCK_A, SUPERBLOCK_B]
-                .into_iter()
-                .filter(|name| {
-                    let bytes = fs::read(dir.path().join(name)).unwrap();
-                    bytes.len() >= 4
-                        && checksum_bytes(&bytes[..bytes.len() - 4])
-                            == u32::from_le_bytes(bytes[bytes.len() - 4..].try_into().unwrap())
-                })
-                .count(),
-            1
-        );
+        let error = storage.read_snapshot().unwrap_err();
+        assert!(matches!(
+            error,
+            StorageError::ReinitializeRequired {
+                found: None,
+                expected: V2_VERSION,
+            }
+        ));
+        assert!(error.to_string().contains("reinitialize and re-ingest"));
     }
 
     #[test]
@@ -603,22 +645,28 @@ mod tests {
             .write_snapshot(b"payload", b"pending", false)
             .unwrap();
 
-        // Manually create superblock with wrong version
-        let bad_superblock = SuperblockV1 {
-            version: V1_VERSION + 1,
+        // Manually create a checksummed current-layout superblock with a wrong version.
+        let bad_superblock = SuperblockV2Body {
+            version: V2_VERSION + 1,
+            generation: 1,
             seq_ref_index_flag: false,
             pending_ops: vec![],
             segment_checksum: checksum_bytes(b"payload"),
             segment_len: 7,
         };
-        let encoded = rkyv::to_bytes::<rkyv::rancor::Error>(&bad_superblock).unwrap();
+        let body = rkyv::to_bytes::<rkyv::rancor::Error>(&bad_superblock).unwrap();
+        let mut encoded = body.to_vec();
+        encoded.extend_from_slice(&checksum_bytes(&body).to_le_bytes());
         fs::write(dir.path().join(SUPERBLOCK_A), &encoded).unwrap();
         fs::write(dir.path().join(SUPERBLOCK_B), &encoded).unwrap();
 
         let err = storage.read_snapshot().unwrap_err();
         match err {
-            StorageError::Corrupt(msg) => assert_eq!(msg, "version"),
-            other => panic!("Expected version corruption error, got {other:?}"),
+            StorageError::ReinitializeRequired { found, expected } => {
+                assert_eq!(found, Some(V2_VERSION + 1));
+                assert_eq!(expected, V2_VERSION);
+            }
+            other => panic!("Expected reinitialize error, got {other:?}"),
         }
     }
 
@@ -728,6 +776,123 @@ mod tests {
     }
 
     #[test]
+    fn operation_segments_round_trip_in_append_order() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+
+        storage.append_op_segment(b"first").unwrap();
+        storage.append_op_segment(b"second").unwrap();
+
+        assert_eq!(
+            storage.read_op_segments().unwrap(),
+            vec![b"first".to_vec(), b"second".to_vec()]
+        );
+    }
+
+    #[test]
+    fn operation_segment_truncation_and_corruption_fail_closed() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let first = storage.append_op_segment(b"first").unwrap();
+        let second = storage.append_op_segment(b"second").unwrap();
+
+        let mut truncated = fs::read(&second).unwrap();
+        truncated.pop();
+        fs::write(&second, truncated).unwrap();
+        assert!(matches!(
+            storage.read_op_segments(),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+
+        fs::remove_file(&second).unwrap();
+        assert_eq!(storage.read_op_segments().unwrap(), vec![b"first".to_vec()]);
+
+        let mut corrupt = fs::read(&first).unwrap();
+        *corrupt.last_mut().unwrap() ^= 0xff;
+        fs::write(first, corrupt).unwrap();
+        assert!(matches!(
+            storage.read_op_segments(),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+    }
+
+    #[test]
+    fn operation_segment_bad_magic_version_and_short_header_fail_closed() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let path = storage.append_op_segment(b"payload").unwrap();
+        let valid = fs::read(&path).unwrap();
+
+        // Bad magic (bytes 0..8) — caught by the magic check, not the CRC.
+        let mut bad = valid.clone();
+        bad[0] ^= 0xff;
+        fs::write(&path, &bad).unwrap();
+        assert!(matches!(
+            storage.read_op_segments(),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+
+        // Bad version (bytes 8..10) — sits outside the payload CRC, so it must be caught by
+        // the explicit version check rather than passing as a valid segment.
+        let mut bad = valid.clone();
+        bad[8] = bad[8].wrapping_add(1);
+        fs::write(&path, &bad).unwrap();
+        assert!(matches!(
+            storage.read_op_segments(),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+
+        // Truncated below the header floor (< OP_SEGMENT_HEADER_LEN).
+        fs::write(&path, &valid[..OP_SEGMENT_HEADER_LEN - 1]).unwrap();
+        assert!(matches!(
+            storage.read_op_segments(),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+    }
+
+    #[test]
+    fn operation_segments_read_in_numeric_order_and_reject_a_middle_gap() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        for index in 0..12u32 {
+            storage
+                .append_op_segment(format!("op-{index}").as_bytes())
+                .unwrap();
+        }
+
+        // Numeric, not lexicographic: op_10/op_11 come after op_9, not after op_1.
+        let expected: Vec<Vec<u8>> = (0..12).map(|i| format!("op-{i}").into_bytes()).collect();
+        assert_eq!(storage.read_op_segments().unwrap(), expected);
+
+        // A missing middle segment is a gap: reads fail closed rather than dropping ops.
+        fs::remove_file(dir.path().join(OPS_DIR).join("op_5")).unwrap();
+        assert!(matches!(
+            storage.read_op_segments(),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+    }
+
+    #[test]
+    fn failed_operation_append_preserves_prior_log_and_snapshot_generation() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage
+            .write_snapshot(b"committed", b"pending", false)
+            .unwrap();
+        storage.append_op_segment(b"first").unwrap();
+
+        fs::create_dir(dir.path().join(OPS_DIR).join("op_1.tmp")).unwrap();
+        assert!(matches!(
+            storage.append_op_segment(b"second"),
+            Err(StorageError::Io(_))
+        ));
+
+        assert_eq!(storage.read_op_segments().unwrap(), vec![b"first".to_vec()]);
+        assert_eq!(storage.read_snapshot().unwrap().0, b"committed");
+        assert_eq!(read_v2_generation(&dir.path().join(SUPERBLOCK_A)), 1);
+    }
+
+    #[test]
     fn test_compact_prunes_tombstones() {
         let dir = tempdir().unwrap();
         let storage = Storage::open(dir.path()).unwrap();
@@ -790,7 +955,6 @@ mod tests {
     fn active_storage_bytes(root: &Path) -> io::Result<u64> {
         let mut total = 0u64;
         for name in [
-            SEGMENT_FILE,
             SEGMENT_A,
             SEGMENT_B,
             SUPERBLOCK_A,

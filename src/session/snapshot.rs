@@ -1,36 +1,31 @@
 //! Session snapshot schema and Document ↔ DTO conversion.
 //!
 //! Snapshots persist document materialization plus the opaque op log for
-//! crash recovery and late join. Full op log growth is accepted for 0.1
-//! (compaction is a later concern).
+//! crash recovery, checkpoint rebase, and late join.
 
 use crate::core::mark::MarkSet;
 use crate::core::{Element, LwwRegister, OpId, PeerId, Sequence};
 use crate::doc::{
     Block, BlockId, BlockKind, CellContent, ColumnAlignment, ColumnDef, Document, DocumentSource,
-    Frontmatter, Table, TableRow, TextUnit, units_from_str,
+    Frontmatter, Table, TableRow, TextUnit,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Snapshot schema version (not wire `Envelope` version).
 ///
-/// v1: paragraph body as plain string.
-/// v2: paragraph body as ordered grapheme units (with OpIds).
-/// v3: lossless source regions and dirty-root state.
+/// v3: grapheme units, lossless source regions, and checkpoint metadata.
 pub const SNAPSHOT_FORMAT_VERSION: u16 = 3;
-
-/// Prior format that stored paragraph text as a plain string.
-pub const SNAPSHOT_FORMAT_VERSION_V1: u16 = 1;
-pub(super) const SNAPSHOT_FORMAT_VERSION_V2: u16 = 2;
 
 /// Errors loading or decoding session snapshots.
 #[derive(Debug, Error)]
 pub enum SnapshotError {
     #[error("serde: {0}")]
     Serde(String),
-    #[error("unsupported snapshot format version {0}")]
-    UnsupportedVersion(u16),
+    #[error(
+        "snapshot format version {found} is unsupported; expected {expected}; reinitialize and re-ingest from Markdown"
+    )]
+    ReinitializeRequired { found: u16, expected: u16 },
     #[error("next_counter {next} is behind max observed counter {max} for peer {peer}")]
     ClockBehind { peer: PeerId, next: u64, max: u64 },
     #[cfg(feature = "storage")]
@@ -45,6 +40,10 @@ pub struct SessionSnapshot {
     pub peer: PeerId,
     pub next_counter: u64,
     pub unit_mode: bool,
+    /// Applied frontier, including counters whose operation payloads were checkpointed away.
+    pub state_vector: crate::core::StateVector,
+    pub checkpoint_epoch: u64,
+    pub delta_floor: crate::core::StateVector,
     pub document: DocumentDto,
     /// Applied ops `(OpId, payload bytes)` for retransmission / audit.
     pub ops: Vec<(OpId, Vec<u8>)>,
@@ -57,7 +56,6 @@ pub struct SessionSnapshot {
 pub struct DocumentDto {
     pub frontmatter: Option<Frontmatter>,
     pub blocks: Vec<ElementDto<BlockDto>>,
-    #[serde(default)]
     pub(crate) source: Option<DocumentSource>,
 }
 
@@ -74,7 +72,6 @@ pub struct BlockDto {
     pub id: BlockId,
     pub elem_id: OpId,
     pub kind: BlockKindDto,
-    #[serde(default)]
     pub marks: MarkSet,
 }
 
@@ -85,19 +82,12 @@ pub struct TextUnitDto {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockKindDto {
-    /// v2: `units` preferred. v1 snapshots may only set `legacy_text`.
     Paragraph {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        units: Option<Vec<ElementDto<TextUnitDto>>>,
-        #[serde(default, rename = "text", skip_serializing_if = "Option::is_none")]
-        legacy_text: Option<String>,
+        units: Vec<ElementDto<TextUnitDto>>,
     },
     Heading {
         level: u8,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        units: Option<Vec<ElementDto<TextUnitDto>>>,
-        #[serde(default, rename = "text", skip_serializing_if = "Option::is_none")]
-        legacy_text: Option<String>,
+        units: Vec<ElementDto<TextUnitDto>>,
     },
     List {
         ordered: bool,
@@ -204,11 +194,11 @@ impl SessionSnapshot {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SnapshotError> {
         let snap: Self =
             serde_json::from_slice(bytes).map_err(|e| SnapshotError::Serde(e.to_string()))?;
-        if snap.format_version != SNAPSHOT_FORMAT_VERSION
-            && snap.format_version != SNAPSHOT_FORMAT_VERSION_V1
-            && snap.format_version != SNAPSHOT_FORMAT_VERSION_V2
-        {
-            return Err(SnapshotError::UnsupportedVersion(snap.format_version));
+        if snap.format_version != SNAPSHOT_FORMAT_VERSION {
+            return Err(SnapshotError::ReinitializeRequired {
+                found: snap.format_version,
+                expected: SNAPSHOT_FORMAT_VERSION,
+            });
         }
         Ok(snap)
     }
@@ -329,17 +319,15 @@ fn block_from_dto(dto: BlockDto) -> Block {
 fn kind_to_dto(kind: &BlockKind) -> BlockKindDto {
     match kind {
         BlockKind::Paragraph { text } => BlockKindDto::Paragraph {
-            units: Some(sequence_to_elements(text, |u| TextUnitDto {
+            units: sequence_to_elements(text, |u| TextUnitDto {
                 grapheme: u.grapheme.clone(),
-            })),
-            legacy_text: None,
+            }),
         },
         BlockKind::Heading { level, text } => BlockKindDto::Heading {
             level: *level,
-            units: Some(sequence_to_elements(text, |u| TextUnitDto {
+            units: sequence_to_elements(text, |u| TextUnitDto {
                 grapheme: u.grapheme.clone(),
-            })),
-            legacy_text: None,
+            }),
         },
         BlockKind::List { ordered, items } => BlockKindDto::List {
             ordered: *ordered,
@@ -369,36 +357,17 @@ fn list_item_to_dto(item: &crate::doc::ListItem) -> ListItemDto {
 
 fn kind_from_dto(kind: BlockKindDto) -> BlockKind {
     match kind {
-        BlockKindDto::Paragraph { units, legacy_text } => {
-            let seq = if let Some(units) = units {
-                sequence_from_elements(units, |u| TextUnit {
-                    grapheme: u.grapheme,
-                })
-            } else if let Some(s) = legacy_text {
-                let mut c = 1u64;
-                units_from_str(&s, &mut c, 0)
-            } else {
-                Sequence::new()
-            };
-            BlockKind::Paragraph { text: seq }
-        }
-        BlockKindDto::Heading {
+        BlockKindDto::Paragraph { units } => BlockKind::Paragraph {
+            text: sequence_from_elements(units, |u| TextUnit {
+                grapheme: u.grapheme,
+            }),
+        },
+        BlockKindDto::Heading { level, units } => BlockKind::Heading {
             level,
-            units,
-            legacy_text,
-        } => {
-            let seq = if let Some(units) = units {
-                sequence_from_elements(units, |u| TextUnit {
-                    grapheme: u.grapheme,
-                })
-            } else if let Some(s) = legacy_text {
-                let mut c = 1u64;
-                units_from_str(&s, &mut c, 0)
-            } else {
-                Sequence::new()
-            };
-            BlockKind::Heading { level, text: seq }
-        }
+            text: sequence_from_elements(units, |u| TextUnit {
+                grapheme: u.grapheme,
+            }),
+        },
         BlockKindDto::List { ordered, items } => BlockKind::List {
             ordered,
             items: sequence_from_elements(items, list_item_from_dto),

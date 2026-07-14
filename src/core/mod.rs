@@ -52,6 +52,10 @@ impl StateVector {
     pub fn set(&mut self, peer: PeerId, counter: u64) {
         self.peers.insert(peer, counter);
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (PeerId, u64)> + '_ {
+        self.peers.iter().map(|(peer, counter)| (*peer, *counter))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
