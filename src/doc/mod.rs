@@ -354,14 +354,14 @@ impl Default for SerializeConfig {
 pub type RowId = Uuid;
 pub type CellContent = String;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ColumnAlignment {
     Left,
     Center,
     Right,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ColumnDef {
     pub alignment: ColumnAlignment,
 }
@@ -615,6 +615,10 @@ impl Document {
 
     pub(crate) fn has_source_state(&self) -> bool {
         self.source.is_some()
+    }
+
+    pub(crate) fn source_region_bytes(&self, block_id: BlockId) -> Option<usize> {
+        self.source.as_ref()?.region_body_bytes(block_id)
     }
 
     pub(crate) fn set_source_state(&mut self, mut source: Option<DocumentSource>) {

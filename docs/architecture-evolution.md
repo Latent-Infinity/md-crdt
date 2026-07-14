@@ -5,7 +5,7 @@
 | **Document title** | Architecture Evolution Design for md-crdt |
 | **Author** | Travis Silvers |
 | **Date** | 2026-07-09 |
-| **Status** | Draft (revision 10 — Phase J semantic Markdown implementation complete) |
+| **Status** | Draft (revision 11 — Phase K agent-efficient workspace operations complete) |
 | **Repository** | `/Users/firestrand/Projects/latenty-infinity/md-crdt` |
 | **Current version** | `0.1.0` (pre-1.0; breaking changes allowed with changelog discipline) |
 | **License** | MIT |
@@ -26,6 +26,7 @@
 | **8** | Rewrote all unfinished work after Phase H as a coordinated four-phase joint-release roadmap; added honest lossless editing, stable workspace identity, semantic inline/frontmatter/link support, durable Markdown export, multi-document operations, and long-running compaction | The live `md-mcp` service duplicates the Markdown engine and both projects overclaim exact serialization after mutation; correctness and source fidelity must precede protocol optimization |
 | **9** | Removed legacy snapshot/storage compatibility from the release contract and added a final breaking cleanup slice | The two projects ship together before 1.0; retaining V1/V2 snapshot readers and V1 storage migration paths adds code, fixtures, and ambiguity without user value |
 | **10** | Completed authoritative inline/frontmatter semantics, native moves, parsed table ingest, and mark-preserving external replacement | Closes the semantic Markdown gaps before Phase K freezes bounded agent-facing mutation and summary primitives |
+| **11** | Completed bounded descriptors/change receipts, preconditioned semantic edit batches, file lifecycle operations, and recoverable multi-file export | Gives `md-mcp` a stable, compact core contract for discovery, mutation, invalidation, and durable publication without normal-path full-document serialization |
 
 **Compatibility policy (supersedes earlier migration notes):** completed sections below retain
 historical implementation details, but they are not release requirements. The joint release accepts
@@ -1345,7 +1346,7 @@ tombstones so replicas converge on the same history.
 
 ---
 
-### Phase K — Agent-efficient workspace operations
+### Phase K — Agent-efficient workspace operations (complete)
 
 The token budget exists at the MCP boundary. Core supplies bounded identity/delta/mutation primitives; `md-mcp` owns handles, schemas, pagination, retrieval ranking, output encoding, and token accounting.
 
@@ -1362,6 +1363,32 @@ Prevalidate the concrete edit set used by `md-mcp`; apply all-or-nothing against
 Add vault create/rename/delete with persistent document identity across rename. Add multi-document prevalidation and in-memory atomic application, then a recovery journal for durable multi-file export. Cross-document failure leaves either the prior committed files or a recoverable journal—not an undocumented partial success.
 
 Link/backlink indexing remains a downstream `md-mcp` concern, but the core change summary must expose enough link-target and path changes to invalidate it incrementally.
+
+#### Phase K implementation outcome
+
+- `Document::descriptor_page` returns body-free, hierarchical pages with stable block/list-item
+  identity, parent/order, kind/heading metadata, source/text byte sizes, and a semantic digest.
+- Every local edit, remote application, ingest, and export returns a bounded `ChangeSummary` with
+  created/deleted/moved/updated ids, affected parents/sections, operation count, and post-revision.
+  Native move envelopes supply authoritative move ids so shifted siblings are not false positives.
+- `WorkspaceEdit` covers text/marks, frontmatter, block and section movement, split/merge, and table
+  metadata/row operations. `EditBatch` preview and apply run against isolated snapshots, bind the
+  exact document/revision/operation sequence, reject stale or mismatched requests before mutation,
+  and do not consume ids when validation fails.
+- Multi-document batches prevalidate every document before installing any prepared session.
+  Create/rename/delete preserve or retire persistent identities as appropriate, while multi-file
+  export uses synced pending files, backups, and durable JSON intents under
+  `.mdcrdt/transactions`; vault open completes interrupted export/rename/delete work.
+- The 10,000-block descriptor benchmark measured a 32-item page at 110.88–112.36 µs versus
+  13.233–13.458 ms for full serialization (approximately 119× faster). The full coverage gate is
+  93.01% lines, above the Phase J 92.98% baseline; `workspace.rs` is 93.04% and the expanded
+  `filesync/session.rs` is 90.46%.
+
+**Batch ablation:** applying operations directly to the live session was smaller but could consume
+clock ids or partially mutate before a late validation failure. Cloning through the existing
+snapshot representation provides one validation/apply implementation, exact previews, and atomic
+installation without a second rollback protocol. The measured descriptor path addresses the normal
+agent-read bottleneck, so full serialization remains explicit rather than cached into the contract.
 
 ---
 

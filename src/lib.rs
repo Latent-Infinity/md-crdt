@@ -109,8 +109,11 @@ pub use session::{
 };
 
 pub use workspace::{
-    BatchReceipt, BlockDescriptor, BlockDescriptorKind, ChangeSummary, DiskFingerprint,
-    DocumentHandle, DocumentId, EditBatch, ExportOutcome, RevisionToken, VaultId,
+    BatchPreview, BatchReceipt, BlockDescriptor, BlockDescriptorKind, ChangeSummary,
+    DeletedDocument, DescriptorPage, DiskFingerprint, DocumentEditBatch, DocumentExportRequest,
+    DocumentHandle, DocumentId, EditBatch, ExportOutcome, LocalEditOutcome, MultiBatchReceipt,
+    MultiExportOutcome, PreviewToken, RecoveryReport, RemoteApplyOutcome, RevisionToken, VaultId,
+    WorkspaceEdit,
 };
 
 // Re-export sync integrate types used with session
@@ -124,6 +127,7 @@ pub use storage::{CompactionReport, Storage, StorageError, TombstoneRetention};
 #[cfg(feature = "filesync")]
 pub use filesync::{
     AddedBlock, ArchivedBlockFingerprint, BlockFingerprint, BlockMapping, BlockMatch, Fingerprint,
-    IngestReport, IngestResult, LastFlushedState, MatchConfig, MatchType, ParsedBlock, Score,
-    Vault, VaultError, VaultSession, fingerprint_document, match_blocks, parsed_blocks_from_doc,
+    IngestOutcome, IngestReport, IngestResult, LastFlushedState, MatchConfig, MatchType,
+    ParsedBlock, Score, Vault, VaultError, VaultSession, fingerprint_document, match_blocks,
+    parsed_blocks_from_doc,
 };

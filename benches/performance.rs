@@ -188,6 +188,22 @@ fn document_serialize(c: &mut Criterion) {
     group.finish();
 }
 
+fn descriptor_page(c: &mut Criterion) {
+    let markdown = (0..10_000)
+        .map(|index| format!("{index:05} {}", "x".repeat(122)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let document = Parser::parse(&markdown);
+    let mut group = c.benchmark_group("workspace_inspection_10000_blocks");
+    group.bench_function("descriptor_page_32", |b| {
+        b.iter(|| black_box(document.descriptor_page(None, 0, 32)))
+    });
+    group.bench_function("full_document_serialization", |b| {
+        b.iter(|| black_box(document.serialize(EquivalenceMode::Structural)))
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     block_lookup,
@@ -196,6 +212,7 @@ criterion_group!(
     sequence_insert_middle,
     nested_text_insert,
     session_insert_text,
-    document_serialize
+    document_serialize,
+    descriptor_page
 );
 criterion_main!(benches);

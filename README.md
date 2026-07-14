@@ -123,9 +123,11 @@ assert_eq!(outcome.document_id, opened.document_id);
 ```
 
 `save_state` and `save_all_state` persist CRDT snapshots only. `export_markdown` publishes one
-source-preserving Markdown view with revision and optional disk-fingerprint preconditions. Atomic
-multi-document publication remains a separate lifecycle operation rather than a misleading loop
-over single-file exports.
+source-preserving Markdown view with revision and optional disk-fingerprint preconditions.
+`export_markdown_transaction` prevalidates several document identities, revisions, and disk
+fingerprints before publishing any of them, then uses a durable recovery journal so an interrupted
+commit is completed when the vault reopens. `create_markdown`, `rename_markdown`, and
+`delete_markdown` provide the corresponding identity-aware file lifecycle operations.
 
 Exchange one path with another vault using the same host-provided transport boundary:
 

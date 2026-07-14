@@ -43,6 +43,8 @@ fn workspace_contract_types_are_concrete_and_mcp_agnostic() {
         deleted: Vec::new(),
         moved: Vec::new(),
         updated: Vec::new(),
+        affected_parents: Vec::new(),
+        affected_sections: Vec::new(),
         operation_count: 0,
         revision: revision.clone(),
     };
@@ -73,6 +75,7 @@ fn workspace_contract_types_are_concrete_and_mcp_agnostic() {
         disk_fingerprint: None,
         bytes_written: 0,
         changed: false,
+        changes: receipt.changes.clone(),
     };
 
     assert_eq!(vault_id.to_string().len(), 36);

@@ -26,6 +26,12 @@ pub(crate) struct DocumentSource {
 }
 
 impl DocumentSource {
+    pub(crate) fn region_body_bytes(&self, block_id: BlockId) -> Option<usize> {
+        self.regions
+            .get(&block_id)
+            .map(|region| region.body_end.saturating_sub(region.body_start))
+    }
+
     pub(crate) fn new(
         original: String,
         spans: Vec<(BlockId, usize, usize)>,

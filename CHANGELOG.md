@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Direct Rust workspace contracts for document handles, block descriptors, change summaries, edit batches, receipts, and export outcomes without a public generic engine trait
 - Path-scoped open, refresh, ingest, and durable Markdown export through `VaultSession`
 - Crash-safe single-file publication using temp write, file sync, atomic rename, and directory sync on Unix
+- Body-free hierarchical descriptor pages with semantic digests and bounded change summaries for local, remote, ingest, and export operations
+- Preconditioned semantic edit batches with isolated preview, exact preview tokens, no-id-burn rejection, compact receipts, and all-or-nothing multi-document installation
+- Identity-aware Markdown create, rename, and delete operations
+- Recoverable multi-file export using synced pending/backup files and durable transaction intents completed automatically on vault open
 
 #### Lossless source-backed documents (`md-crdt::doc`)
 - Per-root-block source regions with owned leading trivia and dirty-region exact serialization

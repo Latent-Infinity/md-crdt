@@ -5,17 +5,23 @@ use super::{
     BlockFingerprint, Fingerprint, IngestReport, LastFlushedState, MatchConfig, ParsedBlock, Score,
     Vault, VaultError, block_content, fingerprint_document, hash_string, match_blocks,
 };
-use crate::codec::JsonOpCodec;
+use crate::codec::{DocOp, JsonOpCodec, OpBody, OpCodec};
 use crate::core::mark::{MarkKind, MarkValue};
 use crate::core::{OpId, PeerId, Sequence, StateVector};
 use crate::doc::{
     Block, BlockId, BlockKind, Document, ListItem, Parser, RowId, Table, block_id_from_op,
     paragraph_visible_string,
 };
-use crate::session::{CollaborativeDocument, SessionApplyResult, SessionError, SnapshotError};
+use crate::session::{CollaborativeDocument, SessionError, SnapshotError};
 use crate::storage::{Storage, StorageError};
 use crate::sync::{ChangeMessage, ValidationLimits};
-use crate::{DiskFingerprint, DocumentHandle, DocumentId, RevisionToken, VaultId};
+use crate::workspace::{capture_outline, replace_moved_ids, summarize_outline_change};
+use crate::{
+    BatchPreview, BatchReceipt, DeletedDocument, DescriptorPage, DiskFingerprint,
+    DocumentEditBatch, DocumentExportRequest, DocumentHandle, DocumentId, EditBatch,
+    LocalEditOutcome, MultiBatchReceipt, MultiExportOutcome, PreviewToken, RecoveryReport,
+    RemoteApplyOutcome, RevisionToken, VaultId, WorkspaceEdit,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -43,6 +49,7 @@ impl VaultSession {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, VaultError> {
         let vault = Vault::open(path)?;
         vault.init()?;
+        recover_pending_transactions(&vault)?;
         let vault_id = load_or_create_identity::<VaultId>(&vault_id_path(&vault))?;
         let peer = load_or_create_peer_id(&vault)?;
         Ok(Self {
@@ -86,11 +93,16 @@ impl VaultSession {
     ) -> Result<DocumentHandle, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
         self.document_id(&rel)?;
-        let needs_ingest = self
+        let session_empty = self
             .session_mut(&rel)?
             .document()
             .blocks_in_order()
             .is_empty();
+        let needs_ingest = session_empty
+            || self
+                .vault
+                .read_last_flushed(&self.vault.path.join(&rel))?
+                .is_none();
         if needs_ingest {
             self.ingest_file_unchecked(&rel)?;
         }
@@ -101,6 +113,172 @@ impl VaultSession {
         let rel = normalize_rel(rel_path.as_ref())?;
         self.session_mut(&rel)?;
         revision_for(self.docs.get(&rel).expect("session opened above"))
+    }
+
+    /// Return a bounded page of direct, body-free child descriptors.
+    pub fn descriptor_page(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        parent: Option<BlockId>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<DescriptorPage, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.session_mut(&rel)?
+            .document()
+            .descriptor_page(parent, offset, limit)
+            .ok_or_else(|| {
+                VaultError::DescriptorParentNotFound(
+                    parent.expect("the document root always resolves to a descriptor sequence"),
+                )
+            })
+    }
+
+    /// Execute a non-atomic local edit and report only the identities it changed.
+    ///
+    /// This intentionally carries no revision precondition or rollback guarantee;
+    /// preconditioned all-or-nothing edit batches are a separate workspace API.
+    pub fn with_local_edit<T>(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        edit: impl FnOnce(&mut CollaborativeDocument) -> T,
+    ) -> Result<LocalEditOutcome<T>, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        let (value, changes) = {
+            let session = self.session_mut(&rel)?;
+            let before = capture_outline(session.document());
+            let before_vector = session.state_vector();
+            let value = edit(session);
+            let changes = summarize_session_transition(session, &before, &before_vector)?;
+            (value, changes)
+        };
+        self.save_state(&rel)?;
+        Ok(LocalEditOutcome { value, changes })
+    }
+
+    /// Validate and execute a batch on an isolated session without mutating the vault.
+    pub fn preview_edit_batch(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        batch: &EditBatch,
+    ) -> Result<BatchPreview, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        let prepared = self.prepare_edit_batch(&rel, batch)?;
+        Ok(BatchPreview {
+            document_id: batch.document_id,
+            revision: prepared.receipt.revision,
+            token: prepared.token,
+            changes: prepared.receipt.changes,
+        })
+    }
+
+    /// Atomically apply one preconditioned edit batch to the in-memory document.
+    pub fn apply_edit_batch(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        batch: EditBatch,
+    ) -> Result<BatchReceipt, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        let prepared = self.prepare_edit_batch(&rel, &batch)?;
+        self.install_prepared_batch(rel, prepared)
+    }
+
+    /// Apply a batch only when it exactly matches a prior preview token.
+    pub fn apply_previewed_batch(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        batch: EditBatch,
+        preview: &PreviewToken,
+    ) -> Result<BatchReceipt, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        let prepared = self.prepare_edit_batch(&rel, &batch)?;
+        if &prepared.token != preview {
+            return Err(VaultError::PreviewMismatch);
+        }
+        self.install_prepared_batch(rel, prepared)
+    }
+
+    /// Prevalidate every document batch, then install all prepared sessions together.
+    ///
+    /// Atomicity is **in-memory**: prevalidation is all-or-nothing (any rejected batch aborts
+    /// the whole set with no session swapped and no clock advanced). Snapshot *persistence* is
+    /// not crash-atomic — sessions are swapped and then each is `save_state`d in a loop, so a
+    /// crash mid-persist can leave some documents flushed and others not. Use
+    /// [`Self::export_markdown_transaction`] (journalled) when cross-document durability matters.
+    pub fn apply_edit_batches(
+        &mut self,
+        batches: Vec<DocumentEditBatch>,
+    ) -> Result<MultiBatchReceipt, VaultError> {
+        let mut seen = HashSet::new();
+        let mut prepared = Vec::with_capacity(batches.len());
+        for request in &batches {
+            let rel = normalize_rel(&request.path)?;
+            if !seen.insert(rel.clone()) {
+                return Err(VaultError::DuplicateDocumentBatch(rel));
+            }
+            prepared.push((rel.clone(), self.prepare_edit_batch(&rel, &request.batch)?));
+        }
+        let mut receipts = Vec::with_capacity(prepared.len());
+        for (rel, prepared) in prepared {
+            self.docs.insert(rel.clone(), prepared.session);
+            receipts.push(prepared.receipt);
+        }
+        for rel in &seen {
+            self.save_state(rel)?;
+        }
+        Ok(MultiBatchReceipt { receipts })
+    }
+
+    fn prepare_edit_batch(
+        &mut self,
+        rel: &Path,
+        batch: &EditBatch,
+    ) -> Result<PreparedBatch, VaultError> {
+        let actual_document_id = self.document_id(rel)?;
+        if actual_document_id != batch.document_id {
+            return Err(VaultError::DocumentIdMismatch {
+                expected: batch.document_id,
+                actual: actual_document_id,
+            });
+        }
+        self.verify_revision(rel, Some(&batch.expected_revision))?;
+        let live = self
+            .docs
+            .get(rel)
+            .expect("revision verification opens the session");
+        let previous_revision = revision_for(live)?;
+        let before = capture_outline(live.document());
+        let before_vector = live.state_vector();
+        let snapshot = live
+            .save_snapshot()
+            .map_err(|error| VaultError::Snapshot(error.to_string()))?;
+        let mut probe = CollaborativeDocument::restore_from_snapshot(snapshot)
+            .map_err(|error| VaultError::Snapshot(error.to_string()))?;
+        for operation in &batch.operations {
+            apply_workspace_edit(&mut probe, operation).map_err(session_err)?;
+        }
+        let changes = summarize_session_transition(&probe, &before, &before_vector)?;
+        let receipt = BatchReceipt {
+            document_id: batch.document_id,
+            previous_revision,
+            revision: changes.revision.clone(),
+            changes,
+        };
+        Ok(PreparedBatch {
+            session: probe,
+            receipt,
+            token: preview_token(batch)?,
+        })
+    }
+
+    fn install_prepared_batch(
+        &mut self,
+        rel: PathBuf,
+        prepared: PreparedBatch,
+    ) -> Result<BatchReceipt, VaultError> {
+        write_session_snapshot(&self.vault, &rel, &prepared.session)?;
+        self.docs.insert(rel, prepared.session);
+        Ok(prepared.receipt)
     }
 
     /// Vault-relative paths currently open in memory.
@@ -182,6 +360,12 @@ impl VaultSession {
             self.verify_disk(&rel, expected)?;
         }
 
+        let before = capture_outline(
+            self.docs
+                .get(&rel)
+                .expect("revision check opened the session")
+                .document(),
+        );
         let path = self.vault.path.join(&rel);
         let markdown = self
             .docs
@@ -207,13 +391,256 @@ impl VaultSession {
 
         let document_id = self.document_id(&rel)?;
         let revision = self.revision(&rel)?;
+        let after = capture_outline(
+            self.docs
+                .get(&rel)
+                .expect("session remains open after export")
+                .document(),
+        );
+        let changes = summarize_outline_change(&before, &after, 0, revision.clone());
         Ok(crate::ExportOutcome {
             document_id,
             revision,
             disk_fingerprint: disk_fingerprint(&path)?,
             bytes_written: markdown.len(),
             changed,
+            changes,
         })
+    }
+
+    /// Create a Markdown file durably and initialize its persistent workspace identity.
+    pub fn create_markdown(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        markdown: &str,
+    ) -> Result<DocumentHandle, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        let path = self.vault.path.join(&rel);
+        if path.exists() {
+            return Err(VaultError::PathAlreadyExists(path));
+        }
+        atomic_write_markdown(&path, markdown.as_bytes(), PublishControl::default())?;
+        self.open_document(rel)
+    }
+
+    /// Rename one document while preserving its persistent `DocumentId` and session state.
+    pub fn rename_markdown(
+        &mut self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+        expected_revision: &RevisionToken,
+        expected_disk_fingerprint: Option<DiskFingerprint>,
+    ) -> Result<DocumentHandle, VaultError> {
+        let from = normalize_rel(from.as_ref())?;
+        let to = normalize_rel(to.as_ref())?;
+        if self.vault.path.join(&to).exists() {
+            return Err(VaultError::PathAlreadyExists(self.vault.path.join(&to)));
+        }
+        self.verify_revision(&from, Some(expected_revision))?;
+        if let Some(expected) = expected_disk_fingerprint {
+            self.verify_disk(&from, expected)?;
+        }
+        let document_id = self.document_id(&from)?;
+        self.save_state(&from)?;
+        let journal = DurableJournal::Rename {
+            from: from.clone(),
+            to: to.clone(),
+            document_id,
+        };
+        let journal_path = write_journal(&self.vault, &journal)?;
+        if let Err(error) = complete_rename(&self.vault, &from, &to, document_id) {
+            return Err(recoverable_error(&journal_path, error));
+        }
+        if let Err(error) = remove_journal(&journal_path) {
+            return Err(recoverable_error(&journal_path, error));
+        }
+
+        if let Some(session) = self.docs.remove(&from) {
+            self.docs.insert(to.clone(), session);
+        }
+        self.document_ids.remove(&from);
+        self.document_ids.insert(to.clone(), document_id);
+        self.document_handle(&to)
+    }
+
+    /// Delete one Markdown file and its local workspace artifacts through a recoverable intent.
+    pub fn delete_markdown(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        expected_revision: &RevisionToken,
+        expected_disk_fingerprint: Option<DiskFingerprint>,
+    ) -> Result<DeletedDocument, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.verify_revision(&rel, Some(expected_revision))?;
+        if let Some(expected) = expected_disk_fingerprint {
+            self.verify_disk(&rel, expected)?;
+        }
+        let document_id = self.document_id(&rel)?;
+        let journal = DurableJournal::Delete {
+            path: rel.clone(),
+            document_id,
+        };
+        let journal_path = write_journal(&self.vault, &journal)?;
+        if let Err(error) = complete_delete(&self.vault, &rel) {
+            return Err(recoverable_error(&journal_path, error));
+        }
+        if let Err(error) = remove_journal(&journal_path) {
+            return Err(recoverable_error(&journal_path, error));
+        }
+        self.docs.remove(&rel);
+        self.document_ids.remove(&rel);
+        Ok(DeletedDocument {
+            document_id,
+            path: rel,
+        })
+    }
+
+    /// Publish several current document views under one recoverable commit intent.
+    pub fn export_markdown_transaction(
+        &mut self,
+        requests: Vec<DocumentExportRequest>,
+    ) -> Result<MultiExportOutcome, VaultError> {
+        let mut seen = HashSet::new();
+        let mut prepared = Vec::with_capacity(requests.len());
+        for request in requests {
+            let rel = normalize_rel(&request.path)?;
+            if !seen.insert(rel.clone()) {
+                return Err(VaultError::DuplicateDocumentBatch(rel));
+            }
+            let actual_document_id = self.document_id(&rel)?;
+            if actual_document_id != request.document_id {
+                return Err(VaultError::DocumentIdMismatch {
+                    expected: request.document_id,
+                    actual: actual_document_id,
+                });
+            }
+            self.verify_revision(&rel, Some(&request.expected_revision))?;
+            if let Some(expected) = request.expected_disk_fingerprint {
+                self.verify_disk(&rel, expected)?;
+            }
+            let session = self
+                .docs
+                .get(&rel)
+                .expect("revision verification opens the session");
+            let markdown = session
+                .document()
+                .serialize(crate::doc::EquivalenceMode::Exact);
+            let path = self.vault.path.join(&rel);
+            let changed = fs::read(&path).ok().as_deref() != Some(markdown.as_bytes());
+            prepared.push(PreparedExport {
+                rel,
+                document_id: request.document_id,
+                markdown,
+                changed,
+                before: capture_outline(session.document()),
+            });
+        }
+        for export in &prepared {
+            self.save_state(&export.rel)?;
+        }
+
+        // Create the transactions dir before writing any content pending, so its existence
+        // reliably signals "a transaction was attempted here" — recovery's orphan sweep then
+        // fires even when a crash-before-journal leaves pendings on the very first transaction.
+        fs::create_dir_all(transaction_root(&self.vault))?;
+
+        let transaction_id = Uuid::new_v4();
+        let mut entries = Vec::new();
+        for export in prepared.iter().filter(|export| export.changed) {
+            let entry = export_journal_entry(&export.rel, transaction_id)?;
+            if let Err(error) = write_synced_file(
+                &self.vault.path.join(&entry.pending),
+                export.markdown.as_bytes(),
+            ) {
+                let _ = fs::remove_file(self.vault.path.join(&entry.pending));
+                cleanup_pending_entries(&self.vault, &entries);
+                return Err(error);
+            }
+            entries.push(entry);
+        }
+
+        let journal_path = if entries.is_empty() {
+            None
+        } else {
+            let journal = DurableJournal::Export {
+                entries: entries.clone(),
+            };
+            match write_journal(&self.vault, &journal) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    cleanup_pending_entries(&self.vault, &entries);
+                    return Err(error);
+                }
+            }
+        };
+
+        if let Some(journal_path) = &journal_path
+            && let Err(error) = install_export_entries(&self.vault, &entries)
+        {
+            return Err(recoverable_error(journal_path, error));
+        }
+
+        let outcomes = match self.finalize_exports(prepared) {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                return match journal_path {
+                    Some(path) => Err(recoverable_error(&path, error)),
+                    None => Err(error),
+                };
+            }
+        };
+        if let Some(journal_path) = journal_path {
+            if let Err(error) = cleanup_export_entries(&self.vault, &entries, &journal_path) {
+                return Err(recoverable_error(&journal_path, error));
+            }
+        }
+        Ok(MultiExportOutcome {
+            documents: outcomes,
+        })
+    }
+
+    /// Finish any durable transaction intents left by an interrupted process.
+    pub fn recover_transactions(&mut self) -> Result<RecoveryReport, VaultError> {
+        recover_pending_transactions(&self.vault)
+    }
+
+    fn finalize_exports(
+        &mut self,
+        prepared: Vec<PreparedExport>,
+    ) -> Result<Vec<crate::ExportOutcome>, VaultError> {
+        let mut outcomes = Vec::with_capacity(prepared.len());
+        for export in prepared {
+            let parsed = Parser::parse(&export.markdown);
+            let session = self
+                .docs
+                .get_mut(&export.rel)
+                .expect("prepared export session remains open");
+            session.document_mut().adopt_source_from(&parsed);
+            let state = LastFlushedState {
+                content_hash: hash_string(&export.markdown),
+                blocks: fingerprint_document(session.document()),
+            };
+            let path = self.vault.path.join(&export.rel);
+            self.vault.write_last_flushed(&path, &state)?;
+            self.save_state(&export.rel)?;
+            let revision = self.revision(&export.rel)?;
+            let after = capture_outline(
+                self.docs
+                    .get(&export.rel)
+                    .expect("session remains open")
+                    .document(),
+            );
+            let changes = summarize_outline_change(&export.before, &after, 0, revision.clone());
+            outcomes.push(crate::ExportOutcome {
+                document_id: export.document_id,
+                revision,
+                disk_fingerprint: disk_fingerprint(&path)?,
+                bytes_written: export.markdown.len(),
+                changed: export.changed,
+                changes,
+            });
+        }
+        Ok(outcomes)
     }
 
     fn verify_revision(
@@ -266,14 +693,22 @@ impl VaultSession {
         rel_path: impl AsRef<Path>,
         message: ChangeMessage,
         limits: &ValidationLimits,
-    ) -> Result<SessionApplyResult, VaultError> {
+    ) -> Result<RemoteApplyOutcome, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
-        let result = self
-            .session_mut(&rel)?
-            .apply_remote(message, limits)
-            .map_err(session_err)?;
+        let (result, changes) = {
+            let session = self.session_mut(&rel)?;
+            let before = capture_outline(session.document());
+            let before_vector = session.state_vector();
+            let result = session.apply_remote(message, limits).map_err(session_err)?;
+            let changes = summarize_session_transition(session, &before, &before_vector)?;
+            (result, changes)
+        };
         self.save_state(&rel)?;
-        Ok(result)
+        Ok(RemoteApplyOutcome {
+            applied: result.applied,
+            buffered: result.buffered,
+            changes,
+        })
     }
 
     /// Persist one open document's session snapshot to storage.
@@ -314,13 +749,12 @@ impl VaultSession {
                 .strip_prefix(&self.vault.path)
                 .unwrap_or(abs.as_path())
                 .to_path_buf();
-            match self.ingest_file_unchecked(&rel)? {
-                IngestOutcome::Changed(ops) => {
-                    report.files_changed += 1;
-                    report.ops_emitted += ops;
-                }
-                IngestOutcome::NoOp => report.files_noop += 1,
-                IngestOutcome::Skipped => report.files_skipped += 1,
+            let outcome = self.ingest_file_unchecked(&rel)?;
+            if outcome.changed {
+                report.files_changed += 1;
+                report.ops_emitted += outcome.changes.operation_count;
+            } else {
+                report.files_noop += 1;
             }
         }
         Ok(report)
@@ -340,6 +774,18 @@ impl VaultSession {
         }
         let content = fs::read_to_string(&abs)?;
         let content_hash = hash_string(&content);
+        self.session_mut(&rel)?;
+        let before = capture_outline(
+            self.docs
+                .get(&rel)
+                .expect("session opened above")
+                .document(),
+        );
+        let before_vector = self
+            .docs
+            .get(&rel)
+            .expect("session opened above")
+            .state_vector();
 
         if let Some(prev) = self.vault.read_last_flushed(&abs)?
             && prev.content_hash == content_hash
@@ -352,13 +798,19 @@ impl VaultSession {
                     .adopt_source_from(&parsed);
                 self.save_state(&rel)?;
             }
-            return Ok(IngestOutcome::NoOp);
+            let changes = summarize_session_transition(
+                self.docs.get(&rel).expect("session remains open"),
+                &before,
+                &before_vector,
+            )?;
+            return Ok(IngestOutcome {
+                changed: false,
+                changes,
+            });
         }
 
         let parsed = Parser::parse(&content);
-        // Ensure session is loaded before matching against its CRDT state.
-        self.session_mut(&rel)?;
-        let ops = {
+        let _ops = {
             let session = self.docs.get_mut(&rel).expect("session opened above");
             let mut ops = sync_frontmatter(session, &parsed)?;
             let empty = session.document().blocks_in_order().is_empty();
@@ -387,7 +839,15 @@ impl VaultSession {
             blocks: fingerprint_document(session.document()),
         };
         self.vault.write_last_flushed(&abs, &state)?;
-        Ok(IngestOutcome::Changed(ops))
+        let changes = summarize_session_transition(
+            self.docs.get(&rel).expect("session remains open"),
+            &before,
+            &before_vector,
+        )?;
+        Ok(IngestOutcome {
+            changed: true,
+            changes,
+        })
     }
 
     fn load_or_create_session(&self, rel: &Path) -> Result<CollaborativeDocument, VaultError> {
@@ -417,6 +877,569 @@ impl VaultSession {
             Err(err) => Err(VaultError::Storage(err)),
         }
     }
+}
+
+struct PreparedBatch {
+    session: CollaborativeDocument,
+    receipt: BatchReceipt,
+    token: PreviewToken,
+}
+
+struct PreparedExport {
+    rel: PathBuf,
+    document_id: DocumentId,
+    markdown: String,
+    changed: bool,
+    before: crate::workspace::DocumentOutline,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum DurableJournal {
+    Export {
+        entries: Vec<ExportJournalEntry>,
+    },
+    Rename {
+        from: PathBuf,
+        to: PathBuf,
+        document_id: DocumentId,
+    },
+    Delete {
+        path: PathBuf,
+        document_id: DocumentId,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ExportJournalEntry {
+    target: PathBuf,
+    pending: PathBuf,
+    backup: PathBuf,
+}
+
+fn transaction_root(vault: &Vault) -> PathBuf {
+    vault.path.join(".mdcrdt").join("transactions")
+}
+
+fn write_journal(vault: &Vault, journal: &DurableJournal) -> Result<PathBuf, VaultError> {
+    let root = transaction_root(vault);
+    fs::create_dir_all(&root)?;
+    let id = Uuid::new_v4();
+    let path = root.join(format!("{id}.json"));
+    let pending = root.join(format!(".{id}.pending"));
+    let bytes = serde_json::to_vec(journal).map_err(|_| VaultError::Serialization)?;
+    write_synced_file(&pending, &bytes)?;
+    fs::rename(&pending, &path)?;
+    sync_directory(&root)?;
+    Ok(path)
+}
+
+fn remove_journal(path: &Path) -> Result<(), VaultError> {
+    if path.exists() {
+        fs::remove_file(path)?;
+        if let Some(parent) = path.parent() {
+            sync_directory(parent)?;
+        }
+    }
+    Ok(())
+}
+
+fn recoverable_error(journal: &Path, error: VaultError) -> VaultError {
+    VaultError::RecoverableTransaction {
+        journal: journal.to_path_buf(),
+        cause: error.to_string(),
+    }
+}
+
+fn export_journal_entry(
+    target: &Path,
+    transaction_id: Uuid,
+) -> Result<ExportJournalEntry, VaultError> {
+    let file_name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| VaultError::InvalidRelativePath(target.to_path_buf()))?;
+    let parent = target.parent().unwrap_or_else(|| Path::new(""));
+    Ok(ExportJournalEntry {
+        target: target.to_path_buf(),
+        pending: parent.join(format!(".{file_name}.{transaction_id}.pending")),
+        backup: parent.join(format!(".{file_name}.{transaction_id}.backup")),
+    })
+}
+
+fn write_synced_file(path: &Path, bytes: &[u8]) -> Result<(), VaultError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| VaultError::InvalidRelativePath(path.to_path_buf()))?;
+    fs::create_dir_all(parent)?;
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    sync_directory(parent)?;
+    Ok(())
+}
+
+fn install_export_entries(vault: &Vault, entries: &[ExportJournalEntry]) -> Result<(), VaultError> {
+    for entry in entries {
+        let target = vault.path.join(&entry.target);
+        let pending = vault.path.join(&entry.pending);
+        let backup = vault.path.join(&entry.backup);
+        if pending.exists() {
+            if target.exists() && !backup.exists() {
+                fs::rename(&target, &backup)?;
+            } else if target.exists() {
+                fs::remove_file(&target)?;
+            }
+            fs::rename(&pending, &target)?;
+            if let Some(parent) = target.parent() {
+                sync_directory(parent)?;
+            }
+        } else if !target.exists() {
+            return Err(VaultError::PathDoesNotExist(target));
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_export_entries(
+    vault: &Vault,
+    entries: &[ExportJournalEntry],
+    journal_path: &Path,
+) -> Result<(), VaultError> {
+    for entry in entries {
+        let backup = vault.path.join(&entry.backup);
+        if backup.exists() {
+            fs::remove_file(&backup)?;
+            if let Some(parent) = backup.parent() {
+                sync_directory(parent)?;
+            }
+        }
+    }
+    remove_journal(journal_path)
+}
+
+fn cleanup_pending_entries(vault: &Vault, entries: &[ExportJournalEntry]) {
+    for entry in entries {
+        let _ = fs::remove_file(vault.path.join(&entry.pending));
+    }
+}
+
+fn persist_identity(path: &Path, id: DocumentId) -> Result<(), VaultError> {
+    if path.exists() {
+        let actual = parse_identity::<DocumentId>(path)?;
+        return if actual == id {
+            Ok(())
+        } else {
+            Err(VaultError::DocumentIdMismatch {
+                expected: id,
+                actual,
+            })
+        };
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| VaultError::InvalidRelativePath(path.to_path_buf()))?;
+    fs::create_dir_all(parent)?;
+    write_synced_file(path, format!("{id}\n").as_bytes())?;
+    sync_directory(parent)?;
+    Ok(())
+}
+
+fn move_artifact(from: &Path, to: &Path) -> Result<(), VaultError> {
+    if !from.exists() {
+        return Ok(());
+    }
+    if to.exists() {
+        remove_artifact(from)?;
+        return Ok(());
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::rename(from, to)?;
+    Ok(())
+}
+
+fn remove_artifact(path: &Path) -> Result<(), VaultError> {
+    if path.is_dir() {
+        fs::remove_dir_all(path)?;
+    } else if path.exists() {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn complete_rename(
+    vault: &Vault,
+    from: &Path,
+    to: &Path,
+    document_id: DocumentId,
+) -> Result<(), VaultError> {
+    let source = vault.path.join(from);
+    let destination = vault.path.join(to);
+    if source.exists() && destination.exists() {
+        return Err(VaultError::PathAlreadyExists(destination));
+    }
+    persist_identity(&document_id_path(vault, to), document_id)?;
+    move_artifact(
+        &session_storage_path(vault, from),
+        &session_storage_path(vault, to),
+    )?;
+    move_artifact(
+        &vault.state_path_for(&source),
+        &vault.state_path_for(&destination),
+    )?;
+    if source.exists() {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(&source, &destination)?;
+    } else if !destination.exists() {
+        return Err(VaultError::PathDoesNotExist(source));
+    }
+    remove_artifact(&document_id_path(vault, from))?;
+    if let Some(parent) = source.parent() {
+        sync_directory(parent)?;
+    }
+    if let Some(parent) = destination.parent() {
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+fn complete_delete(vault: &Vault, path: &Path) -> Result<(), VaultError> {
+    let markdown = vault.path.join(path);
+    remove_artifact(&markdown)?;
+    remove_artifact(&document_id_path(vault, path))?;
+    remove_artifact(&session_storage_path(vault, path))?;
+    remove_artifact(&vault.state_path_for(&markdown))?;
+    if let Some(parent) = markdown.parent() {
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+fn recover_pending_transactions(vault: &Vault) -> Result<RecoveryReport, VaultError> {
+    let root = transaction_root(vault);
+    if !root.exists() {
+        return Ok(RecoveryReport::default());
+    }
+    let mut journals: Vec<PathBuf> = fs::read_dir(&root)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect();
+    journals.sort();
+    let mut report = RecoveryReport::default();
+    for path in journals {
+        let bytes = fs::read(&path)?;
+        let journal: DurableJournal =
+            serde_json::from_slice(&bytes).map_err(|_| VaultError::Serialization)?;
+        match journal {
+            DurableJournal::Export { entries } => {
+                install_export_entries(vault, &entries)?;
+                for entry in &entries {
+                    remove_artifact(&vault.state_path_for(&vault.path.join(&entry.target)))?;
+                }
+                cleanup_export_entries(vault, &entries, &path)?;
+                report.files_recovered += entries.len();
+            }
+            DurableJournal::Rename {
+                from,
+                to,
+                document_id,
+            } => {
+                complete_rename(vault, &from, &to, document_id)?;
+                remove_journal(&path)?;
+                report.files_recovered += 1;
+            }
+            DurableJournal::Delete {
+                path: document_path,
+                document_id: _,
+            } => {
+                complete_delete(vault, &document_path)?;
+                remove_journal(&path)?;
+                report.files_recovered += 1;
+            }
+        }
+        report.transactions_recovered += 1;
+    }
+
+    // Crash-before-journal window: export content pendings are fsynced *before* the journal
+    // is written, so a crash in between leaves temps no journal will ever reference. Every
+    // journal-owned temp was consumed above (install renames pending→target), so any remaining
+    // transaction temp is orphan litter. Remove it, matched strictly by the trailing UUID.
+    for entry in walkdir::WalkDir::new(&vault.path)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if entry.file_type().is_file()
+            && let Some(name) = entry.file_name().to_str()
+            && is_orphan_transaction_temp(name)
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+
+    Ok(report)
+}
+
+/// True for an interrupted-transaction temp file: `.<name>.<uuid>.pending` / `.backup`
+/// (export content pending) or `.<uuid>.pending` (journal write temp). Matched strictly by
+/// the trailing UUID segment so genuine dotfiles are never removed.
+fn is_orphan_transaction_temp(name: &str) -> bool {
+    if !name.starts_with('.') {
+        return false;
+    }
+    let stem = name
+        .strip_suffix(".pending")
+        .or_else(|| name.strip_suffix(".backup"));
+    match stem.and_then(|stem| stem.rsplit_once('.')) {
+        Some((_, candidate)) => Uuid::parse_str(candidate).is_ok(),
+        None => false,
+    }
+}
+
+fn preview_token(batch: &EditBatch) -> Result<PreviewToken, VaultError> {
+    let encoded = serde_json::to_vec(batch).map_err(|_| VaultError::Serialization)?;
+    Ok(PreviewToken::from_u128(stable_hash_128(&encoded)))
+}
+
+fn apply_workspace_edit(
+    session: &mut CollaborativeDocument,
+    operation: &WorkspaceEdit,
+) -> Result<(), SessionError> {
+    match operation {
+        WorkspaceEdit::InsertParagraph {
+            parent,
+            after,
+            text,
+        } => {
+            let parent = resolve_container(session.document(), *parent)?;
+            let after = resolve_block_elem(session.document(), *after)?;
+            session.insert_paragraph_in(parent, after, text)?;
+        }
+        WorkspaceEdit::InsertHeading {
+            parent,
+            after,
+            level,
+            text,
+        } => {
+            if !(1..=6).contains(level) {
+                return Err(SessionError::InvalidHeadingLevel);
+            }
+            let parent = resolve_container(session.document(), *parent)?;
+            let after = resolve_block_elem(session.document(), *after)?;
+            let elem = session.insert_block_in(
+                parent,
+                after,
+                BlockKind::Heading {
+                    level: *level,
+                    text: Sequence::new(),
+                },
+            )?;
+            if !text.is_empty() {
+                session.insert_text(block_id_from_op(elem), 0, text)?;
+            }
+        }
+        WorkspaceEdit::DeleteBlock { block_id } => {
+            let block = session
+                .document()
+                .find_block_by_id(*block_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            let parent = session
+                .document()
+                .block_parent(*block_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            session.delete_block_in(parent, block.elem_id)?;
+        }
+        WorkspaceEdit::InsertText {
+            block_id,
+            grapheme_offset,
+            text,
+        } => {
+            session.insert_text(*block_id, *grapheme_offset, text)?;
+        }
+        WorkspaceEdit::DeleteText {
+            block_id,
+            grapheme_offset,
+            grapheme_count,
+        } => {
+            session.delete_text(*block_id, *grapheme_offset, *grapheme_count)?;
+        }
+        WorkspaceEdit::SetMark {
+            block_id,
+            start,
+            end,
+            kind,
+            attrs,
+        } => {
+            session.set_mark(*block_id, *start..*end, kind.clone(), attrs.clone())?;
+        }
+        WorkspaceEdit::RemoveMark {
+            block_id,
+            interval_id,
+        } => {
+            session.remove_mark(*block_id, *interval_id)?;
+        }
+        WorkspaceEdit::SetFrontmatterField { key, value } => {
+            session.set_frontmatter_field(key.clone(), value.clone())?;
+        }
+        WorkspaceEdit::MoveBlock {
+            block_id,
+            parent,
+            after,
+        } => {
+            let parent = resolve_container(session.document(), *parent)?;
+            let after = resolve_block_elem(session.document(), *after)?;
+            session.move_block(*block_id, parent, after)?;
+        }
+        WorkspaceEdit::MoveSection { heading_id, after } => {
+            let after = resolve_block_elem(session.document(), *after)?;
+            session.move_section(*heading_id, after)?;
+        }
+        WorkspaceEdit::SplitBlock {
+            block_id,
+            grapheme_offset,
+        } => {
+            let parent = session
+                .document()
+                .block_parent(*block_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            session.split_block_in(parent, *block_id, *grapheme_offset)?;
+        }
+        WorkspaceEdit::MergeBlocks { left_id, right_id } => {
+            let parent = session
+                .document()
+                .block_parent(*left_id)
+                .ok_or(SessionError::BlockNotFound)?;
+            session.merge_blocks_in(parent, *left_id, *right_id)?;
+        }
+        WorkspaceEdit::InsertTable {
+            parent,
+            after,
+            columns,
+            header,
+        } => {
+            let parent = resolve_container(session.document(), *parent)?;
+            let after = resolve_block_elem(session.document(), *after)?;
+            session.insert_table_in(parent, after, columns.clone(), header.clone())?;
+        }
+        WorkspaceEdit::InsertTableRow {
+            table_id,
+            after,
+            cells,
+        } => {
+            let after = resolve_row_elem(session.document(), *table_id, *after)?;
+            session.insert_table_row(*table_id, after, cells.clone())?;
+        }
+        WorkspaceEdit::SetTableRowCells {
+            table_id,
+            row_id,
+            cells,
+        } => {
+            let row = resolve_row_elem(session.document(), *table_id, Some(*row_id))?
+                .ok_or(SessionError::TableRowNotFound)?;
+            session.set_table_row_cells(*table_id, row, cells.clone())?;
+        }
+        WorkspaceEdit::DeleteTableRow { table_id, row_id } => {
+            let row = resolve_row_elem(session.document(), *table_id, Some(*row_id))?
+                .ok_or(SessionError::TableRowNotFound)?;
+            session.delete_table_row(*table_id, row)?;
+        }
+        WorkspaceEdit::SetTableMetadata {
+            table_id,
+            columns,
+            header,
+        } => {
+            session.set_table_metadata(*table_id, columns.clone(), header.clone())?;
+        }
+        WorkspaceEdit::MoveTableRow {
+            table_id,
+            row_id,
+            after,
+        } => {
+            let after = resolve_row_elem(session.document(), *table_id, *after)?;
+            session.move_table_row(*table_id, *row_id, after)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_container(
+    document: &Document,
+    parent: Option<BlockId>,
+) -> Result<Option<OpId>, SessionError> {
+    parent
+        .map(|id| container_elem_by_id(document.blocks(), id).ok_or(SessionError::BlockNotFound))
+        .transpose()
+}
+
+fn container_elem_by_id(blocks: &Sequence<Block>, id: BlockId) -> Option<OpId> {
+    for block in blocks.iter() {
+        if block.id == id {
+            return matches!(block.kind, BlockKind::BlockQuote { .. }).then_some(block.elem_id);
+        }
+        match &block.kind {
+            BlockKind::BlockQuote { children } => {
+                if let Some(found) = container_elem_by_id(children, id) {
+                    return Some(found);
+                }
+            }
+            BlockKind::List { items, .. } => {
+                for item in items.iter() {
+                    if item.id == id {
+                        return Some(item.elem_id);
+                    }
+                    if let Some(found) = container_elem_by_id(&item.children, id) {
+                        return Some(found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn resolve_block_elem(
+    document: &Document,
+    block_id: Option<BlockId>,
+) -> Result<Option<OpId>, SessionError> {
+    block_id
+        .map(|id| {
+            document
+                .find_block_by_id(id)
+                .map(|block| block.elem_id)
+                .ok_or(SessionError::BlockNotFound)
+        })
+        .transpose()
+}
+
+fn resolve_row_elem(
+    document: &Document,
+    table_id: BlockId,
+    row_id: Option<RowId>,
+) -> Result<Option<OpId>, SessionError> {
+    let Some(row_id) = row_id else {
+        return Ok(None);
+    };
+    let block = document
+        .find_block_by_id(table_id)
+        .ok_or(SessionError::BlockNotFound)?;
+    let BlockKind::Table { table } = &block.kind else {
+        return Err(SessionError::NotTable);
+    };
+    table
+        .row_by_id(row_id)
+        .map(|row| Some(row.elem_id))
+        .ok_or(SessionError::TableRowNotFound)
 }
 
 trait PersistentIdentity: Copy + std::fmt::Display + std::str::FromStr {
@@ -511,6 +1534,32 @@ fn revision_for(document: &CollaborativeDocument) -> Result<RevisionToken, Vault
         .and_then(|snapshot| snapshot.to_bytes())
         .map_err(|error| VaultError::Snapshot(error.to_string()))?;
     Ok(RevisionToken::from_u128(stable_hash_128(&bytes)))
+}
+
+fn summarize_session_transition(
+    session: &CollaborativeDocument,
+    before: &crate::workspace::DocumentOutline,
+    before_vector: &StateVector,
+) -> Result<crate::ChangeSummary, VaultError> {
+    let message = session.encode_changes_since(before_vector);
+    let operation_count = message.ops.len();
+    let mut explicit_moved = std::collections::BTreeSet::new();
+    for operation in &message.ops {
+        let envelope = JsonOpCodec
+            .decode(&operation.payload)
+            .map_err(|error| VaultError::Session(error.to_string()))?;
+        let OpBody::Doc(doc_op) = envelope.body;
+        if let DocOp::MoveBlocks { blocks, .. } = doc_op {
+            explicit_moved.extend(blocks.into_iter().map(|block| block.block_id));
+        }
+    }
+    let after = capture_outline(session.document());
+    let revision = revision_for(session)?;
+    let mut summary = summarize_outline_change(before, &after, operation_count, revision);
+    if !explicit_moved.is_empty() {
+        replace_moved_ids(&mut summary, before, &after, explicit_moved);
+    }
+    Ok(summary)
 }
 
 fn stable_hash_128(bytes: &[u8]) -> u128 {
@@ -665,14 +1714,10 @@ fn session_err(err: SessionError) -> VaultError {
 }
 
 /// Outcome of ingesting a single file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IngestOutcome {
-    /// File unchanged since last flush (hash gate).
-    NoOp,
-    /// File ingested; approximate structure-op count.
-    Changed(usize),
-    /// File contains a block type that cannot yet be represented structurally.
-    Skipped,
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IngestOutcome {
+    pub changed: bool,
+    pub changes: crate::ChangeSummary,
 }
 
 /// Insert a parsed block tree into `parent`'s children (top-level when `None`),

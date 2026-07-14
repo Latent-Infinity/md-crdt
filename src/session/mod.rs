@@ -63,6 +63,8 @@ pub enum SessionError {
     BlocksNotAdjacent,
     #[error("grapheme offset out of range")]
     InvalidOffset,
+    #[error("heading level must be in 1..=6")]
+    InvalidHeadingLevel,
     #[error("move target/range or destination anchor is invalid")]
     InvalidMove,
     #[error("a block cannot be moved into itself or its descendants")]

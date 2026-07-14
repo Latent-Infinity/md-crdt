@@ -6,7 +6,7 @@
 mod diff;
 mod session;
 
-pub use session::VaultSession;
+pub use session::{IngestOutcome, VaultSession};
 
 pub use diff::{GraphemeStep, graphemes_of, lcs_steps};
 // IngestReport is defined in this module.
@@ -29,6 +29,8 @@ pub struct Vault {
 pub enum VaultError {
     #[error("Path does not exist: {0}")]
     PathDoesNotExist(PathBuf),
+    #[error("path already exists: {0}")]
+    PathAlreadyExists(PathBuf),
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
     #[error("Storage error: {0}")]
@@ -49,6 +51,19 @@ pub enum VaultError {
     Session(String),
     #[error("unsupported block kind during ingest: {0}")]
     UnsupportedIngestBlock(&'static str),
+    #[error("descriptor parent not found: {0}")]
+    DescriptorParentNotFound(BlockId),
+    #[error("document id mismatch: expected {expected}, actual {actual}")]
+    DocumentIdMismatch {
+        expected: crate::DocumentId,
+        actual: crate::DocumentId,
+    },
+    #[error("batch does not match the supplied preview token")]
+    PreviewMismatch,
+    #[error("duplicate document path in one batch: {0}")]
+    DuplicateDocumentBatch(PathBuf),
+    #[error("transaction requires recovery from {journal}: {cause}")]
+    RecoverableTransaction { journal: PathBuf, cause: String },
     #[error("stale document revision: expected {expected}, actual {actual}")]
     StaleRevision {
         expected: crate::RevisionToken,

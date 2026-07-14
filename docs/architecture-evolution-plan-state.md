@@ -4,7 +4,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 | Field | Value |
 | --- | --- |
-| **Plan** | `docs/architecture-evolution.md` (Draft revision 10) |
+| **Plan** | `docs/architecture-evolution.md` (Draft revision 11) |
 | **Last updated** | 2026-07-13 |
 | **Tracking unit** | PR slices under design phases A–L |
 | **Joint consumer plan** | `../md-mcp/docs/joint-md-crdt-v2-implementation-plan.md` |
@@ -50,9 +50,9 @@ reinitialized and re-ingested from Markdown.
 | **PR-26** Block/section move | **done** | Atomic fresh-placement range moves; identity preservation; move/delete and cycle semantics |
 | **PR-27** Parsed table ingest | **done** | Table metadata and row insert/update/delete/reorder; table/prose ids preserved |
 | **PR-28** Mark-preserving replacement | **done** | Boundary affinity, retained-range projection, whole-replace drop, Unicode anchor helpers |
-| **PR-29** Descriptors/change summaries | **planned** | Borrow-first hierarchy and affected-id deltas for bounded consumers |
-| **PR-30** Atomic document batches | **planned** | Expected-revision precondition, no partial mutation/clock burn, compact receipt |
-| **PR-31** File lifecycle/multi-doc transaction | **planned** | Create/rename/delete and crash-recoverable cross-document publication |
+| **PR-29** Descriptors/change summaries | **done** | Paginated body-free descriptors; before/after affected-id summaries (created/deleted/moved/updated); audit added `deleted`-categorization test |
+| **PR-30** Atomic document batches | **done** | Snapshot-probe apply + swap-on-success: all-or-nothing, no clock burn; revision precondition + preview token. Audit added `StaleRevision`/TOCTOU tests |
+| **PR-31** File lifecycle/multi-doc transaction | **done** | Create/rename/delete; journalled crash-recoverable multi-doc export. Audit added orphan-`.pending` sweep + test |
 | **PR-32** Operation-segment integrity | **planned** | Checksummed/length-framed operation segments with prior-state recovery |
 | **PR-33** History compaction/rebase | **planned** | Bounded growth with explicit lagging-peer checkpoint contract |
 | **PR-34** Frozen `md-mcp` contract | **planned** | Joint consumer fixtures and temporary-surface removal before the final purge |
@@ -215,14 +215,14 @@ repository was modified during this slice.
 - [x] PR-27: table-bearing files ingest structurally instead of returning `Skipped`
 - [x] PR-28: external replacement follows tested mark-boundary affinity and Unicode mapping rules
 
-## Phase K checklist — planned
+## Phase K checklist
 
-- [ ] PR-29: body-free descriptors avoid cloning or serializing all blocks
-- [ ] PR-29: local/remote/ingest/export summaries are bounded by affected ids
-- [ ] PR-30: expected-revision batches are atomic and burn no ids on rejection
-- [ ] PR-30: compact receipts return affected ids/post-revision; full diff stays opt-in
-- [ ] PR-31: file create/rename/delete and cross-document batches recover from every crash point
-- [ ] `../md-mcp`: direct concrete workspace powers context → preview → apply → scoped verify
+- [x] PR-29: body-free descriptors avoid cloning or serializing all blocks
+- [x] PR-29: local/remote/ingest/export summaries are bounded by affected ids
+- [x] PR-30: expected-revision batches are atomic and burn no ids on rejection
+- [x] PR-30: compact receipts return affected ids/post-revision; full diff stays opt-in
+- [x] PR-31: file create/rename/delete and cross-document batches recover from every crash point
+- [ ] `../md-mcp`: direct concrete workspace powers context → preview → apply → scoped verify (joint consumer; PR-34)
 
 ## Phase L checklist — planned
 
@@ -419,8 +419,19 @@ The session result retains the same scaling signal as the lower-level sequence p
 
 **Plan consistency:** fixed a version drift — plan-state referenced the design doc as revision 8 while `architecture-evolution.md` is revision 9.
 
+## Audit — PR-29 / PR-30 / PR-31 (Phase K, fanned out over three verifiers + independent mechanism checks)
+
+All three verified **TRUE** with no functional bug in the atomicity/recovery cores; the gaps were proof (tests) and two minor real issues, both fixed. Plan-state progress rows were marked done and the Phase K checklist completed (they were still "planned" while implemented — a plan↔code drift, and the design-doc revision reference lagged 10 vs 11).
+
+**PR-29 descriptors/change summaries — TRUE.** Genuinely bounded: `Document::descriptor_page` paginates direct children with parameter `offset`/`limit` (no hardcoded size), reads `limit+1` to compute `next_offset`, and copies no text body; summaries are a real before/after structural diff hardened with an explicit-move-op override and an LIS false-positive guard. **Fixed:** `source_bytes` is pinned to the on-disk parse and goes stale after in-memory edits — documented on the field (`text_bytes`/`content_digest` track live content). **TDD gap closed:** added `local_edit_summary_reports_deleted_block_ids` (the `deleted` category had zero coverage). Residual (documented): the LIS reorder detector is only reachable via a non-move reorder path that isn't deterministically constructible through the public API; list-item descriptors are content-blind by design.
+
+**PR-30 atomic document batches — TRUE (atomic in memory).** Batches apply to a snapshot-restored *probe* and swap into the live doc only on full success, so a mid-batch failure is inherently a no-op — no partial mutation, no Lamport-clock burn (probe drops on rejection; `preview`/`apply_previewed` re-verify the revision, so the token can't let a stale apply through). **Documented:** multi-doc `apply_edit_batches` persistence is in-memory-atomic but **not crash-atomic** (no journal, unlike the export path) — added a doc comment steering durability-sensitive callers to `export_markdown_transaction`. **TDD gaps closed:** added `batch_with_a_stale_expected_revision_is_rejected_without_mutation_or_clock_burn` (the headline precondition had no direct test) and `previewed_batch_rejects_apply_after_an_intervening_edit` (TOCTOU guard).
+
+**PR-31 file lifecycle/multi-doc transaction — TRUE (crash-recoverable all-or-nothing).** A real write-ahead journal is fsync'd *before* any target file is modified, with idempotent redo replay on `open()`; rename preserves `DocumentId` + CRDT history, delete retires identity, and preconditions are prevalidated for the whole batch (one stale request → zero writes). **Fixed (real durability-litter bug):** a crash *after* content pendings were fsynced but *before* the journal left orphan `.pending`/`.backup` temps that recovery (which only scanned `*.json`) never cleaned. Now `recover_pending_transactions` sweeps orphan transaction temps (strict `.<name>.<uuid>.pending|.backup` match), and `export_markdown_transaction` creates the transactions dir *before* writing pendings so the sweep also fires for a first-transaction crash. Added `recovery_sweeps_orphan_transaction_pendings_left_without_a_journal` (with negative cases proving unrelated dotfiles survive). Residual (documented): transaction crash-recovery tests replay fabricated journals — no crash-injection hook on the transaction install path; `RecoveryReport` counts for the real cases remain unasserted.
+
 ## Gate
 
+- `just check` — **passed** after PR-29/30/31 audit (447 test-results, 0 warnings; +4 tests: batch StaleRevision/TOCTOU, deleted-summary, orphan-pending sweep; orphan-`.pending` cleanup + doc-comment fixes)
 - `just check` — **passed** for Phase J (format, all-target/all-feature Clippy with warnings denied, full workspace tests, and 7 doctests)
 - `cargo llvm-cov --workspace --all-features --summary-only` — **passed** for Phase J; 92.98% repository line coverage, above the required Phase I 92.82% no-line-regression baseline. Region coverage is 91.02%, down 0.13 points from 91.15%; it is reported for transparency but is not the phase gate. The Phase J semantic modules are 100% (`frontmatter.rs`) and 97.81% (`inline.rs`) line-covered.
 - `just check` — **passed** after PR-21/22/23 audit (403 test-results, 0 warnings; +4 tests: export idempotence/nested-dir, lossless nested-root/unicode; removed misleading `RevisionToken: Ord`; gated the export test seam behind `cfg(test)`)
