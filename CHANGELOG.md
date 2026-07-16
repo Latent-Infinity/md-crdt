@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-15
+
+### Fixed
+
+- Preserve inline marks when a dirty list is structurally serialized, including nested marks and
+  marked link labels
+- Keep blank-separated list-item paragraphs as distinct children instead of merging their text
+- Treat code-span contents as literal text rather than parsing nested emphasis marks
+- Preserve semantic formatting for adjacent nested, crossing, and overlapping inline mark ranges
+- Parse balanced and escaped parentheses in link destinations without truncating the semantic URL
+
 ## [0.2.0] - 2026-07-14
 
 ### Added
@@ -235,6 +246,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive CONTRIBUTING.md guide
 - MIT license
 
-[Unreleased]: https://github.com/latenty-infinity/md-crdt/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/latenty-infinity/md-crdt/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/latenty-infinity/md-crdt/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/latenty-infinity/md-crdt/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/latenty-infinity/md-crdt/releases/tag/v0.1.0

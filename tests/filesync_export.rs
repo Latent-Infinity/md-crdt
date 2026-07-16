@@ -1,5 +1,6 @@
 #![cfg(feature = "filesync")]
 
+use md_crdt::BlockKind;
 use md_crdt::filesync::{VaultError, VaultSession};
 use std::fs;
 use tempfile::tempdir;
@@ -47,6 +48,46 @@ fn export_is_revision_checked_durable_and_exact_after_reopen() {
     let handle = reopened.open_document("note.md").unwrap();
     assert_eq!(handle.document_id, outcome.document_id);
     assert_eq!(handle.revision, outcome.revision);
+}
+
+#[test]
+fn export_preserves_inline_marks_when_editing_a_sibling_list_item() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("note.md");
+    let fixture = include_str!("fixtures/list-inline-marks.md");
+    fs::write(&path, fixture).unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    vault.open_document("note.md").unwrap();
+    let target = {
+        let document = vault.session_mut("note.md").unwrap().document();
+        let blocks = document.blocks_in_order();
+        let list = blocks
+            .iter()
+            .find(|block| matches!(block.kind, BlockKind::List { .. }))
+            .expect("fixture list");
+        let BlockKind::List { items, .. } = &list.kind else {
+            panic!("expected list");
+        };
+        items
+            .iter()
+            .nth(2)
+            .and_then(|item| item.children.iter().next())
+            .expect("third list item paragraph")
+            .id
+    };
+    let session = vault.session_mut("note.md").unwrap();
+    session.delete_text(target, 13, 3).unwrap();
+    session.insert_text(target, 13, "217").unwrap();
+    let edited = vault.open_document("note.md").unwrap();
+
+    vault
+        .export_markdown("note.md", &edited.revision, edited.disk_fingerprint)
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        fixture.replacen("194", "217", 1)
+    );
 }
 
 #[test]

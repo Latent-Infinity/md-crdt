@@ -66,7 +66,7 @@ fn serialize_list(ordered: bool, items: &Sequence<ListItem>, indent: usize) -> S
         for (ci, child) in children.iter().enumerate() {
             match &child.kind {
                 BlockKind::Paragraph { text } => {
-                    let body = paragraph_visible_string(text);
+                    let body = super::inline::serialize_text(child, text);
                     if ci == 0 {
                         let mut body_lines = body.lines();
                         lines.push(format!(
@@ -257,6 +257,48 @@ mod tests {
         let rendered = serialize_list(false, &items, 0);
         assert!(rendered.starts_with("- ```rs\n  let x = 1;\n  ```"));
         assert!(rendered.ends_with("\n\n  :::note"));
+    }
+
+    #[test]
+    fn list_serialization_preserves_inline_marks_in_paragraph_children() {
+        let cases = [
+            (
+                "- **bold** and *italic*\n- `code` and [link](target.md)",
+                "- **bold** and *italic*\n- `code` and [link](target.md)",
+            ),
+            (
+                "1. **first**\n2. *second*\n3. [third](third.md)",
+                "1. **first**\n2. *second*\n3. [third](third.md)",
+            ),
+            (
+                "- parent\n  - nested **bold**\n  - nested `code`",
+                "- parent\n  - nested **bold**\n  - nested `code`",
+            ),
+            (
+                "- first line with **bold**\n  continued with *italic* and [link](next.md)",
+                "- first line with **bold**\n  continued with *italic* and [link](next.md)",
+            ),
+            (
+                "- first paragraph\n\n  loose paragraph with `code`\n\n- second item",
+                "- first paragraph\n\n  loose paragraph with `code`\n- second item",
+            ),
+            (
+                "- **bold with *nested italic* text**\n- [**bold link**](target.md)",
+                "- **bold with *nested italic* text**\n- [**bold link**](target.md)",
+            ),
+            (
+                "- [x] **done**\n- Unicode *café 🇺🇸*\n- escaped \\*literal\\*",
+                "- [x] **done**\n- Unicode *café 🇺🇸*\n- escaped \\*literal\\*",
+            ),
+        ];
+
+        for (markdown, expected) in cases {
+            assert_eq!(
+                Parser::parse(markdown).serialize(EquivalenceMode::Structural),
+                expected,
+                "inline marks changed while serializing {markdown:?}"
+            );
+        }
     }
 
     #[test]

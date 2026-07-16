@@ -234,6 +234,190 @@ fn inline_mark_styles_and_remove_exchange() {
 }
 
 #[test]
+fn code_span_contents_do_not_acquire_nested_emphasis_marks() {
+    let doc = Parser::parse("`code *is literal*` and **bold**");
+    let block = doc.blocks_in_order()[0];
+    let kinds: Vec<_> = block
+        .marks
+        .iter_active_intervals()
+        .map(|mark| mark.kind.clone())
+        .collect();
+    assert_eq!(
+        kinds.iter().filter(|kind| **kind == MarkKind::Code).count(),
+        1
+    );
+    assert_eq!(
+        kinds.iter().filter(|kind| **kind == MarkKind::Bold).count(),
+        1
+    );
+    assert!(!kinds.contains(&MarkKind::Italic));
+    assert_eq!(
+        doc.serialize(EquivalenceMode::Structural),
+        "`code *is literal*` and **bold**"
+    );
+}
+
+#[test]
+fn inline_parser_handles_adjacent_nesting_and_balanced_link_targets() {
+    for (markdown, visible) in [
+        ("***bold italic***", "bold italic"),
+        ("**bold and *italic***", "bold and italic"),
+        ("*italic and **bold***", "italic and bold"),
+    ] {
+        let doc = Parser::parse(markdown);
+        assert_eq!(
+            doc.serialize(EquivalenceMode::Structural),
+            markdown,
+            "inline structure changed for {markdown:?}"
+        );
+        let block = doc.blocks_in_order()[0];
+        let BlockKind::Paragraph { text } = &block.kind else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(paragraph_visible_string(text), visible);
+        let kinds: Vec<_> = block
+            .marks
+            .iter_active_intervals()
+            .map(|mark| mark.kind.clone())
+            .collect();
+        assert!(kinds.contains(&MarkKind::Bold));
+        assert!(kinds.contains(&MarkKind::Italic));
+    }
+
+    for markdown in ["[label](target_(v2).md)", r"[label](target_\(escaped\).md)"] {
+        assert_eq!(
+            Parser::parse(markdown).serialize(EquivalenceMode::Structural),
+            markdown,
+            "link structure changed for {markdown:?}"
+        );
+    }
+
+    let doc = Parser::parse("[label](target_(v2).md)");
+    let link = doc.blocks_in_order()[0]
+        .marks
+        .iter_active_intervals()
+        .find(|mark| mark.kind == MarkKind::Link)
+        .unwrap();
+    assert_eq!(
+        link.attrs.get("href").unwrap().get(),
+        MarkValue::String("target_(v2).md".into())
+    );
+}
+
+#[test]
+fn crossing_inline_marks_serialize_as_equivalent_non_crossing_segments() {
+    let mut session = CollaborativeDocument::new(1);
+    let elem = session.insert_paragraph(None, "abcd").unwrap();
+    let block_id = block_id_from_op(elem);
+    session
+        .set_mark(block_id, 0..3, MarkKind::Bold, BTreeMap::new())
+        .unwrap();
+    session
+        .set_mark(block_id, 1..4, MarkKind::Italic, BTreeMap::new())
+        .unwrap();
+
+    let rendered = session.document().serialize(EquivalenceMode::Structural);
+    let reparsed = Parser::parse(&rendered);
+    let block = reparsed.blocks_in_order()[0];
+    let BlockKind::Paragraph { text } = &block.kind else {
+        panic!("expected paragraph");
+    };
+    assert_eq!(paragraph_visible_string(text), "abcd");
+
+    let ids = paragraph_visible_ids(text);
+    let intervals = block.marks.resolved_intervals(&ids);
+    let kinds_at = |index| {
+        intervals
+            .iter()
+            .filter(|(_, start, end)| *start <= index && index < *end)
+            .map(|(interval, _, _)| interval.kind.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(kinds_at(0), vec![MarkKind::Bold]);
+    assert!(kinds_at(1).contains(&MarkKind::Bold));
+    assert!(kinds_at(1).contains(&MarkKind::Italic));
+    assert!(kinds_at(2).contains(&MarkKind::Bold));
+    assert!(kinds_at(2).contains(&MarkKind::Italic));
+    assert_eq!(kinds_at(3), vec![MarkKind::Italic]);
+    assert_eq!(
+        reparsed.serialize(EquivalenceMode::Structural),
+        rendered,
+        "crossing-mark normalization must be stable"
+    );
+}
+
+#[test]
+fn overlapping_same_kind_marks_serialize_as_their_semantic_union() {
+    let mut session = CollaborativeDocument::new(1);
+    let elem = session.insert_paragraph(None, "abcd").unwrap();
+    let block_id = block_id_from_op(elem);
+    session
+        .set_mark(block_id, 0..3, MarkKind::Bold, BTreeMap::new())
+        .unwrap();
+    session
+        .set_mark(block_id, 1..4, MarkKind::Bold, BTreeMap::new())
+        .unwrap();
+
+    let rendered = session.document().serialize(EquivalenceMode::Structural);
+    assert_eq!(rendered, "**abcd**");
+    let reparsed = Parser::parse(&rendered);
+    let block = reparsed.blocks_in_order()[0];
+    let BlockKind::Paragraph { text } = &block.kind else {
+        panic!("expected paragraph");
+    };
+    assert_eq!(paragraph_visible_string(text), "abcd");
+    assert_eq!(
+        block
+            .marks
+            .resolved_intervals(&paragraph_visible_ids(text))
+            .iter()
+            .map(|(interval, start, end)| (interval.kind.clone(), *start, *end))
+            .collect::<Vec<_>>(),
+        vec![(MarkKind::Bold, 0, 4)]
+    );
+}
+
+#[test]
+fn conflicting_link_marks_serialize_with_newer_overlap_winning() {
+    let mut session = CollaborativeDocument::new(1);
+    let elem = session.insert_paragraph(None, "abcd").unwrap();
+    let block_id = block_id_from_op(elem);
+    let mut first = BTreeMap::new();
+    first.insert("href".into(), MarkValue::String("first.md".into()));
+    session
+        .set_mark(block_id, 0..3, MarkKind::Link, first)
+        .unwrap();
+    let mut second = BTreeMap::new();
+    second.insert("href".into(), MarkValue::String("second.md".into()));
+    session
+        .set_mark(block_id, 1..4, MarkKind::Link, second)
+        .unwrap();
+
+    let rendered = session.document().serialize(EquivalenceMode::Structural);
+    assert_eq!(rendered, "[a](first.md)[bcd](second.md)");
+    let reparsed = Parser::parse(&rendered);
+    let block = reparsed.blocks_in_order()[0];
+    let BlockKind::Paragraph { text } = &block.kind else {
+        panic!("expected paragraph");
+    };
+    assert_eq!(paragraph_visible_string(text), "abcd");
+    let intervals = block.marks.resolved_intervals(&paragraph_visible_ids(text));
+    let href_at = |index| {
+        intervals
+            .iter()
+            .find(|(interval, start, end)| {
+                interval.kind == MarkKind::Link && *start <= index && index < *end
+            })
+            .and_then(|(interval, _, _)| interval.attrs.get("href"))
+            .map(|value| value.get())
+    };
+    assert_eq!(href_at(0), Some(MarkValue::String("first.md".into())));
+    for index in 1..4 {
+        assert_eq!(href_at(index), Some(MarkValue::String("second.md".into())));
+    }
+}
+
+#[test]
 fn list_item_parent_and_container_membership_are_addressable() {
     let doc = Parser::parse("- child");
     let list = doc.blocks_in_order()[0];

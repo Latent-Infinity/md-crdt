@@ -59,6 +59,28 @@ fn multiline_and_loose_list_items_normalize_once() {
 }
 
 #[test]
+fn loose_paragraph_after_nested_list_remains_a_distinct_child() {
+    let markdown =
+        "- parent **bold**\n\n  - nested *italic*\n\n  trailing [link](after.md)\n\n- next";
+    let doc = Parser::parse(markdown);
+    let BlockKind::List { items, .. } = &doc.blocks_in_order()[0].kind else {
+        panic!("expected a structured list");
+    };
+    let children: Vec<_> = items.iter().next().unwrap().children.iter().collect();
+    assert_eq!(children.len(), 3);
+    assert!(matches!(children[0].kind, BlockKind::Paragraph { .. }));
+    assert!(matches!(children[1].kind, BlockKind::List { .. }));
+    assert!(matches!(children[2].kind, BlockKind::Paragraph { .. }));
+
+    let rendered = doc.serialize(EquivalenceMode::Structural);
+    assert_eq!(
+        rendered,
+        "- parent **bold**\n  - nested *italic*\n\n  trailing [link](after.md)\n- next"
+    );
+    assert_structural_idempotence(&rendered);
+}
+
+#[test]
 fn fenced_code_adjacent_to_list_normalizes_once() {
     assert_structural_idempotence("- item\n\n```\ncode\n```\n\nafter");
 }

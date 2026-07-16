@@ -1,7 +1,10 @@
 use super::{Block, BlockKind, TextUnit, grapheme_count, paragraph_visible_ids};
-use crate::core::mark::{Anchor, AnchorBias, MarkKind, MarkValue};
+use crate::core::mark::{Anchor, AnchorBias, MarkInterval, MarkKind, MarkValue};
 use crate::core::{OpId, Sequence};
 use std::collections::BTreeMap;
+
+type ResolvedMark<'a> = (&'a MarkInterval, usize, usize);
+type RenderKey = (MarkKind, String, String);
 
 #[derive(Debug)]
 struct ParsedMark {
@@ -59,19 +62,23 @@ fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
             continue;
         }
         if let Some((open, close, kind)) = delimiter_at(rest)
-            && let Some(relative_end) = rest[open.len()..].find(close)
+            && let Some(relative_end) = find_closing_delimiter(&rest[open.len()..], close, &kind)
         {
             let inner_start = cursor + open.len();
             let inner_end = inner_start + relative_end;
             let start = grapheme_count(&visible);
-            let (inner, nested) = parse_fragment(&markdown[inner_start..inner_end]);
-            visible.push_str(&inner);
+            if kind == MarkKind::Code {
+                visible.push_str(&markdown[inner_start..inner_end]);
+            } else {
+                let (inner, nested) = parse_fragment(&markdown[inner_start..inner_end]);
+                visible.push_str(&inner);
+                marks.extend(nested.into_iter().map(|mut mark| {
+                    mark.start += start;
+                    mark.end += start;
+                    mark
+                }));
+            }
             let end = grapheme_count(&visible);
-            marks.extend(nested.into_iter().map(|mut mark| {
-                mark.start += start;
-                mark.end += start;
-                mark
-            }));
             let mut attrs = BTreeMap::new();
             attrs.insert("delimiter".into(), MarkValue::String(open.into()));
             marks.push(ParsedMark {
@@ -85,7 +92,7 @@ fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
         }
         if rest.starts_with('[')
             && let Some(label_end) = rest.find("](")
-            && let Some(target_end) = rest[label_end + 2..].find(')')
+            && let Some(target_end) = find_link_target_end(&rest[label_end + 2..])
         {
             let label = &rest[1..label_end];
             let target = &rest[label_end + 2..label_end + 2 + target_end];
@@ -129,42 +136,222 @@ fn delimiter_at(input: &str) -> Option<(&'static str, &'static str, MarkKind)> {
     }
 }
 
+fn find_closing_delimiter(input: &str, close: &str, kind: &MarkKind) -> Option<usize> {
+    match kind {
+        MarkKind::Code => find_unescaped(input, close, 0),
+        MarkKind::Bold => {
+            let position = find_unescaped(input, close, 0)?;
+            if input[position..].starts_with("***") && has_unclosed_single_star(&input[..position])
+            {
+                return Some(position + 1);
+            }
+            Some(position)
+        }
+        MarkKind::Italic => {
+            let mut search_from = 0;
+            while let Some(position) = find_unescaped(input, "*", search_from) {
+                if input[position..].starts_with("**") {
+                    let nested_start = position + 2;
+                    if let Some(nested_end) =
+                        find_closing_delimiter(&input[nested_start..], "**", &MarkKind::Bold)
+                    {
+                        search_from = nested_start + nested_end + 2;
+                        continue;
+                    }
+                }
+                return Some(position);
+            }
+            None
+        }
+        MarkKind::Link | MarkKind::Custom(_) => input.find(close),
+    }
+}
+
+fn find_unescaped(input: &str, needle: &str, mut search_from: usize) -> Option<usize> {
+    while let Some(relative) = input[search_from..].find(needle) {
+        let position = search_from + relative;
+        if !is_escaped(input, position) {
+            return Some(position);
+        }
+        search_from = position + needle.len();
+    }
+    None
+}
+
+fn is_escaped(input: &str, position: usize) -> bool {
+    input.as_bytes()[..position]
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'\\')
+        .count()
+        % 2
+        == 1
+}
+
+fn has_unclosed_single_star(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let mut index = 0;
+    let mut odd_runs = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'*' || is_escaped(input, index) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && bytes[index] == b'*' {
+            index += 1;
+        }
+        odd_runs += (index - start) % 2;
+    }
+    odd_runs % 2 == 1
+}
+
+fn find_link_target_end(input: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for (index, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(index),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 pub(super) fn serialize_text(block: &Block, text: &Sequence<TextUnit>) -> String {
     let ids = paragraph_visible_ids(text);
     let graphemes: Vec<&str> = text.iter().map(|unit| unit.grapheme.as_str()).collect();
-    let intervals = block.marks.resolved_intervals(&ids);
-    if intervals.is_empty() {
+    let resolved = block.marks.resolved_intervals(&ids);
+    if resolved.is_empty() {
         return graphemes.concat();
     }
 
-    let mut opens: Vec<Vec<_>> = vec![Vec::new(); graphemes.len() + 1];
-    let mut closes: Vec<Vec<_>> = vec![Vec::new(); graphemes.len() + 1];
-    for (interval, start, end) in intervals {
-        if start < end && end <= graphemes.len() {
-            opens[start].push((interval, end));
-            closes[end].push((interval, start));
+    let mut projected = Vec::new();
+    let mut link_winners: Vec<Option<&MarkInterval>> = vec![None; graphemes.len()];
+    for &(interval, start, end) in &resolved {
+        if start >= end || end > graphemes.len() {
+            continue;
+        }
+        if interval.kind == MarkKind::Link {
+            for winner in &mut link_winners[start..end] {
+                if winner
+                    .map(|current| (interval.op_id, interval.id) > (current.op_id, current.id))
+                    .unwrap_or(true)
+                {
+                    *winner = Some(interval);
+                }
+            }
+        } else {
+            projected.push((interval, start, end));
         }
     }
-    for events in &mut opens {
-        events.sort_by_key(|(interval, end)| (std::cmp::Reverse(*end), interval.id));
+    let mut index = 0;
+    while index < link_winners.len() {
+        let Some(winner) = link_winners[index] else {
+            index += 1;
+            continue;
+        };
+        let start = index;
+        index += 1;
+        while index < link_winners.len()
+            && link_winners[index].is_some_and(|candidate| candidate.id == winner.id)
+        {
+            index += 1;
+        }
+        projected.push((winner, start, index));
     }
-    for events in &mut closes {
-        events.sort_by_key(|(interval, start)| (std::cmp::Reverse(*start), interval.id));
+
+    let mut groups: BTreeMap<RenderKey, Vec<ResolvedMark<'_>>> = BTreeMap::new();
+    for (interval, start, end) in projected {
+        groups
+            .entry((
+                interval.kind.clone(),
+                open_delimiter(interval),
+                close_delimiter(interval),
+            ))
+            .or_default()
+            .push((interval, start, end));
+    }
+
+    let mut intervals = Vec::new();
+    for ranges in groups.values_mut() {
+        ranges.sort_by_key(|(interval, start, end)| (*start, *end, interval.id));
+        let Some(&(mut representative, mut start, mut end)) = ranges.first() else {
+            continue;
+        };
+        for &(interval, next_start, next_end) in &ranges[1..] {
+            if next_start <= end {
+                end = end.max(next_end);
+                if interval.id < representative.id {
+                    representative = interval;
+                }
+            } else {
+                intervals.push((representative, start, end));
+                (representative, start, end) = (interval, next_start, next_end);
+            }
+        }
+        intervals.push((representative, start, end));
+    }
+
+    let mut starts: Vec<Vec<_>> = vec![Vec::new(); graphemes.len() + 1];
+    let mut ending_ids: Vec<Vec<_>> = vec![Vec::new(); graphemes.len() + 1];
+    for (interval, start, end) in intervals {
+        starts[start].push((interval, start, end));
+        ending_ids[end].push(interval.id);
     }
 
     let mut output = String::new();
+    let mut active: Vec<ResolvedMark<'_>> = Vec::new();
+    let mut open_stack: Vec<&MarkInterval> = Vec::new();
     for index in 0..=graphemes.len() {
-        for (interval, _) in &closes[index] {
-            output.push_str(&close_delimiter(interval));
-        }
-        for (interval, _) in &opens[index] {
-            output.push_str(&open_delimiter(interval));
+        if !ending_ids[index].is_empty() || !starts[index].is_empty() {
+            active.retain(|(interval, _, _)| !ending_ids[index].contains(&interval.id));
+            active.extend(starts[index].iter().copied());
+            active.sort_by_key(|(interval, start, end)| {
+                (
+                    *start,
+                    std::cmp::Reverse(*end),
+                    mark_nesting_rank(&interval.kind),
+                    interval.id,
+                )
+            });
+
+            let desired: Vec<_> = active.iter().map(|(interval, _, _)| *interval).collect();
+            let shared = open_stack
+                .iter()
+                .zip(&desired)
+                .take_while(|(left, right)| left.id == right.id)
+                .count();
+            for interval in open_stack[shared..].iter().rev() {
+                output.push_str(&close_delimiter(interval));
+            }
+            for interval in &desired[shared..] {
+                output.push_str(&open_delimiter(interval));
+            }
+            open_stack = desired;
         }
         if let Some(grapheme) = graphemes.get(index) {
             output.push_str(grapheme);
         }
     }
     output
+}
+
+fn mark_nesting_rank(kind: &MarkKind) -> u8 {
+    match kind {
+        MarkKind::Link => 0,
+        MarkKind::Bold => 1,
+        MarkKind::Italic => 2,
+        MarkKind::Code => 3,
+        MarkKind::Custom(_) => 4,
+    }
 }
 
 fn delimiter_attr(interval: &crate::core::mark::MarkInterval) -> Option<String> {

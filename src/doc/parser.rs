@@ -448,6 +448,21 @@ fn ordered_marker(trimmed: &str) -> Option<(u32, &str)> {
     None
 }
 
+fn push_list_paragraph(children: &mut Vec<Block>, lines: &mut Vec<&str>, counter: &mut u64) {
+    if lines.is_empty() {
+        return;
+    }
+    let joined = lines.join("\n");
+    lines.clear();
+    let elem_id = next_op_id(counter);
+    children.push(inline::parse_text_block(
+        |text| BlockKind::Paragraph { text },
+        &joined,
+        elem_id,
+        counter,
+    ));
+}
+
 /// Parse a list starting at `index` with items at `base_indent` or greater content indent.
 fn parse_list(
     lines: &[&str],
@@ -519,6 +534,9 @@ fn parse_list(
                     j += 1;
                 }
                 if j < lines.len() && indent_of(lines[j]) > base_indent {
+                    if !is_list_start(lines[j].trim()) {
+                        push_list_paragraph(&mut children, &mut para_lines, counter);
+                    }
                     i += 1;
                     continue;
                 }
@@ -526,17 +544,7 @@ fn parse_list(
             }
             if cind > base_indent && is_list_start(ctrim) {
                 // Nested list
-                if !para_lines.is_empty() {
-                    let joined = para_lines.join("\n");
-                    let eid = next_op_id(counter);
-                    children.push(inline::parse_text_block(
-                        |text| BlockKind::Paragraph { text },
-                        &joined,
-                        eid,
-                        counter,
-                    ));
-                    para_lines.clear();
-                }
+                push_list_paragraph(&mut children, &mut para_lines, counter);
                 let (nested, next) = parse_list(lines, i, counter, cind);
                 children.push(nested);
                 i = next;
@@ -552,16 +560,7 @@ fn parse_list(
             break;
         }
 
-        if !para_lines.is_empty() {
-            let joined = para_lines.join("\n");
-            let eid = next_op_id(counter);
-            children.push(inline::parse_text_block(
-                |text| BlockKind::Paragraph { text },
-                &joined,
-                eid,
-                counter,
-            ));
-        }
+        push_list_paragraph(&mut children, &mut para_lines, counter);
 
         let child_seq =
             Sequence::from_ordered(children.into_iter().map(|b| (b.elem_id, b)).collect());

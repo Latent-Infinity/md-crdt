@@ -7,7 +7,7 @@
 | **Date** | 2026-07-09 |
 | **Status** | Draft (revision 12 — Phase L repository hardening complete; joint consumer gate pending) |
 | **Repository** | `/Users/firestrand/Projects/latenty-infinity/md-crdt` |
-| **Current version** | `0.2.0` (pre-1.0; breaking changes allowed with changelog discipline) |
+| **Current version** | `0.2.1` (pre-1.0; breaking changes allowed with changelog discipline) |
 | **License** | MIT |
 | **Rust** | Edition 2024, `rust-version = "1.85"` |
 
