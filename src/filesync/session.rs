@@ -19,8 +19,8 @@ use crate::workspace::{capture_outline, replace_moved_ids, summarize_outline_cha
 use crate::{
     BatchPreview, BatchReceipt, DeletedDocument, DescriptorPage, DiskFingerprint,
     DocumentEditBatch, DocumentExportRequest, DocumentHandle, DocumentId, EditBatch,
-    LocalEditOutcome, MultiBatchReceipt, MultiExportOutcome, PreviewToken, RecoveryReport,
-    RemoteApplyOutcome, RevisionToken, VaultId, WorkspaceEdit,
+    LocalEditOutcome, MultiBatchReceipt, MultiExportOutcome, PreviewToken, ProjectionPage,
+    ProjectionRequest, RecoveryReport, RemoteApplyOutcome, RevisionToken, VaultId, WorkspaceEdit,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -42,6 +42,7 @@ pub struct VaultSession {
     /// Lazy map: vault-relative path → session.
     docs: BTreeMap<PathBuf, CollaborativeDocument>,
     document_ids: BTreeMap<PathBuf, DocumentId>,
+    revision_cache: BTreeMap<PathBuf, RevisionToken>,
 }
 
 impl VaultSession {
@@ -59,6 +60,7 @@ impl VaultSession {
             codec: JsonOpCodec,
             docs: BTreeMap::new(),
             document_ids: BTreeMap::new(),
+            revision_cache: BTreeMap::new(),
         })
     }
 
@@ -93,11 +95,7 @@ impl VaultSession {
     ) -> Result<DocumentHandle, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
         self.document_id(&rel)?;
-        let session_empty = self
-            .session_mut(&rel)?
-            .document()
-            .blocks_in_order()
-            .is_empty();
+        let session_empty = self.session(&rel)?.document().blocks_in_order().is_empty();
         let needs_ingest = session_empty
             || self
                 .vault
@@ -111,8 +109,13 @@ impl VaultSession {
 
     pub fn revision(&mut self, rel_path: impl AsRef<Path>) -> Result<RevisionToken, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
-        self.session_mut(&rel)?;
-        revision_for(self.docs.get(&rel).expect("session opened above"))
+        self.ensure_session_open(&rel)?;
+        if let Some(revision) = self.revision_cache.get(&rel) {
+            return Ok(revision.clone());
+        }
+        let revision = revision_for(self.docs.get(&rel).expect("session opened above"))?;
+        self.revision_cache.insert(rel, revision.clone());
+        Ok(revision)
     }
 
     /// Return a bounded page of direct, body-free child descriptors.
@@ -124,7 +127,7 @@ impl VaultSession {
         limit: usize,
     ) -> Result<DescriptorPage, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
-        self.session_mut(&rel)?
+        self.session(&rel)?
             .document()
             .descriptor_page(parent, offset, limit)
             .ok_or_else(|| {
@@ -132,6 +135,93 @@ impl VaultSession {
                     parent.expect("the document root always resolves to a descriptor sequence"),
                 )
             })
+    }
+
+    /// Create a stable text point from a current grapheme offset.
+    pub fn text_point(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        block_id: BlockId,
+        grapheme_offset: usize,
+    ) -> Result<crate::TextPoint, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        Ok(self
+            .session(&rel)?
+            .document()
+            .text_point(block_id, grapheme_offset)?)
+    }
+
+    /// Create a stable half-open text range from current grapheme offsets.
+    pub fn text_range(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        block_id: BlockId,
+        range: std::ops::Range<usize>,
+    ) -> Result<crate::TextRange, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        Ok(self.session(&rel)?.document().text_range(block_id, range)?)
+    }
+
+    /// Resolve a stable text point against the current document state.
+    pub fn resolve_text_point(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        point: &crate::TextPoint,
+    ) -> Result<usize, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        Ok(self.session(&rel)?.document().resolve_text_point(point)?)
+    }
+
+    /// Resolve a stable half-open text range against the current document state.
+    pub fn resolve_text_range(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        range: &crate::TextRange,
+    ) -> Result<std::ops::Range<usize>, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        Ok(self.session(&rel)?.document().resolve_text_range(range)?)
+    }
+
+    /// Capture the complete scoped precondition set required by one edit.
+    pub fn preconditions_for_edit(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        edit: &WorkspaceEdit,
+    ) -> Result<Vec<crate::TargetPrecondition>, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        Ok(self
+            .session(&rel)?
+            .document()
+            .preconditions_for_edit(edit)?)
+    }
+
+    /// Return one hard-bounded owned semantic projection page for selected block ids.
+    pub fn project_blocks(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        request: ProjectionRequest,
+    ) -> Result<ProjectionPage, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        let actual_document_id = self.document_id(&rel)?;
+        if actual_document_id != request.document_id {
+            return Err(VaultError::DocumentIdMismatch {
+                expected: request.document_id,
+                actual: actual_document_id,
+            });
+        }
+        let actual_revision = self.revision(&rel)?;
+        if actual_revision != request.base_revision {
+            return Err(VaultError::StaleRevision {
+                expected: request.base_revision,
+                actual: actual_revision,
+            });
+        }
+        let document = self
+            .docs
+            .get(&rel)
+            .expect("revision verification opens the session")
+            .document();
+        Ok(document.projection_page(&request, actual_revision)?)
     }
 
     /// Execute a non-atomic local edit and report only the identities it changed.
@@ -152,6 +242,8 @@ impl VaultSession {
             let changes = summarize_session_transition(session, &before, &before_vector)?;
             (value, changes)
         };
+        self.revision_cache
+            .insert(rel.clone(), changes.revision.clone());
         self.save_state(&rel)?;
         Ok(LocalEditOutcome { value, changes })
     }
@@ -220,6 +312,8 @@ impl VaultSession {
         }
         let mut receipts = Vec::with_capacity(prepared.len());
         for (rel, prepared) in prepared {
+            self.revision_cache
+                .insert(rel.clone(), prepared.receipt.revision.clone());
             self.docs.insert(rel.clone(), prepared.session);
             receipts.push(prepared.receipt);
         }
@@ -241,12 +335,13 @@ impl VaultSession {
                 actual: actual_document_id,
             });
         }
-        self.verify_revision(rel, Some(&batch.expected_revision))?;
+        let actual_revision = self.revision(rel)?;
         let live = self
             .docs
             .get(rel)
             .expect("revision verification opens the session");
-        let previous_revision = revision_for(live)?;
+        validate_batch_targets(live.document(), batch, &actual_revision)?;
+        let previous_revision = actual_revision;
         let before = capture_outline(live.document());
         let before_vector = live.state_vector();
         let snapshot = live
@@ -255,7 +350,7 @@ impl VaultSession {
         let mut probe = CollaborativeDocument::restore_from_snapshot(snapshot)
             .map_err(|error| VaultError::Snapshot(error.to_string()))?;
         for operation in &batch.operations {
-            apply_workspace_edit(&mut probe, operation).map_err(session_err)?;
+            apply_workspace_edit(&mut probe, &operation.edit).map_err(session_err)?;
         }
         let changes = summarize_session_transition(&probe, &before, &before_vector)?;
         let receipt = BatchReceipt {
@@ -277,6 +372,8 @@ impl VaultSession {
         prepared: PreparedBatch,
     ) -> Result<BatchReceipt, VaultError> {
         write_session_snapshot(&self.vault, &rel, &prepared.session)?;
+        self.revision_cache
+            .insert(rel.clone(), prepared.receipt.revision.clone());
         self.docs.insert(rel, prepared.session);
         Ok(prepared.receipt)
     }
@@ -302,12 +399,27 @@ impl VaultSession {
         rel_path: impl AsRef<Path>,
     ) -> Result<&mut CollaborativeDocument, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
-        self.document_id(&rel)?;
-        if !self.docs.contains_key(&rel) {
-            let doc = self.load_or_create_session(&rel)?;
-            self.docs.insert(rel.clone(), doc);
-        }
+        self.ensure_session_open(&rel)?;
+        self.revision_cache.remove(&rel);
         Ok(self.docs.get_mut(&rel).expect("session inserted above"))
+    }
+
+    fn session(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+    ) -> Result<&CollaborativeDocument, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.ensure_session_open(&rel)?;
+        Ok(self.docs.get(&rel).expect("session inserted above"))
+    }
+
+    fn ensure_session_open(&mut self, rel: &Path) -> Result<(), VaultError> {
+        self.document_id(rel)?;
+        if !self.docs.contains_key(rel) {
+            let doc = self.load_or_create_session(rel)?;
+            self.docs.insert(rel.to_path_buf(), doc);
+        }
+        Ok(())
     }
 
     fn document_handle(&mut self, rel: &Path) -> Result<DocumentHandle, VaultError> {
@@ -380,6 +492,7 @@ impl VaultSession {
         }
 
         let parsed = Parser::parse(&markdown);
+        self.revision_cache.remove(&rel);
         let session = self.docs.get_mut(&rel).expect("session remains open");
         session.document_mut().adopt_source_from(&parsed);
         let state = LastFlushedState {
@@ -458,6 +571,9 @@ impl VaultSession {
         if let Some(session) = self.docs.remove(&from) {
             self.docs.insert(to.clone(), session);
         }
+        if let Some(revision) = self.revision_cache.remove(&from) {
+            self.revision_cache.insert(to.clone(), revision);
+        }
         self.document_ids.remove(&from);
         self.document_ids.insert(to.clone(), document_id);
         self.document_handle(&to)
@@ -489,6 +605,7 @@ impl VaultSession {
         }
         self.docs.remove(&rel);
         self.document_ids.remove(&rel);
+        self.revision_cache.remove(&rel);
         Ok(DeletedDocument {
             document_id,
             path: rel,
@@ -611,6 +728,7 @@ impl VaultSession {
         let mut outcomes = Vec::with_capacity(prepared.len());
         for export in prepared {
             let parsed = Parser::parse(&export.markdown);
+            self.revision_cache.remove(&export.rel);
             let session = self
                 .docs
                 .get_mut(&export.rel)
@@ -649,7 +767,7 @@ impl VaultSession {
         expected: Option<&RevisionToken>,
     ) -> Result<(), VaultError> {
         let Some(expected) = expected else {
-            self.session_mut(rel)?;
+            self.session(rel)?;
             return Ok(());
         };
         let actual = self.revision(rel)?;
@@ -675,7 +793,7 @@ impl VaultSession {
 
     /// State vector for one vault-relative document, opening its session lazily.
     pub fn state_vector(&mut self, rel_path: impl AsRef<Path>) -> Result<StateVector, VaultError> {
-        Ok(self.session_mut(rel_path)?.state_vector())
+        Ok(self.session(rel_path)?.state_vector())
     }
 
     /// Encode operations for one document that are not covered by `since`.
@@ -684,7 +802,7 @@ impl VaultSession {
         rel_path: impl AsRef<Path>,
         since: &StateVector,
     ) -> Result<ChangeMessage, VaultError> {
-        Ok(self.session_mut(rel_path)?.encode_changes_since(since)?)
+        Ok(self.session(rel_path)?.encode_changes_since(since)?)
     }
 
     /// Return an incremental delta or a full checkpoint when the peer is behind history retention.
@@ -693,7 +811,7 @@ impl VaultSession {
         rel_path: impl AsRef<Path>,
         since: &StateVector,
     ) -> Result<SyncResponse, VaultError> {
-        self.session_mut(rel_path)?
+        self.session(rel_path)?
             .sync_since(since)
             .map_err(|error| VaultError::Snapshot(error.to_string()))
     }
@@ -714,6 +832,8 @@ impl VaultSession {
             let changes = summarize_session_transition(session, &before, &before_vector)?;
             (result, changes)
         };
+        self.revision_cache
+            .insert(rel.clone(), changes.revision.clone());
         self.save_state(&rel)?;
         Ok(RemoteApplyOutcome {
             applied: result.applied,
@@ -745,6 +865,7 @@ impl VaultSession {
     pub fn close(&mut self, rel_path: impl AsRef<Path>) -> Result<(), VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
         self.docs.remove(&rel);
+        self.revision_cache.remove(&rel);
         Ok(())
     }
 
@@ -814,6 +935,8 @@ impl VaultSession {
                 &before,
                 &before_vector,
             )?;
+            self.revision_cache
+                .insert(rel.clone(), changes.revision.clone());
             return Ok(IngestOutcome {
                 changed: false,
                 changes,
@@ -855,6 +978,8 @@ impl VaultSession {
             &before,
             &before_vector,
         )?;
+        self.revision_cache
+            .insert(rel.clone(), changes.revision.clone());
         Ok(IngestOutcome {
             changed: true,
             changes,
@@ -1222,6 +1347,56 @@ fn preview_token(batch: &EditBatch) -> Result<PreviewToken, VaultError> {
     Ok(PreviewToken::from_u128(stable_hash_128(&encoded)))
 }
 
+fn validate_batch_targets(
+    document: &Document,
+    batch: &EditBatch,
+    actual_revision: &RevisionToken,
+) -> Result<(), VaultError> {
+    let revision_matches = &batch.base_revision == actual_revision;
+    if batch.operations.is_empty() && !revision_matches {
+        return Err(VaultError::StaleRevision {
+            expected: batch.base_revision.clone(),
+            actual: actual_revision.clone(),
+        });
+    }
+    for (operation_index, operation) in batch.operations.iter().enumerate() {
+        if operation.preconditions.is_empty() {
+            if revision_matches {
+                continue;
+            }
+            return Err(VaultError::StaleRevision {
+                expected: batch.base_revision.clone(),
+                actual: actual_revision.clone(),
+            });
+        }
+        let expected = document
+            .preconditions_for_edit(&operation.edit)
+            .map_err(|source| VaultError::TargetPrecondition {
+                operation_index,
+                source,
+            })?;
+        if expected.is_empty() {
+            if revision_matches {
+                return Err(VaultError::TargetPrecondition {
+                    operation_index,
+                    source: crate::WorkspaceTargetError::PreconditionMismatch,
+                });
+            }
+            return Err(VaultError::StaleRevision {
+                expected: batch.base_revision.clone(),
+                actual: actual_revision.clone(),
+            });
+        }
+        if expected != operation.preconditions {
+            return Err(VaultError::TargetPrecondition {
+                operation_index,
+                source: crate::WorkspaceTargetError::PreconditionMismatch,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn apply_workspace_edit(
     session: &mut CollaborativeDocument,
     operation: &WorkspaceEdit,
@@ -1270,28 +1445,30 @@ fn apply_workspace_edit(
                 .ok_or(SessionError::BlockNotFound)?;
             session.delete_block_in(parent, block.elem_id)?;
         }
-        WorkspaceEdit::InsertText {
-            block_id,
-            grapheme_offset,
-            text,
-        } => {
-            session.insert_text(*block_id, *grapheme_offset, text)?;
+        WorkspaceEdit::InsertText { at, text } => {
+            let grapheme_offset = session
+                .document()
+                .resolve_text_point(at)
+                .map_err(|_| SessionError::InvalidOffset)?;
+            session.insert_text(at.block_id, grapheme_offset, text)?;
         }
-        WorkspaceEdit::DeleteText {
-            block_id,
-            grapheme_offset,
-            grapheme_count,
-        } => {
-            session.delete_text(*block_id, *grapheme_offset, *grapheme_count)?;
+        WorkspaceEdit::DeleteText { range } => {
+            let resolved = session
+                .document()
+                .resolve_text_range(range)
+                .map_err(|_| SessionError::InvalidOffset)?;
+            session.delete_text(
+                range.start.block_id,
+                resolved.start,
+                resolved.end - resolved.start,
+            )?;
         }
-        WorkspaceEdit::SetMark {
-            block_id,
-            start,
-            end,
-            kind,
-            attrs,
-        } => {
-            session.set_mark(*block_id, *start..*end, kind.clone(), attrs.clone())?;
+        WorkspaceEdit::SetMark { range, kind, attrs } => {
+            let resolved = session
+                .document()
+                .resolve_text_range(range)
+                .map_err(|_| SessionError::InvalidOffset)?;
+            session.set_mark(range.start.block_id, resolved, kind.clone(), attrs.clone())?;
         }
         WorkspaceEdit::RemoveMark {
             block_id,
@@ -1315,15 +1492,16 @@ fn apply_workspace_edit(
             let after = resolve_block_elem(session.document(), *after)?;
             session.move_section(*heading_id, after)?;
         }
-        WorkspaceEdit::SplitBlock {
-            block_id,
-            grapheme_offset,
-        } => {
+        WorkspaceEdit::SplitBlock { at } => {
+            let grapheme_offset = session
+                .document()
+                .resolve_text_point(at)
+                .map_err(|_| SessionError::InvalidOffset)?;
             let parent = session
                 .document()
-                .block_parent(*block_id)
+                .block_parent(at.block_id)
                 .ok_or(SessionError::BlockNotFound)?;
-            session.split_block_in(parent, *block_id, *grapheme_offset)?;
+            session.split_block_in(parent, at.block_id, grapheme_offset)?;
         }
         WorkspaceEdit::MergeBlocks { left_id, right_id } => {
             let parent = session

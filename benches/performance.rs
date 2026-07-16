@@ -4,9 +4,66 @@ use md_crdt::doc::{
     Block, BlockKind, Document, EquivalenceMode, Parser, TextUnit, block_id_from_op,
     units_from_str_at,
 };
+use md_crdt::filesync::VaultSession;
 use md_crdt::sync::{Operation, SyncState};
-use md_crdt::{CheckpointRequest, CollaborativeDocument, DocumentTombstonePolicy};
+use md_crdt::{
+    CheckpointRequest, CollaborativeDocument, DocumentTombstonePolicy, EditBatch, ProjectionFields,
+    ProjectionRequest, WorkspaceEdit, WorkspaceMutation,
+};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::fs;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+use tempfile::tempdir;
+
+struct CountingAllocator;
+
+static COUNT_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
+static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+// SAFETY: every operation delegates to the process system allocator without changing pointers or
+// layouts; the atomics only observe requested allocation sizes while a benchmark probe is active.
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if COUNT_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        // SAFETY: `layout` is forwarded unchanged to the system allocator.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` and `layout` came from the delegated system allocation.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        if COUNT_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        // SAFETY: `layout` is forwarded unchanged to the system allocator.
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if COUNT_ALLOCATIONS.load(Ordering::Relaxed) {
+            ALLOCATED_BYTES.fetch_add(new_size, Ordering::Relaxed);
+        }
+        // SAFETY: `ptr`, `layout`, and `new_size` are forwarded unchanged.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+fn allocated_bytes<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    ALLOCATED_BYTES.store(0, Ordering::SeqCst);
+    COUNT_ALLOCATIONS.store(true, Ordering::SeqCst);
+    let result = operation();
+    COUNT_ALLOCATIONS.store(false, Ordering::SeqCst);
+    (result, ALLOCATED_BYTES.load(Ordering::SeqCst))
+}
 
 fn op(counter: u64, peer: u64) -> OpId {
     OpId { counter, peer }
@@ -266,6 +323,246 @@ fn checkpoint_history(c: &mut Criterion) {
     group.finish();
 }
 
+fn workspace_edit_replay(c: &mut Criterion) {
+    let mut group = c.benchmark_group("workspace_edit_replay");
+    group.sample_size(10);
+    for block_count in [100usize, 10_000] {
+        let directory = tempdir().unwrap();
+        let markdown = (0..block_count)
+            .map(|index| format!("block-{index:05}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        fs::write(directory.path().join("note.md"), markdown).unwrap();
+        let mut vault = VaultSession::open(directory.path()).unwrap();
+        let handle = vault.open_document("note.md").unwrap();
+        let page = vault.descriptor_page("note.md", None, 0, 1).unwrap();
+        let target = page.items[0].id;
+        let edit = WorkspaceEdit::InsertText {
+            at: vault.text_point("note.md", target, 11).unwrap(),
+            text: "!".into(),
+        };
+        let preconditions = vault.preconditions_for_edit("note.md", &edit).unwrap();
+
+        for operation_count in [1usize, 10, 100] {
+            let strict = EditBatch {
+                document_id: handle.document_id,
+                base_revision: handle.revision.clone(),
+                operations: (0..operation_count)
+                    .map(|_| WorkspaceMutation::strict(edit.clone()))
+                    .collect(),
+            };
+            let scoped = EditBatch {
+                document_id: handle.document_id,
+                base_revision: handle.revision.clone(),
+                operations: (0..operation_count)
+                    .map(|_| WorkspaceMutation::scoped(edit.clone(), preconditions.clone()))
+                    .collect(),
+            };
+            group.throughput(Throughput::Elements(operation_count as u64));
+            group.bench_function(
+                BenchmarkId::new("strict_churn_0", format!("{block_count}_{operation_count}")),
+                |b| {
+                    b.iter(|| {
+                        black_box(
+                            vault
+                                .preview_edit_batch("note.md", black_box(&strict))
+                                .unwrap(),
+                        )
+                    })
+                },
+            );
+            group.bench_function(
+                BenchmarkId::new("scoped_churn_0", format!("{block_count}_{operation_count}")),
+                |b| {
+                    b.iter(|| {
+                        black_box(
+                            vault
+                                .preview_edit_batch("note.md", black_box(&scoped))
+                                .unwrap(),
+                        )
+                    })
+                },
+            );
+        }
+
+        let unrelated = vault
+            .descriptor_page("note.md", None, block_count - 1, 1)
+            .unwrap()
+            .items[0]
+            .id;
+        vault
+            .session_mut("note.md")
+            .unwrap()
+            .insert_text(unrelated, 11, "!")
+            .unwrap();
+        for (churn_rate, operation_count) in [
+            (10usize, 1usize),
+            (10, 10),
+            (10, 100),
+            (90, 1),
+            (90, 10),
+            (90, 100),
+        ] {
+            let scoped = EditBatch {
+                document_id: handle.document_id,
+                base_revision: handle.revision.clone(),
+                operations: (0..operation_count)
+                    .map(|_| WorkspaceMutation::scoped(edit.clone(), preconditions.clone()))
+                    .collect(),
+            };
+            group.throughput(Throughput::Elements(operation_count as u64));
+            group.bench_function(
+                BenchmarkId::new(
+                    format!("scoped_churn_{churn_rate}"),
+                    format!("{block_count}_{operation_count}"),
+                ),
+                |b| {
+                    b.iter(|| {
+                        black_box(
+                            vault
+                                .preview_edit_batch("note.md", black_box(&scoped))
+                                .unwrap(),
+                        )
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
+fn projection_request(
+    handle: &md_crdt::DocumentHandle,
+    ids: &[md_crdt::BlockId],
+    fields: ProjectionFields,
+) -> ProjectionRequest {
+    ProjectionRequest {
+        document_id: handle.document_id,
+        base_revision: handle.revision.clone(),
+        block_ids: ids.to_vec(),
+        fields,
+        max_items: ids.len(),
+        max_bytes: 1024 * 1024,
+        continuation: None,
+    }
+}
+
+fn visit_selected_text(document: &Document, ids: &[md_crdt::BlockId]) -> usize {
+    ids.iter()
+        .filter_map(|id| document.find_block_by_id(*id))
+        .map(|block| match &block.kind {
+            BlockKind::Paragraph { text } | BlockKind::Heading { text, .. } => {
+                text.iter().map(|unit| unit.grapheme.len()).sum()
+            }
+            _ => 0,
+        })
+        .sum()
+}
+
+fn workspace_projection(c: &mut Criterion) {
+    let mut group = c.benchmark_group("workspace_projection");
+    group.sample_size(10);
+
+    for block_count in [100usize, 1_000, 10_000] {
+        let directory = tempdir().unwrap();
+        let markdown = (0..block_count)
+            .map(|index| format!("item-{index:05} **bold** [link](#target)"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        fs::write(directory.path().join("note.md"), markdown).unwrap();
+        let mut vault = VaultSession::open(directory.path()).unwrap();
+        let handle = vault.open_document("note.md").unwrap();
+        let ids: Vec<_> = vault
+            .descriptor_page("note.md", None, 0, 32)
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+
+        if block_count == 10_000 {
+            let (full, full_allocated) = allocated_bytes(|| {
+                vault
+                    .session_mut("note.md")
+                    .unwrap()
+                    .document()
+                    .serialize(EquivalenceMode::Structural)
+            });
+            let current_revision = vault.revision("note.md").unwrap();
+            let gate_handle = md_crdt::DocumentHandle {
+                revision: current_revision,
+                ..handle.clone()
+            };
+            let gate_request =
+                projection_request(&gate_handle, &ids[..1], ProjectionFields::SEMANTIC);
+            let (projection, projection_allocated) =
+                allocated_bytes(|| vault.project_blocks("note.md", gate_request).unwrap());
+            assert!(full.len() >= projection.bytes_used.saturating_mul(10));
+            assert!(full_allocated >= projection_allocated.saturating_mul(10));
+            println!(
+                "workspace_projection_gate full_bytes={} projection_bytes={} full_allocated={} projection_allocated={}",
+                full.len(),
+                projection.bytes_used,
+                full_allocated,
+                projection_allocated
+            );
+        }
+
+        group.bench_function(BenchmarkId::new("full_structural", block_count), |b| {
+            b.iter(|| {
+                black_box(
+                    vault
+                        .session_mut("note.md")
+                        .unwrap()
+                        .document()
+                        .serialize(EquivalenceMode::Structural),
+                )
+            })
+        });
+
+        for selected in [1usize, 8, 32] {
+            let selected_ids = &ids[..selected];
+            for (name, fields) in [
+                ("owned_minimal", ProjectionFields::MINIMAL),
+                ("owned_semantic", ProjectionFields::SEMANTIC),
+                ("selected_exact_slice_page", ProjectionFields::EXACT),
+            ] {
+                let revision = vault.revision("note.md").unwrap();
+                let current = md_crdt::DocumentHandle {
+                    revision,
+                    ..handle.clone()
+                };
+                let request = projection_request(&current, selected_ids, fields);
+                group.bench_function(
+                    BenchmarkId::new(name, format!("{block_count}_{selected}")),
+                    |b| {
+                        b.iter(|| {
+                            black_box(
+                                vault
+                                    .project_blocks("note.md", black_box(request.clone()))
+                                    .unwrap(),
+                            )
+                        })
+                    },
+                );
+            }
+
+            group.bench_function(
+                BenchmarkId::new("borrowed_text_visitor", format!("{block_count}_{selected}")),
+                |b| {
+                    b.iter(|| {
+                        black_box(visit_selected_text(
+                            vault.session_mut("note.md").unwrap().document(),
+                            black_box(selected_ids),
+                        ))
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     block_lookup,
@@ -276,6 +573,8 @@ criterion_group!(
     session_insert_text,
     document_serialize,
     descriptor_page,
-    checkpoint_history
+    checkpoint_history,
+    workspace_edit_replay,
+    workspace_projection
 );
 criterion_main!(benches);

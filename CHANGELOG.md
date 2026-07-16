@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Stable `TextPoint`/`TextRange` workspace targets with start, end, and unit-anchor positions plus
+  typed deleted, wrong-block, unknown, ambiguous, and invalid-target errors
+- Per-operation text, block-content, and placement preconditions for atomic edit batches; stale
+  document revisions may proceed only when every scoped target still matches
+- `workspace_edit_replay` benchmarks for 1/10/100-operation strict and scoped batches over 100 and
+  10,000 blocks with unrelated churn
+- Byte/item-bounded, field-selective semantic block projections with owned serde DTOs, stable text
+  ranges, explicit omissions/oversize errors, request-bound continuations, and opt-in exact source
+  regions
+- `workspace_projection` benchmarks and a counting-allocation gate across 100/1,000/10,000-block
+  corpora with 1/8/32 selected blocks, plus a frozen map → read → edit → read byte transcript
+
+### Changed
+
+- Breaking workspace contract v2 replaces offset-bearing text edits with stable targets and changes
+  `EditBatch` to `base_revision` plus ordered `WorkspaceMutation` values
+- Nested container descendants and relevant inline marks now participate in scoped semantic digests
+- Vault revision tokens are cached across read-only calls and invalidated at mutable session
+  boundaries, avoiding full-session snapshot serialization on bounded projection reads
+
 ## [0.2.1] - 2026-07-15
 
 ### Fixed

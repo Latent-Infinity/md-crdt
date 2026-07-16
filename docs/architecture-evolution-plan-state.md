@@ -4,9 +4,9 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 | Field | Value |
 | --- | --- |
-| **Plan** | `docs/architecture-evolution.md` (Draft revision 12) |
-| **Last updated** | 2026-07-13 |
-| **Tracking unit** | PR slices under design phases A–L |
+| **Plan** | `docs/architecture-evolution.md` (Draft revision 14) |
+| **Last updated** | 2026-07-16 |
+| **Tracking unit** | PR slices under design phases A–Q |
 | **Joint consumer plan** | `../md-mcp/docs/joint-md-crdt-v2-implementation-plan.md` |
 
 **Release compatibility policy:** only V3 session snapshots and current V2 dual-slot storage are
@@ -57,6 +57,11 @@ reinitialized and re-ingested from Markdown.
 | **PR-33** History compaction/rebase | **done** | Caller-managed acknowledged leases, bounded retained log, delta floor, checkpoint epoch, and full-snapshot rebase |
 | **PR-34** Frozen `md-mcp` contract | **repository producer done; joint gate pending** | Versioned public-DTO fixture is committed; sibling consumption and token/task gate are outside this repository slice |
 | **PR-35** Final compatibility purge | **done** | Snapshot V1/V2 and storage V1 readers/fixtures/aliases removed; current formats only |
+| **PR-36** Stable anchored edits/scoped preconditions | **done** | Stable start/end/unit targets; scoped semantic/placement digests; contract fixture v2; 100/100 unrelated-churn replay; Criterion gate ≤3.45% midpoint overhead; 98.12% changed-line coverage |
+| **PR-37** Bounded semantic projections | **done** | Owned field-selective DTOs, hard bounds/continuations, exact owned regions, frozen 3,055-byte transcript; 10k one-block gate ≈1,618× latency, 313× output, and 2,231× allocation improvement |
+| **PR-38** Revision-bound hierarchy cursors | **planned** | Depends on PR-37 |
+| **PR-39** Cell-addressable tables | **planned** | Depends on PR-36/38 |
+| **PR-40** Complete structured mutations | **planned** | Depends on PR-36–39 |
 
 ## Phase B checklist
 
@@ -134,6 +139,8 @@ reinitialized and re-ingested from Markdown.
 | Tombstone checkpoint policy | `KeepAll` only | Peer operation acknowledgement is insufficient proof that structural causal references are collectible |
 | Lagging-peer recovery | Per-origin delta floor plus full V3 `SessionSnapshot` rebase | Bounds retained history without silently abandoning a supported peer |
 | Joint contract fixture | Versioned serialized public-DTO producer fixture in this repository | Freezes a concrete cross-repo shape without introducing MCP response types into the core |
+| Projection representation ablation | Owned typed DTOs; exact source is opt-in; borrowed visitor remains benchmark-only | Visitor traversal is faster but cannot provide serde ownership, hard byte accounting, continuation, or a cross-language contract |
+| Projection lookup | One early-exit traversal retaining only requested identities | Avoids cold construction of the document-sized block index while preserving ordered selected output |
 | Lossless representation ablation | Per-root semantic block source regions with owned leading trivia | Smallest option that preserves unsupported bytes and localizes edits. A piece table still needs semantic ownership mapping; a compact CST duplicates the authoritative CRDT tree and increases synchronization risk. |
 | Workspace identity files | UUID text in `.mdcrdt/vault_id` and path-scoped `.mdcrdt/document_ids/` entries, published durably | Content-independent handles survive edits/reopen; invalid identity bytes fail closed instead of silently replacing identity. |
 | Revision representation | Opaque 128-bit digest of the session snapshot | Detects observable state changes without exposing log or hashing details as API. |
@@ -474,6 +481,17 @@ All verified with no functional bug; the critical CRDT-safety property (PR-33) h
 
 ## Gate
 
+- `just check` — **passed** for Phase N (format, all-target/all-feature Clippy with warnings denied,
+  495 listed workspace tests/doctests, 0 failures)
+- `cargo llvm-cov --workspace --all-features --summary-only --quiet` — **passed**; 94.00%
+  repository line coverage, above the 93.68% Phase M baseline. `workspace.rs` is 97.87% and
+  `filesync/session.rs` is 91.90% line-covered.
+- `cargo bench --bench performance workspace_projection -- --measurement-time 0.2
+  --warm-up-time 0.1 --noplot` — **passed** for the complete 100/1,000/10,000 × 1/8/32 matrix.
+  The frozen 10k one-block semantic gate measured 7.47 µs and 31,479 allocated/1,182 output bytes,
+  versus 12.085 ms and 70,241,737 allocated/369,998 output bytes for full serialization.
+- `cargo bench --bench performance --no-run` — **passed** with the counting allocator and all
+  projection ablation controls compiled.
 - `just check` — **passed** after PR-32/33/34/35 audit (461 test-results, 0 warnings; +4 tests: multi-lease min-ack + duplicate-lease checkpoint, op-segment magic/version/ordering/gap)
 - `just check` — **passed** for Phase L (format, all-target/all-feature Clippy with warnings denied,
   457 workspace tests, and 7 doctests)

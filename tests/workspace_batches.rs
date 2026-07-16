@@ -3,7 +3,7 @@
 use md_crdt::filesync::{VaultError, VaultSession};
 use md_crdt::{
     ColumnAlignment, ColumnDef, DocumentEditBatch, EditBatch, MarkKind, WorkspaceEdit,
-    block_id_from_op,
+    WorkspaceMutation, block_id_from_op,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -12,8 +12,49 @@ use tempfile::tempdir;
 fn batch(handle: &md_crdt::DocumentHandle, operations: Vec<WorkspaceEdit>) -> EditBatch {
     EditBatch {
         document_id: handle.document_id,
-        expected_revision: handle.revision.clone(),
-        operations,
+        base_revision: handle.revision.clone(),
+        operations: operations
+            .into_iter()
+            .map(WorkspaceMutation::strict)
+            .collect(),
+    }
+}
+
+fn insert_text(
+    vault: &mut VaultSession,
+    path: &str,
+    block_id: md_crdt::BlockId,
+    grapheme_offset: usize,
+    text: &str,
+) -> WorkspaceEdit {
+    WorkspaceEdit::InsertText {
+        at: vault.text_point(path, block_id, grapheme_offset).unwrap(),
+        text: text.into(),
+    }
+}
+
+fn set_mark(
+    vault: &mut VaultSession,
+    path: &str,
+    block_id: md_crdt::BlockId,
+    range: std::ops::Range<usize>,
+    kind: MarkKind,
+) -> WorkspaceEdit {
+    WorkspaceEdit::SetMark {
+        range: vault.text_range(path, block_id, range).unwrap(),
+        kind,
+        attrs: BTreeMap::new(),
+    }
+}
+
+fn split_block(
+    vault: &mut VaultSession,
+    path: &str,
+    block_id: md_crdt::BlockId,
+    grapheme_offset: usize,
+) -> WorkspaceEdit {
+    WorkspaceEdit::SplitBlock {
+        at: vault.text_point(path, block_id, grapheme_offset).unwrap(),
     }
 }
 
@@ -24,23 +65,9 @@ fn preview_is_non_mutating_and_apply_returns_the_same_compact_delta() {
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
     let block_id = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
-    let request = batch(
-        &handle,
-        vec![
-            WorkspaceEdit::InsertText {
-                block_id,
-                grapheme_offset: 5,
-                text: " beta".into(),
-            },
-            WorkspaceEdit::SetMark {
-                block_id,
-                start: 0,
-                end: 5,
-                kind: MarkKind::Bold,
-                attrs: BTreeMap::new(),
-            },
-        ],
-    );
+    let insert = insert_text(&mut vault, "note.md", block_id, 5, " beta");
+    let mark = set_mark(&mut vault, "note.md", block_id, 0..5, MarkKind::Bold);
+    let request = batch(&handle, vec![insert, mark]);
 
     let preview = vault.preview_edit_batch("note.md", &request).unwrap();
     assert_eq!(preview.token.to_string().len(), 32);
@@ -73,17 +100,16 @@ fn invalid_later_operation_rolls_back_content_revision_and_clock() {
                 .serialize(md_crdt::EquivalenceMode::Structural),
         )
     };
+    let accepted = insert_text(&mut vault, "note.md", block_id, 5, " accepted-on-probe");
     let request = batch(
         &handle,
         vec![
+            accepted,
             WorkspaceEdit::InsertText {
-                block_id,
-                grapheme_offset: 5,
-                text: " accepted-on-probe".into(),
-            },
-            WorkspaceEdit::InsertText {
-                block_id: uuid::Uuid::from_u128(u128::MAX),
-                grapheme_offset: 0,
+                at: md_crdt::TextPoint {
+                    block_id: uuid::Uuid::from_u128(u128::MAX),
+                    position: md_crdt::TextPosition::Start,
+                },
                 text: "invalid".into(),
             },
         ],
@@ -111,23 +137,11 @@ fn preview_token_rejects_a_different_operation_sequence_without_mutation() {
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
     let block_id = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
-    let first = batch(
-        &handle,
-        vec![WorkspaceEdit::InsertText {
-            block_id,
-            grapheme_offset: 5,
-            text: " one".into(),
-        }],
-    );
+    let first_edit = insert_text(&mut vault, "note.md", block_id, 5, " one");
+    let first = batch(&handle, vec![first_edit]);
     let preview = vault.preview_edit_batch("note.md", &first).unwrap();
-    let second = batch(
-        &handle,
-        vec![WorkspaceEdit::InsertText {
-            block_id,
-            grapheme_offset: 5,
-            text: " two".into(),
-        }],
-    );
+    let second_edit = insert_text(&mut vault, "note.md", block_id, 5, " two");
+    let second = batch(&handle, vec![second_edit]);
 
     assert!(matches!(
         vault.apply_previewed_batch("note.md", second, &preview.token),
@@ -149,26 +163,34 @@ fn multi_document_prevalidation_is_all_or_nothing() {
     let a_next = vault.session_mut("a.md").unwrap().peek_next_id();
     let b_next = vault.session_mut("b.md").unwrap().peek_next_id();
 
+    let a_edit = insert_text(&mut vault, "a.md", a_id, 5, " changed");
+    let invalid_range = md_crdt::TextRange {
+        start: md_crdt::TextPoint {
+            block_id: b_id,
+            position: md_crdt::TextPosition::Start,
+        },
+        end: md_crdt::TextPoint {
+            block_id: b_id,
+            position: md_crdt::TextPosition::Unit(md_crdt::Anchor {
+                elem_id: md_crdt::OpId {
+                    peer: u64::MAX,
+                    counter: u64::MAX,
+                },
+                bias: md_crdt::AnchorBias::After,
+            }),
+        },
+    };
     let requests = vec![
         DocumentEditBatch {
             path: "a.md".into(),
-            batch: batch(
-                &a,
-                vec![WorkspaceEdit::InsertText {
-                    block_id: a_id,
-                    grapheme_offset: 5,
-                    text: " changed".into(),
-                }],
-            ),
+            batch: batch(&a, vec![a_edit]),
         },
         DocumentEditBatch {
             path: "b.md".into(),
             batch: batch(
                 &b,
                 vec![WorkspaceEdit::DeleteText {
-                    block_id: b_id,
-                    grapheme_offset: 99,
-                    grapheme_count: 1,
+                    range: invalid_range,
                 }],
             ),
         },
@@ -194,7 +216,7 @@ fn multi_document_batches_enforce_identity_and_uniqueness_then_install_together(
 
     let wrong_identity = EditBatch {
         document_id: md_crdt::DocumentId::from_u128(1),
-        expected_revision: a.revision.clone(),
+        base_revision: a.revision.clone(),
         operations: Vec::new(),
     };
     assert!(matches!(
@@ -211,29 +233,17 @@ fn multi_document_batches_enforce_identity_and_uniqueness_then_install_together(
         Err(VaultError::DuplicateDocumentBatch(path)) if path == std::path::Path::new("a.md")
     ));
 
+    let a_edit = insert_text(&mut vault, "a.md", a_id, 5, " one");
+    let b_edit = insert_text(&mut vault, "b.md", b_id, 4, " two");
     let outcome = vault
         .apply_edit_batches(vec![
             DocumentEditBatch {
                 path: "a.md".into(),
-                batch: batch(
-                    &a,
-                    vec![WorkspaceEdit::InsertText {
-                        block_id: a_id,
-                        grapheme_offset: 5,
-                        text: " one".into(),
-                    }],
-                ),
+                batch: batch(&a, vec![a_edit]),
             },
             DocumentEditBatch {
                 path: "b.md".into(),
-                batch: batch(
-                    &b,
-                    vec![WorkspaceEdit::InsertText {
-                        block_id: b_id,
-                        grapheme_offset: 4,
-                        text: " two".into(),
-                    }],
-                ),
+                batch: batch(&b, vec![b_edit]),
             },
         ])
         .unwrap();
@@ -285,18 +295,8 @@ fn batch_supports_structural_mark_frontmatter_and_section_operations() {
     handle = next;
     assert!(frontmatter.changes.updated.is_empty());
 
-    let (_, next) = apply_one(
-        &mut vault,
-        "note.md",
-        &handle,
-        WorkspaceEdit::SetMark {
-            block_id: alpha,
-            start: 0,
-            end: 5,
-            kind: MarkKind::Bold,
-            attrs: BTreeMap::new(),
-        },
-    );
+    let mark = set_mark(&mut vault, "note.md", alpha, 0..5, MarkKind::Bold);
+    let (_, next) = apply_one(&mut vault, "note.md", &handle, mark);
     handle = next;
     let interval_id = vault
         .session_mut("note.md")
@@ -320,15 +320,8 @@ fn batch_supports_structural_mark_frontmatter_and_section_operations() {
     );
     handle = next;
 
-    let (split, next) = apply_one(
-        &mut vault,
-        "note.md",
-        &handle,
-        WorkspaceEdit::SplitBlock {
-            block_id: beta,
-            grapheme_offset: 2,
-        },
-    );
+    let split_edit = split_block(&mut vault, "note.md", beta, 2);
+    let (split, next) = apply_one(&mut vault, "note.md", &handle, split_edit);
     handle = next;
     let suffix = split.changes.created[0];
     let (merged, next) = apply_one(
@@ -509,12 +502,13 @@ fn invalid_heading_level_is_rejected_without_mutation() {
 }
 
 #[test]
-fn batch_with_a_stale_expected_revision_is_rejected_without_mutation_or_clock_burn() {
+fn strict_batch_with_a_stale_base_revision_is_rejected_without_mutation_or_clock_burn() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("note.md"), "alpha\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let stale_handle = vault.open_document("note.md").unwrap();
     let block_id = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
+    let stale_edit = insert_text(&mut vault, "note.md", block_id, 0, "X");
 
     // Advance the document so `stale_handle.revision` is no longer current.
     let (before_text, before_next) = {
@@ -529,15 +523,8 @@ fn batch_with_a_stale_expected_revision_is_rejected_without_mutation_or_clock_bu
     };
     assert_ne!(vault.revision("note.md").unwrap(), stale_handle.revision);
 
-    // A batch carrying the pre-edit revision must be rejected before any op is applied.
-    let request = batch(
-        &stale_handle,
-        vec![WorkspaceEdit::InsertText {
-            block_id,
-            grapheme_offset: 0,
-            text: "X".into(),
-        }],
-    );
+    // A strict batch carrying the pre-edit revision must be rejected before any op is applied.
+    let request = batch(&stale_handle, vec![stale_edit]);
     assert!(matches!(
         vault.apply_edit_batch("note.md", request),
         Err(VaultError::StaleRevision { .. })
@@ -555,20 +542,33 @@ fn batch_with_a_stale_expected_revision_is_rejected_without_mutation_or_clock_bu
 }
 
 #[test]
+fn empty_batch_retains_strict_stale_revision_behavior() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("note.md"), "alpha\n").unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    let stale_handle = vault.open_document("note.md").unwrap();
+    let block_id = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
+    vault
+        .session_mut("note.md")
+        .unwrap()
+        .insert_text(block_id, 5, "!")
+        .unwrap();
+
+    assert!(matches!(
+        vault.apply_edit_batch("note.md", batch(&stale_handle, Vec::new())),
+        Err(VaultError::StaleRevision { .. })
+    ));
+}
+
+#[test]
 fn previewed_batch_rejects_apply_after_an_intervening_edit() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("note.md"), "alpha\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
     let block_id = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
-    let request = batch(
-        &handle,
-        vec![WorkspaceEdit::InsertText {
-            block_id,
-            grapheme_offset: 5,
-            text: " beta".into(),
-        }],
-    );
+    let edit = insert_text(&mut vault, "note.md", block_id, 5, " beta");
+    let request = batch(&handle, vec![edit]);
 
     let preview = vault.preview_edit_batch("note.md", &request).unwrap();
 

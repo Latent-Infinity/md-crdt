@@ -71,6 +71,16 @@ pub enum VaultError {
         expected: crate::RevisionToken,
         actual: crate::RevisionToken,
     },
+    #[error(transparent)]
+    Target(#[from] crate::WorkspaceTargetError),
+    #[error("workspace target precondition failed for operation {operation_index}: {source}")]
+    TargetPrecondition {
+        operation_index: usize,
+        #[source]
+        source: crate::WorkspaceTargetError,
+    },
+    #[error(transparent)]
+    Projection(#[from] crate::ProjectionError),
     #[error("stale markdown bytes: expected {expected:?}, actual {actual:?}")]
     StaleDisk {
         expected: Option<crate::DiskFingerprint>,

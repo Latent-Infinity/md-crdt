@@ -60,7 +60,7 @@ fn workspace_contract_types_are_concrete_and_mcp_agnostic() {
     };
     let batch = EditBatch {
         document_id,
-        expected_revision: revision.clone(),
+        base_revision: revision.clone(),
         operations: Vec::new(),
     };
     let receipt = BatchReceipt {

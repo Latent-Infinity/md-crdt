@@ -224,6 +224,32 @@ pub fn block_text_seq(kind: &BlockKind) -> Option<&Sequence<TextUnit>> {
     }
 }
 
+fn projection_root(blocks: &Sequence<Block>, target: BlockId) -> Option<BlockId> {
+    blocks
+        .iter()
+        .find(|block| projection_block_contains(block, target))
+        .map(|block| block.id)
+}
+
+fn projection_block_contains(block: &Block, target: BlockId) -> bool {
+    if block.id == target {
+        return true;
+    }
+    match &block.kind {
+        BlockKind::BlockQuote { children } => children
+            .iter()
+            .any(|child| projection_block_contains(child, target)),
+        BlockKind::List { items, .. } => items.iter().any(|item| {
+            item.id == target
+                || item
+                    .children
+                    .iter()
+                    .any(|child| projection_block_contains(child, target))
+        }),
+        _ => false,
+    }
+}
+
 fn index_block_sequence(
     sequence: &Sequence<Block>,
     containers: &[BlockContainerPath],
@@ -619,6 +645,21 @@ impl Document {
 
     pub(crate) fn source_region_bytes(&self, block_id: BlockId) -> Option<usize> {
         self.source.as_ref()?.region_body_bytes(block_id)
+    }
+
+    pub(crate) fn projection_exact_region(&self, block_id: BlockId) -> Option<(BlockId, String)> {
+        let root_id = self
+            .source
+            .as_ref()
+            .and_then(|source| source.root_for_block(block_id))
+            .or_else(|| projection_root(self.blocks(), block_id))?;
+        let root = self.blocks().iter().find(|block| block.id == root_id)?;
+        let markdown = self
+            .source
+            .as_ref()
+            .and_then(|source| source.render_root_region(root_id, root))
+            .unwrap_or_else(|| serialize_block(root));
+        Some((root_id, markdown))
     }
 
     pub(crate) fn set_source_state(&mut self, mut source: Option<DocumentSource>) {

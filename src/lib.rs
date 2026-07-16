@@ -102,11 +102,14 @@ pub use session::{
 };
 
 pub use workspace::{
-    BatchPreview, BatchReceipt, BlockDescriptor, BlockDescriptorKind, ChangeSummary,
-    DeletedDocument, DescriptorPage, DiskFingerprint, DocumentEditBatch, DocumentExportRequest,
-    DocumentHandle, DocumentId, EditBatch, ExportOutcome, LocalEditOutcome, MultiBatchReceipt,
-    MultiExportOutcome, PreviewToken, RecoveryReport, RemoteApplyOutcome, RevisionToken, VaultId,
-    WorkspaceEdit,
+    BatchPreview, BatchReceipt, BlockDescriptor, BlockDescriptorKind, BlockProjection,
+    BlockProjectionKind, BlockProjectionStructure, ChangeSummary, DeletedDocument, DescriptorPage,
+    DiskFingerprint, DocumentEditBatch, DocumentExportRequest, DocumentHandle, DocumentId,
+    EditBatch, ExactMarkdownProjection, ExportOutcome, LocalEditOutcome, MultiBatchReceipt,
+    MultiExportOutcome, PreviewToken, ProjectedMark, ProjectedTableRow, ProjectionContinuation,
+    ProjectionError, ProjectionFields, ProjectionPage, ProjectionRequest, RecoveryReport,
+    RemoteApplyOutcome, RevisionToken, TargetPrecondition, TextPoint, TextPosition, TextRange,
+    VaultId, WorkspaceEdit, WorkspaceMutation, WorkspaceTargetError,
 };
 
 // Re-export sync integrate types used with session

@@ -5,7 +5,7 @@
 | **Document title** | Architecture Evolution Design for md-crdt |
 | **Author** | Travis Silvers |
 | **Date** | 2026-07-09 |
-| **Status** | Draft (revision 12 — Phase L repository hardening complete; joint consumer gate pending) |
+| **Status** | Draft (revision 14 — Phase M complete; Phases N–Q planned for lower-token Markdown manipulation) |
 | **Repository** | `/Users/firestrand/Projects/latenty-infinity/md-crdt` |
 | **Current version** | `0.2.1` (pre-1.0; breaking changes allowed with changelog discipline) |
 | **License** | MIT |
@@ -28,6 +28,8 @@
 | **10** | Completed authoritative inline/frontmatter semantics, native moves, parsed table ingest, and mark-preserving external replacement | Closes the semantic Markdown gaps before Phase K freezes bounded agent-facing mutation and summary primitives |
 | **11** | Completed bounded descriptors/change receipts, preconditioned semantic edit batches, file lifecycle operations, and recoverable multi-file export | Gives `md-mcp` a stable, compact core contract for discovery, mutation, invalidation, and durable publication without normal-path full-document serialization |
 | **12** | Completed operation-segment integrity, bounded checkpoint/rebase history, a versioned producer fixture, and current-format-only recovery | Bounds long-running state and removes unpublished compatibility branches; the sibling `md-mcp` fixture-consumer and joint token/task gate remain release work |
+| **13** | Added a five-phase post-L roadmap for stable edit anchors, bounded semantic reads, revision-bound descriptor cursors, cell-addressable tables, and complete structured Markdown mutations | The CRDT core converges, but the workspace boundary still causes avoidable stale retries, broad reads, coarse table conflicts, and raw-text fallbacks; every new choice is gated by an ablation and a measurable correctness/performance win |
+| **14** | Completed stable text targets and per-operation scoped preconditions, including replay ablation and a breaking workspace contract v2 fixture | Unrelated edits no longer force reread/retry, while changed text, marks, nested content, placement, deleted anchors, and ambiguous split identities fail closed |
 
 **Compatibility policy (supersedes earlier migration notes):** completed sections below retain
 historical implementation details, but they are not release requirements. The joint release accepts
@@ -140,6 +142,10 @@ Without an integration spine and character-level CRDT, multi-peer collaboration 
 9. A narrow adapter contract for `md-mcp`: stable block identity across refresh, lightweight structure discovery, bounded change receipts, and atomic targeted edits that avoid full-file rereads.
 10. Lossless local Markdown editing: unchanged source bytes survive scoped mutations, while semantic CRDT state continues to converge.
 11. A stateful vault/workspace API that owns ingest, durable Markdown export, stable document identity, revisions, and multi-document mutation boundaries.
+12. Stable, scoped edit/read handles that avoid rereading or rejecting unrelated document changes
+    while failing closed when the targeted intent changed.
+13. Structured, cell/block-addressable Markdown mutations whose measured cost is proportional to
+    the selected region and whose unaffected identities/source bytes remain stable.
 
 ### Non-Goals
 
@@ -150,7 +156,8 @@ Without an integration spine and character-level CRDT, multi-peer collaboration 
 5. Yjs/Automerge interop (future, not this evolution).
 6. Zero public API breaks at 0.1.0 — breaks allowed when changelog-documented.
 7. Authenticated or encrypted peer channels (see trust model).
-8. MCP tool schemas, response pagination, search ranking, or token counting; those remain `md-mcp` responsibilities.
+8. MCP tool schemas, response encoding/pagination policy, search ranking, or token counting; those
+   remain `md-mcp` responsibilities. Core may still expose transport-neutral bounded cursors.
 
 ### Sequencing & MVP
 
@@ -163,6 +170,7 @@ Without an integration spine and character-level CRDT, multi-peer collaboration 
 | **Semantic completeness** | J | Inline marks/links, frontmatter, section move, table ingest, mark-preserving replacement | Five focused PRs |
 | **Agent workspace** | K | Bounded descriptors/deltas, atomic batches, file lifecycle, multi-document transactions | Three focused PRs plus downstream integration |
 | **Long-running hardening** | L | Op integrity, compaction/rebase, joint contract fixtures, final compatibility purge | Four focused PRs |
+| **Agent manipulation optimization** | M–Q | Stable targets, bounded semantic projections, consistent hierarchy paging, cell-level table concurrency, and complete structured block mutations | Five focused PRs; each starts with an ablation and benchmark baseline |
 
 **MVP release gate = PR-01–PR-04 + PR-06a/06b + PR-07** (Phases A, A′, B, C). SessionSnapshot (PR-04), per-grapheme text CRDT (PR-06a/06b), and mark unification (PR-07) are required. **PR-05 (SemanticConflict observation) is optional** — not a release gate. **PR-06b alone is not a release gate.** Vault, structure, Sequence rewrite, run-length storage, fsync protocol, and FFI (PR-08+) are not required for MVP collab.
 
@@ -333,8 +341,13 @@ src/
 | **J** | Semantic completeness | Close inline/frontmatter/move/table/mark fidelity gaps on the lossless source model |
 | **K** | Agent-efficient workspace | Expose bounded deltas and atomic document/vault mutations without MCP policy in core |
 | **L** | Long-running hardening | Bound storage growth, finish integrity cleanup, and freeze joint consumer contracts |
+| **M** | Stable anchored edits | Remove false document-wide staleness without accepting stale target intent |
+| **N** | Bounded semantic reads | Return only selected semantic bodies and anchors; never require full serialization for locate/edit/verify |
+| **O** | Revision-bound hierarchy cursors | Make descriptor traversal consistent and cheaply skippable under large/deep documents |
+| **P** | Cell-addressable tables | Preserve concurrent edits to different cells and make payload cost proportional to one cell |
+| **Q** | Complete structured mutations | Let agents create and edit every supported block kind without raw whole-document replacement |
 
-Phase G can parallelize with B/C once A′ defines snapshot **payload** bytes. Do **not** expand vault op emission before A + A′. Phases I–L begin after the completed Phase H baseline. `md-mcp` may implement protocol/retrieval work against contract fixtures once PR-21 lands, but it must not cut over from its legacy service until PR-23 makes the workspace persistence path honest.
+Phase G can parallelize with B/C once A′ defines snapshot **payload** bytes. Do **not** expand vault op emission before A + A′. Phases I–L begin after the completed Phase H baseline. Phases M–Q build sequentially on the Phase L contract because N returns M anchors, O freezes revision-bound traversal before P/Q expand descriptor/projection shapes, and P/Q reuse M preconditions. `md-mcp` may implement protocol/retrieval work against contract fixtures once PR-21 lands, but it must not cut over from its legacy service until PR-23 makes the workspace persistence path honest.
 
 ---
 
@@ -1456,6 +1469,376 @@ After the concrete consumer contract is frozen, remove compatibility code before
 
 ---
 
+### Post-L evaluation protocol for Phases M–Q
+
+Every phase follows the same evidence order: freeze the Phase L behavior as the baseline, add a
+benchmark or replay harness that exposes the claimed problem, implement the smallest competing
+options behind test-only adapters, record the ablation table in the PR, then keep only the winner.
+Do not ship a runtime configuration switch merely to preserve losing experiments.
+
+The shared corpus contains:
+
+- 100-, 1,000-, and 10,000-block documents; wide and 32-level nested outlines;
+- ASCII, emoji, combining-mark, RTL, empty, and 100,000-grapheme text blocks;
+- 10×5, 100×20, and 1,000×50 tables;
+- ordered/unordered/task lists, nested blockquotes, fenced code, tables, opaque raw blocks, marks,
+  links, frontmatter, and mixed line-ending/source-trivia fixtures;
+- deterministic two-peer schedules with unrelated edits, same-target conflicts, deletion of an
+  anchor target, moves across parents, and delayed/out-of-order delivery.
+
+Record, as applicable: task correctness, false-stale and false-accept counts, response/wire bytes,
+operation count, retained identities, dirty source bytes, snapshot size, and Criterion estimates
+with confidence intervals. The companion token gate may tokenize the same serialized fixtures, but the
+core gate uses deterministic serialized byte counts and must not import MCP schemas or tokenizers.
+All variants run the same correctness fixtures before performance is considered. A faster variant
+that loses intent, convergence, source fidelity, or boundedness is rejected.
+
+### Phase M — Stable anchored edits and scoped optimistic concurrency
+
+**Status: complete.**
+
+**Problem:** `WorkspaceEdit` converts grapheme offsets at apply time and `EditBatch` rejects any
+document revision change. An edit in an unrelated block therefore makes an otherwise valid agent
+batch stale, forcing a reread and retokenization. Internal unit anchors exist, but the workspace
+contract cannot carry them and an anchor cannot currently express the start/end of an empty block.
+
+#### M1 — Freeze stable target semantics
+
+Add opaque workspace `TextPoint`/`TextRange` DTOs. A point represents `Start`, `End`, or a unit
+`Anchor` plus bias; it remains tied to one `BlockId`. Reads return these points, and text insert,
+delete, mark, and split operations consume them. Resolution returns an explicit live, deleted,
+wrong-block, or ambiguous result—never a guessed offset.
+
+Add per-operation target preconditions:
+
+- text range: target block plus digest of the selected semantic text and relevant marks;
+- block content: `BlockId` plus semantic content digest;
+- placement: target/parent/neighbor ids plus a structural digest;
+- opaque/raw replacement: exact target digest is mandatory.
+
+`EditBatch` retains a `base_revision` for preview/audit and atomic operation ordering, but a newer
+document revision may apply when every scoped precondition still holds. Missing scoped
+preconditions retain strict exact-revision behavior. Prevalidate the full batch on the isolated
+clone; rejection burns no ids.
+
+#### M2 — Required ablation
+
+Compare on identical two-peer replay schedules:
+
+| Variant | Target | Staleness rule | Expected tradeoff |
+| --- | --- | --- | --- |
+| M-A baseline | grapheme offset | exact document revision | safest but rejects unrelated changes |
+| M-B | stable anchor | exact document revision | stable identity, no retry reduction |
+| M-C | stable anchor | scoped target digest/precondition | intended winner; accepts unrelated changes and rejects changed intent |
+| M-D | offset + context search | fuzzy relocation | may reduce retries but can silently select repeated text |
+
+M-C wins only with zero false accepts on the conflict corpus, zero convergence failures, and at
+least 90% successful first-try application when only unrelated blocks changed. M-D is retained only
+if it can prove the same unambiguous semantics; otherwise delete it. Record batch latency and DTO
+bytes, but correctness decides before speed.
+
+#### M3 — Tests and benchmarks
+
+- Property tests: anchor resolution through inserts/deletes, marks, split/merge, block moves, empty
+  blocks, Unicode graphemes, and snapshot/reopen.
+- Model tests: strict target conflict rejection; unrelated document changes accepted; deleted or
+  cross-block anchors return typed errors; previews cannot be replayed against different intent.
+- Convergence tests: apply accepted batches in every two-peer delivery order and compare structure,
+  marks, source export, and state vectors.
+- `workspace_edit_replay` benchmark: 1/10/100-operation batches over 100/10,000 blocks with 0%,
+  10%, and 90% unrelated concurrent churn; record first-try success, reread bytes avoided, apply
+  latency, and encoded batch bytes.
+
+**Gate:** no false accept or identity loss; strict mode is behaviorally equivalent to Phase L;
+scoped mode meets the 90% unrelated-edit first-try target without more than a 10% apply-latency
+regression at equal batch size. If latency misses, profile and optimize before relaxing the gate.
+
+#### Phase M repository implementation outcome
+
+- `TextPoint` and `TextRange` encode start, end, or unit anchors tied to a `BlockId`. Resolution is
+  Unicode-grapheme aware and returns typed block-not-found, non-text, deleted, wrong-block,
+  unknown, ambiguous, offset, or range failures; no context search or guessed relocation ships.
+- `WorkspaceMutation` carries the complete expected text, semantic block, and placement
+  preconditions for one `WorkspaceEdit`. `EditBatch::base_revision` remains the strict fallback and
+  audit base; an empty batch or any mutation without scoped preconditions still requires the exact
+  current revision. The whole batch is validated and applied to a snapshot probe before install, so
+  rejection leaves content, revision, and the peer clock unchanged.
+- Block digests include inline marks, tables, list descendants, and blockquote descendants. Text
+  digests include the selected graphemes and intersecting resolved marks. Placement digests bind the
+  target, parent, predecessor, and ordered direct children.
+- The versioned producer fixture is now `workspace-contract-v2.json`. The old pre-release v1 fixture
+  and offset-bearing edit shape were deleted rather than adapted.
+
+| Ablation | Conflict result | First try under unrelated churn | Representative four-op compact JSON | Decision |
+| --- | --- | --- | ---: | --- |
+| M-A offsets + exact revision | zero false accepts; offsets require reread after staleness | 100% / 90% / 10% at 0% / 10% / 90% churn | 527 bytes | Rejected: retries and target instability |
+| M-B anchors + exact revision | zero false accepts | 100% / 90% / 10% | 731 bytes | Rejected: identity improves but retries do not |
+| M-C anchors + scoped digests | zero false accepts and zero convergence failures in the conflict/two-peer corpus | 100% in 100/100 unrelated-change attempts | 1,006 bytes | **Selected** |
+| M-D offsets + fuzzy context | repeated Markdown produced three equally valid `same` candidates | Not admissible | Not retained | Rejected before performance: cannot prove intent |
+
+The replay corpus avoided a reread on every unrelated stale attempt: 1,200 Markdown bytes across the
+100-attempt correctness replay, 1,298 bytes per stale 100-block benchmark document, and 129,998
+bytes per stale 10,000-block document. The 10% and 90% churn labels weight how many replay attempts
+use the same stale-but-unrelated case; churn setup is outside the timed interval.
+
+| Blocks | Operations | Strict current revision | Scoped current revision | Midpoint change |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 | 1 | 3.3809–3.3989 ms | 3.3765–3.3970 ms | −0.03% |
+| 100 | 10 | 3.5081–3.5238 ms | 3.5026–3.5206 ms | −0.11% |
+| 100 | 100 | 4.9371–4.9542 ms | 4.9882–5.0116 ms | +1.12% |
+| 10,000 | 1 | 356.09–358.87 ms | 355.64–358.55 ms | −0.12% |
+| 10,000 | 10 | 362.29–365.52 ms | 362.97–367.17 ms | +0.32% |
+| 10,000 | 100 | 425.54–429.37 ms | 426.17–430.08 ms | +0.13% |
+
+Criterion used 10 samples per case. Stale-but-unrelated scoped runs ranged from 3.3934–5.0126 ms
+at 100 blocks and 353.86–441.32 ms at 10,000 blocks across 1/10/100 operations and both churn
+weights. The worst midpoint increase against the equal-size strict baseline was 3.45%, below the
+10% gate. The final coverage run measured 93.68% repository-wide line coverage and 98.12% across
+changed executable lines. Losing variants remain only as test controls; there is no runtime
+strategy switch.
+
+### Phase N — Bounded semantic block projections
+
+**Problem:** descriptors deliberately omit bodies, while the public vault surface has no bounded,
+selected semantic-body read. Consumers otherwise borrow internal documents, duplicate projection
+logic, or serialize too much Markdown.
+
+#### N1 — Projection contract
+
+Add `ProjectionRequest` and `ProjectionPage` to `VaultSession`. A request contains document id,
+expected/base revision, ordered block ids, a field mask, byte/item limits, and an optional
+continuation. A projection returns only requested semantic fields: kind metadata, visible text,
+resolved marks/links, table/list structure, content digest, and Phase M text points. Exact Markdown
+for the selected source region is opt-in. Every response reports revision, bytes used, omitted ids,
+and a continuation or an explicit item-too-large error.
+
+The core owns semantic projection and limits; it does not own MCP JSON shape, token accounting,
+search ranking, or automatic context selection. No API returns `&Document` through `VaultSession`.
+
+#### N2 — Required ablation
+
+| Variant | Representation | Question answered |
+| --- | --- | --- |
+| N-A baseline | full structural/exact Markdown serialization | current upper bound |
+| N-B | selected exact Markdown slices | smallest implementation; caller must parse semantics |
+| N-C | owned typed `BlockProjection` DTOs | one parser/model; directly serializable downstream |
+| N-D | borrow/visitor stream | lowest allocation potential; harder pagination and cross-language use |
+
+Run 1/8/32 selected-block reads over every corpus size with minimal, semantic, and exact field
+sets. Select N-C unless N-D reduces allocations/latency by at least 25% without complicating the
+serialized contract or preventing bounded continuation. N-B may remain only as the optional exact
+field inside the winner, not as a second semantic parser boundary.
+
+#### N3 — Tests and benchmarks
+
+- Contract tests for deterministic order, duplicate/missing ids, field masks, item-too-large,
+  continuation, revision mismatch, and hard byte/item bounds.
+- Equivalence tests comparing projection text/marks/links/table/list metadata with the authoritative
+  `Document` and structural serializer.
+- Lossless tests proving an exact selected region matches its pinned source and that a dirty region
+  contains only its owned rerender.
+- `workspace_projection` Criterion group: selected blocks versus full serialization at 100/1,000/
+  10,000 blocks; record latency, output bytes, and allocations with a test-only counting allocator.
+- Deterministic transcript fixture: map → read one section → edit → read affected blocks; record
+  total core response bytes for the later joint token gate.
+
+**Gate:** limits are never exceeded; the one-block/10,000-block response is proportional to the
+selected block plus a fixed envelope, not document size; its latency and allocated bytes are both
+at least 10× lower than full serialization on the frozen benchmark fixture. Semantic projections
+round-trip through serde without borrowing internal state.
+
+#### Phase N outcome (2026-07-16)
+
+N-C, owned typed projections, is selected. N-B remains only as the opt-in exact-region field. The
+borrowed visitor control was substantially faster, but it cannot itself supply an owned serde
+contract, hard serialized-byte accounting, stateless continuation, or a cross-language value; that
+fails the ablation's contract-complexity condition despite exceeding the raw 25% speed threshold.
+Revision tokens are cached across read-only vault calls and invalidated at every mutable session
+boundary so revision verification does not serialize the whole session before a bounded read.
+
+The Criterion matrix covered 1/8/32 selections and minimal/semantic/exact fields at 100, 1,000,
+and 10,000 blocks. Latency tracked selection size rather than corpus size: one-block semantic reads
+were 7.18–7.47 µs, while full structural serialization grew from 106.99 µs at 100 blocks to
+12.085 ms at 10,000. At 10,000 blocks, semantic 1/8/32 reads measured approximately 7.47 µs,
+80.81 µs, and 822.24 µs; exact-region pages measured 2.19 µs, 15.83 µs, and 124.41 µs. The
+borrowed visitor control measured 73 ns, 278 ns, and 1.12 µs, documenting the cost of ownership,
+serde shape, marks, anchors, and hard bounds rather than just text traversal.
+
+The counting allocator's frozen 10,000-block gate recorded 369,998 output bytes and 70,241,737
+allocated bytes for full serialization versus 1,182 response bytes and 31,479 allocated bytes for
+one semantic projection: about 313× lower output and 2,231× lower allocation. The latency midpoint
+was about 1,618× lower. A cold-path audit removed two hidden document-sized allocations (lazy block
+index construction during selection and again during text-range construction); projection now
+retains only request-sized lookup state. The deterministic map → read one section → edit → read
+affected blocks transcript totals 3,055 core response bytes.
+
+- [x] Ordered field-selective owned DTOs with serde round trips
+- [x] Hard item/serialized-byte bounds, request-bound continuation, omissions, and oversize errors
+- [x] Semantic equivalence for headings, paragraphs, marks/links, lists, quotes, and tables
+- [x] Pinned and dirty exact-region ownership, including nested source roots
+- [x] 100/1,000/10,000 × 1/8/32 Criterion and counting-allocation ablation
+- [x] Frozen map → read → edit → read transcript fixture
+
+### Phase O — Revision-bound hierarchy cursors and subtree summaries
+
+**Problem:** descriptor pagination uses numeric offsets and pages carry no revision. Concurrent
+insert/move operations can produce duplicates or omissions across calls. Composite/list-item
+descriptors also lack descendant-aware digests, so cached maps cannot skip unchanged subtrees.
+
+#### O1 — Cursor and digest contract
+
+Replace public numeric offsets with an opaque `DescriptorCursor` bound to document id, revision,
+parent id, traversal order, and last emitted logical identity. `DescriptorPage` returns the bound
+revision and next cursor. A cursor from another revision or parent fails explicitly; callers restart
+from the returned current revision rather than receiving a mixed snapshot.
+
+Add direct-child count, descendant count, node semantic digest, and optional subtree semantic
+digest. Digests exclude source presentation trivia; exact-source changes remain represented by the
+disk fingerprint/source fields. All digest inputs and ordering are specified and deterministic.
+
+#### O2 — Required ablations
+
+Cursor study:
+
+| Variant | State | Tradeoff |
+| --- | --- | --- |
+| O-A baseline | numeric offset | smallest, inconsistent across revisions |
+| O-B | stateless revision/parent/last-id cursor | bounded, restart-on-change, no server state |
+| O-C | server-side snapshot cursor | stable across changes, lifecycle/memory burden |
+| O-D | mutation-tolerant logical resume | fewer restarts, can hide moved/inserted siblings |
+
+Digest study:
+
+| Variant | Cost profile |
+| --- | --- |
+| O-E | recursively hash descendants on every page |
+| O-F | cached Merkle-style subtree digest, invalidate ancestors on mutation |
+| O-G | node-only digest plus `ChangeSummary` |
+
+Prefer O-B unless O-C demonstrates a material workflow-byte reduction that justifies retained
+server state. Select O-F only if it beats O-E by at least 5× on repeated 10,000-block map reads and
+keeps one-leaf update within 20% of O-G. Otherwise retain O-G and omit subtree digests rather than
+shipping an expensive cache.
+
+#### O3 — Tests and benchmarks
+
+- Property tests: unchanged-revision traversal has no duplicate/omitted child; wrong revision,
+  parent, document, and corrupt cursor are typed failures. Page limits may change safely after a
+  valid stateless last-id cursor.
+- Mutation tests: insert/delete/move between pages forces restart; restarted traversal matches a
+  fresh authoritative outline.
+- Digest tests: semantic descendant changes alter every required ancestor digest; unrelated
+  subtrees remain unchanged; identical semantic trees with different local trivia match.
+- `workspace_hierarchy` benchmarks: wide/deep trees, page sizes 1/32/256, cold and repeated scans,
+  plus one-leaf update followed by root-page read. Record latency, allocation, cursor bytes, and
+  descriptors skipped by digest.
+
+**Gate:** consistent traversal is proven, cursor size is bounded independently of document size,
+and the selected digest strategy improves repeated map latency or bytes by the ablation threshold
+without making one-leaf mutations exceed the stated budget.
+
+### Phase P — Cell-addressable table collaboration
+
+**Problem:** table header and row cells are whole-vector LWW registers. Two peers changing different
+cells in one row can overwrite one another, and one-cell edits serialize the full row.
+
+#### P1 — Stable table identities
+
+Give columns stable `ColumnId`s and address cells by `(RowId, ColumnId)`; represent the header as a
+distinguished stable row or equivalent explicit header-cell identities. Add insert/delete/move
+column and `SetTableCell` operations. Row and column deletion wins over edits to the deleted target;
+concurrent edits to different live cells commute. Source ownership remains table-local.
+
+#### P2 — Required ablation
+
+| Variant | Cell value | Concurrency/cost |
+| --- | --- | --- |
+| P-A baseline | `LwwRegister<Vec<CellContent>>` per row | different-cell lost update; O(row) payload |
+| P-B | one LWW register per stable cell | different cells commute; same-cell deterministic winner |
+| P-C | `Sequence<TextUnit>` plus marks per cell | same-cell merge; larger snapshot and implementation |
+| P-D | hybrid LWW default with opt-in text CRDT cells | configurable complexity and two semantics |
+
+Use workloads with independent-cell edits, same-cell edits, row/column moves, and 10×5 through
+1,000×50 tables. P-B is the KISS default. Select P-C only if same-cell task success materially
+improves and its 1,000×50 snapshot is no more than 25% larger than P-B; reject P-D unless real
+workloads identify a stable per-table policy before creation. Do not ship a mutable runtime toggle
+that changes one existing cell's identity semantics.
+
+#### P3 — Tests and benchmarks
+
+- Exhaustive two-peer schedules for different/same cell edits, row/column move/delete, header
+  edits, delayed delivery, checkpoint/rebase, snapshot/reopen, and exact export.
+- Property tests for row/column shape invariants, stable cell addressing, and convergence.
+- Ingest tests retaining row/column/cell ids across external changes where matching is unambiguous.
+- `table_cell_edit` benchmarks: one-cell edit at each table size versus whole-row replacement;
+  record operation/wire bytes, apply latency, snapshot bytes, dirty source bytes, and identities
+  retained.
+
+**Gate:** different-cell edits survive 100% of schedules, one-cell payload grows with cell content
+rather than row width, and at 20+ columns both encoded bytes and apply latency beat P-A. Snapshot
+growth must satisfy the selected ablation budget and exact export remains table-local.
+
+### Phase Q — Complete structured Markdown mutation surface
+
+**Problem:** the document can represent lists, code fences, blockquotes, raw blocks, and tables, but
+atomic workspace batches cannot create or fully edit every supported kind. Agents fall back to raw
+Markdown replacement, losing identity and expanding read/write scope. Lists also retain only an
+`ordered` boolean, so dirty serialization cannot preserve ordered starts, delimiters, bullets, or
+task state semantically.
+
+#### Q1 — Unified structured operations
+
+Introduce one `BlockDraft` tree for insertion plus focused identity-targeted mutations:
+
+- insert/move/delete list item; set ordered start/delimiter, bullet marker, looseness, and task state;
+- insert blockquote container and wrap/unwrap or move existing blocks without changing logical ids;
+- insert/update code fence body and info string;
+- convert compatible paragraph/heading kinds without replacing text-unit identities;
+- insert opaque raw blocks and replace them only under an exact digest precondition;
+- retain the Phase P table operations instead of embedding whole mutable tables in drafts.
+
+Nested drafts have validation depth/item/byte limits. Operations lower through the existing session
+and wire paths; there is no raw whole-document patch API and no second parser.
+
+#### Q2 — Required ablations
+
+Workspace API study:
+
+| Variant | Tradeoff |
+| --- | --- |
+| Q-A | one enum variant per concrete insertion shape | explicit but repetitive and difficult to compose |
+| Q-B | generic validated `BlockDraft` for creation plus focused mutation variants | compact creation, stable targeted updates |
+| Q-C | accept raw Markdown fragments and parse during apply | convenient but ambiguous identity/precondition semantics |
+
+Code-body study compares whole-value LWW replacement with text CRDT units using 1 KB, 100 KB, and
+1 MB fences under independent-line and same-line edits. Choose Q-B unless its validation or wire
+cost materially exceeds Q-A; Q-C must be rejected if two parses can assign different intent or if
+it dirties outside the target region. Keep whole-value code replacement unless text CRDT improves
+concurrent code-edit task success enough to offset measured snapshot and operation growth.
+
+#### Q3 — Tests and benchmarks
+
+- Contract matrix: every `BlockKind` can be created, targeted, moved, deleted, exchanged, reopened,
+  and exported through `WorkspaceEdit` without borrowing `Document` internals.
+- Golden/property tests for ordered starts (including 0 and non-1), delimiters, bullet markers,
+  empty/nested/task items, loose lists, nested quotes, fence delimiters/info, and opaque raw bytes.
+- Random nested-operation convergence with cycle/depth/size rejection and no clock burn.
+- Lossless locality tests: mutate one list item/task/fence and assert unrelated source bytes and all
+  unaffected logical ids remain unchanged.
+- `structured_workspace_edit` benchmarks: build/reorder 100/1,000 list items, wrap/unwrap 100
+  blocks, and edit 1 KB/100 KB code fences. Compare structured operations with refresh from an
+  equivalent raw Markdown replacement; record latency, ops, wire bytes, dirty bytes, and retained
+  ids.
+- Final transcript fixture covers map → bounded read → anchored edit → cursor restart/verify across
+  prose, list, table, quote, and code tasks and records total serialized core bytes.
+
+**Gate:** the contract matrix is complete; structured paths retain 100% of unaffected ids, never
+parse or serialize the full document for a scoped operation, and reduce both dirty bytes and request
+bytes versus raw replacement on every representative workflow. All exchange/snapshot/export gates
+remain green.
+
+---
+
 ## API / Interface Changes
 
 | Addition | Feature | Phase |
@@ -1474,6 +1857,11 @@ After the concrete consumer contract is frozen, remove compatibility code before
 | Native block/section move + parsed table ingest + mark-preserving replacement | default/filesync | J |
 | Bounded descriptors, `ChangeSummary`, preconditioned document/vault batches | default/filesync | K |
 | Operation-segment checksums, checkpoint/rebase compaction, strict current-format loading | storage | L |
+| `TextPoint`, `TextRange`, scoped target preconditions, anchor-targeted workspace edits | default/filesync | M |
+| `ProjectionRequest`, bounded typed `BlockProjection`, projection continuation | default/filesync | N |
+| Opaque revision-bound `DescriptorCursor`, descendant counts/digests | default/filesync | O |
+| Stable `ColumnId`/cell addressing and cell/column operations | default/filesync | P |
+| `BlockDraft` plus complete list/quote/code/raw structured operations | default/filesync | Q |
 
 **Compatibility:** the joint `md-crdt`/`md-mcp` release is intentionally breaking. Do not preserve
 source, wire, snapshot, or storage migration paths for older unpublished releases. At the PR-35
@@ -1492,8 +1880,16 @@ Document
 ├── blocks: Sequence<Block>
 │   └── Block { id, elem_id, kind, marks }
 │       kind.Paragraph.text: Sequence<TextUnit>  // MVP; optional runs in F
+│       kind.List: collaborative list metadata + Sequence<ListItem>
+│       kind.Table: stable columns + rows of addressable cells
 └── block_index (Phase F)
 ```
+
+Workspace projections and cursors are derived/cache state, not a second document model. Phase M
+anchors reference existing text-unit identities; Phase N projections own bounded response values;
+Phase O subtree summaries may be cached only if the ablation proves the cache worthwhile. Current
+snapshot/wire formats are changed in place for Phases P/Q—no compatibility reader or dual model is
+added before the joint release.
 
 ### Persistence
 
@@ -1578,6 +1974,40 @@ Referenced as prior art. **Defer:** higher research cost; in-tree RGA + mark int
 
 Covered under N6. **Decision (25/27 rev 6):** default **(d)**; (c) experimental later only.
 
+### 13) Exact document revisions vs scoped edit preconditions
+
+Exact revisions remain the strict fallback, but they reject valid work after unrelated mutations.
+Phase M must ablate offsets, stable anchors, scoped digests, and fuzzy context relocation. Fuzzy
+relocation is not acceptable unless it can prove it never selects repeated or semantically changed
+text. The intended design is stable anchors plus explicit target digests, not implicit auto-rebase.
+
+### 14) Selected Markdown slices vs typed semantic projections
+
+Markdown slices are compact but force the consumer to recreate parsing and mark/link extraction.
+Returning internal `Document` borrows breaks the vault boundary and cannot form a stable serialized
+contract. Phase N therefore compares slices, owned projections, and a visitor stream, with one
+authoritative typed projection as the likely KISS boundary.
+
+### 15) Mutable pagination vs revision-bound restart
+
+A server-held snapshot cursor can continue across mutations but introduces lifecycle state; a
+mutation-tolerant logical cursor can omit moved/inserted siblings without telling the caller. Phase
+O prefers a stateless revision-bound cursor and explicit restart unless measured workflow cost
+proves retained snapshot state is necessary.
+
+### 16) Table row registers vs cell registers vs cell text CRDTs
+
+Whole-row LWW is too coarse for independent-cell work. Per-cell LWW is the minimum correctness fix;
+per-cell text CRDTs are selected only if same-cell collaborative workflows justify their storage and
+operation cost. Hybrid runtime semantics are rejected without a stable creation-time policy.
+
+### 17) Explicit edit variants vs block drafts vs raw fragment patches
+
+One insertion variant per block kind is verbose; raw fragment parsing makes identity and failure
+semantics ambiguous. Phase Q ablates both against validated `BlockDraft` creation plus focused
+identity-targeted mutations. Raw opaque blocks remain possible, but raw whole-document patches do
+not become a workspace editing primitive.
+
 ---
 
 ## Security & Privacy Considerations
@@ -1624,7 +2054,14 @@ No panics in `apply_remote` / codec / storage library paths.
 - Phases A–H are the completed baseline; Phase I begins the joint breaking-release line.
 - Land PR-21's contract and fixtures first so `md-mcp` can build its protocol, index, and service shell in parallel.
 - Do not cut `md-mcp` over from its legacy engine until PR-23 proves lossless ingest/export and durable Markdown publication.
-- The repository semantic and compatibility work is complete, but the joint release still waits for the frozen `md-mcp` consumer and end-to-end token/task gate.
+- Phases A–M are complete. The joint release now also waits for Phases N–Q plus the frozen
+  `md-mcp` consumer and end-to-end token/task gate.
+- Land Phases N–Q in order. Each PR first commits the Phase L baseline harness, records all ablation
+  variants in its PR report, then removes losing implementations before merge.
+- Refresh the versioned workspace fixture after every selected contract break; do not add adapters
+  for the Phase L shape because both projects release together.
+- Do not claim a manipulation optimization from latency alone: the relevant phase must also pass
+  its response/wire-byte, identity-retention, boundedness, and workflow correctness gate.
 - Keep each repository independently revertible. Record the exact cross-repository commit pair used by integration tests; live peers must upgrade together when wire versions change.
 
 ---
@@ -1644,6 +2081,11 @@ No panics in `apply_remote` / codec / storage library paths.
 | Joint contract | `md-mcp` consumer fixtures compile and run against the pinned `md-crdt` revision |
 | Workflow | bounded context/edit/verify transcripts and token budgets on representative vaults |
 | Crash recovery | durable Markdown export and multi-document journal interruption at every publication boundary |
+| Scoped concurrency | anchor/precondition model tests plus deterministic two-peer replay and false-stale/false-accept counts |
+| Projection | semantic equivalence, hard response limits, continuation, counting-allocation and response-byte benchmarks |
+| Hierarchy | cursor consistency/restart properties, subtree digest invalidation, wide/deep traversal benchmarks |
+| Tables | exhaustive row/column/cell schedules, cell payload/snapshot benchmarks, external-ingest identity retention |
+| Structured mutations | every-`BlockKind` contract matrix, nested-operation properties, dirty-byte/identity comparisons against raw refresh |
 
 `just check` green every PR.
 
@@ -1670,12 +2112,18 @@ No panics in `apply_remote` / codec / storage library paths.
 | Adapter optimization leaks MCP policy into core | Medium | Core exposes ids/descriptors/summaries/batches only; `md-mcp` owns schemas, cursors, search, and token budgets |
 | Cross-document partial publication | High | Intent journal + idempotent recovery; crash injection before and after every rename |
 | Old vault state is opened ambiguously | High | Reject it explicitly and require reinitialize/re-ingest; never guess or silently migrate |
+| Scoped preconditions accept changed intent | High | Stable anchors plus selected semantic digests; typed deleted/ambiguous errors; zero-false-accept gate before retry reduction counts |
+| Projection becomes a second AST | High | Projection is a bounded owned view derived from `Document`; no independent parser, editor, or persistence |
+| Cursor silently mixes revisions | High | Bind cursor to document/revision/parent and fail closed on mismatch; restart is explicit |
+| Subtree digest cache slows writes | Medium | Ablate recursive/cached/node-only strategies; keep cache only if both scan and one-leaf-update budgets pass |
+| Per-cell CRDT state inflates snapshots | Medium | Compare per-cell LWW and text CRDT at 1,000×50; enforce the Phase P storage budget |
+| Structured API duplicates operation logic | Medium | `BlockDraft` is creation-only; focused mutations lower through existing session operations and validators |
 
 ---
 
 ## Key Decisions
 
-1. **Phase order A → A′ → B → C → D → E → F → G → H → I → J → K → L.** `md-mcp` protocol/index work may run beside I; its live-engine cutover waits for PR-23.
+1. **Phase order A → A′ → B → C → D → E → F → G → H → I → J → K → L → M → N → O → P → Q.** `md-mcp` protocol/index work may run beside I; its live-engine cutover waits for PR-23. Post-L manipulation work is sequential because projections expose edit anchors, revision-bound traversal freezes before later shapes expand, and later operations reuse scoped preconditions.
 
    **Rationale:** Integrate + persist before optimizing; text before marks; vault after session snapshots.
 
@@ -1830,11 +2278,23 @@ sibling must consume the same fixture before joint release.**
     **Rationale:** A concrete, reviewable shape catches accidental breaking drift without adding MCP
     schemas or a second Markdown engine to this crate.
 
+44. **Every Phase M–Q optimization is selected by correctness-first ablation against the frozen
+Phase L baseline; losing variants and test-only switches are deleted before merge.**
+
+    **Rationale:** Configuration is not value by itself. The core should carry one proven semantic
+    path unless real workloads require a stable policy choice.
+
+45. **Core efficiency gates measure deterministic bytes, allocations, identities, dirty regions,
+and latency; MCP tokenizers and response policy remain outside this repository.**
+
+    **Rationale:** This keeps the CRDT contract transport-neutral while still producing reproducible
+    evidence that the downstream agent can consume less context.
+
 ---
 
 ## Open Questions
 
-Resolved recommendations are Key Decisions 1–39 (rev 10). Remaining questions:
+Resolved recommendations are Key Decisions 1–45. Remaining questions:
 
 1. **Snapshot encoding:** serde_json vs rkyv for `SessionSnapshot` segment body? (Lean rkyv when `storage` enabled; JSON for debug dumps.)
 2. **SemanticConflict CLI surfacing:** log only vs JSON field? (Lean: library returns data; CLI prints count at debug.) — only relevant after optional PR-05.
@@ -1842,6 +2302,14 @@ Resolved recommendations are Key Decisions 1–39 (rev 10). Remaining questions:
 4. **When to revisit N6-c / run-length:** only after production profiles show paste-as-block or large-paragraph cost; not scheduled.
 5. **Joint history policy:** define which peers `md-mcp` renews in each checkpoint request and when
    an omitted peer is deliberately expired; the core policy is deterministic and caller-managed.
+6. **Phase N representation:** does an owned typed projection meet allocation goals, or does a
+   visitor/stream improve measured cost by enough to justify the harder boundary?
+7. **Phase O digest strategy:** does cached subtree hashing pass both repeated-scan and one-leaf
+   mutation gates, or should descriptors remain node-only with explicit change summaries?
+8. **Phase P cell value:** is per-cell LWW sufficient for observed agent table workflows, or does
+   same-cell text collaboration justify per-cell text CRDT state?
+9. **Phase Q code body:** should code fences remain digest-preconditioned whole values or use text
+    units after the large-fence ablation?
 
 ---
 
@@ -1859,6 +2327,16 @@ Resolved recommendations are Key Decisions 1–39 (rev 10). Remaining questions:
 10. Opening and exporting an unchanged supported or opaque Markdown file is byte-identical; a one-word semantic edit changes only its owned source span.
 11. Document handles survive content edits, stale writes fail by opaque revision precondition, and durable export cannot report success before the Markdown file is published.
 12. The joint release contains one live Markdown parser/model/editor/serializer, owned by `md-crdt`; representative MCP workflows meet the companion plan's token and task-success gates.
+13. Unrelated concurrent changes no longer force targeted edits to reread/retry, while every
+    changed-target conflict is rejected and no accepted schedule diverges.
+14. Reading one selected block from a 10,000-block document is hard-bounded and at least 10× lower
+    in latency and allocated/output bytes than full serialization on the frozen fixture.
+15. Descriptor traversal cannot mix revisions or omit/duplicate children silently; any retained
+    subtree summary demonstrably improves repeated map work without violating mutation budgets.
+16. Concurrent edits to different table cells always survive, and one-cell operation size is
+    independent of row width.
+17. Every supported `BlockKind` has a structured workspace create/edit path that preserves all
+    unaffected identities and dirties fewer bytes than equivalent raw refresh.
 
 ---
 
@@ -2145,6 +2623,76 @@ Each PR is independently reviewable. Dependencies listed. Spec-dense phases A/B 
 - **Dependencies:** PR-32, PR-33, PR-34
 - **Description:** Accept only V3 session snapshots and current V2 dual-slot storage. Delete snapshot V1/V2 and storage V1 readers, upgrade branches, constants, fixtures, deprecated compatibility surfaces, and legacy-segment handling. Older vault state must be reinitialized/re-ingested. Rerun both repositories' pinned release gates after deletion.
 
+### PR-36: Stable anchored edits and scoped preconditions
+
+- **PR title:** `feat(workspace): stable text targets and scoped batch preconditions`
+- **Files/components:** `src/core/mark.rs`, `src/doc/*`, `src/workspace.rs`, `src/session/*`,
+  `src/filesync/session.rs`, workspace fixtures, replay benchmarks, `CHANGELOG.md`
+- **Dependencies:** PR-35
+- **Ablation:** exact offsets/revision vs anchors/exact revision vs anchors/scoped digests vs fuzzy
+  context relocation; publish false-stale, false-accept, first-try, latency, and batch-byte results.
+- **Description:** Add start/end/unit text points, stable ranges, typed resolution errors, and
+  per-target text/content/placement preconditions. Preserve strict revision behavior when scoped
+  preconditions are absent. Prevalidate atomically and burn no ids on failure.
+- **Gate:** zero false accepts/convergence failures; at least 90% first-try success under unrelated
+  churn; no more than 10% equal-size apply-latency regression.
+
+### PR-37: Bounded semantic block projections
+
+- **PR title:** `feat(workspace): bounded selected semantic block reads`
+- **Files/components:** `src/workspace.rs`, `src/doc/*`, `src/filesync/session.rs`, serde fixtures,
+  counting allocator, projection Criterion group, `CHANGELOG.md`
+- **Dependencies:** PR-36
+- **Ablation:** full Markdown vs exact selected slices vs owned typed projections vs borrow/visitor
+  streaming; publish latency, allocations, response bytes, and contract complexity.
+- **Description:** Add field-selective, byte/item-bounded projections with Phase M anchors,
+  deterministic continuation, explicit oversize/omission reporting, and opt-in exact selected
+  Markdown. Do not expose internal documents or MCP response models.
+- **Gate:** hard bounds and semantic equivalence; one-block read in a 10,000-block document is at
+  least 10× lower than full serialization in latency and allocated/output bytes.
+
+### PR-38: Revision-bound descriptor cursors and subtree summaries
+
+- **PR title:** `feat(workspace): revision-bound hierarchy cursors and subtree digests`
+- **Files/components:** `src/workspace.rs`, document indexes/cache if selected, `src/filesync/session.rs`,
+  cursor fixtures, hierarchy property tests/benches, `CHANGELOG.md`
+- **Dependencies:** PR-37
+- **Ablation:** offset/stateless/server-held/mutation-tolerant cursors and recursive/cached/node-only
+  digest strategies; publish scan/update latency, allocation, cursor bytes, and skipped descriptors.
+- **Description:** Replace public offsets with opaque document/revision/parent-bound cursors. Add
+  child/descendant counts and only the digest strategy that passes both read and mutation gates.
+- **Gate:** no duplicate/omitted unchanged-revision traversal; mismatch fails closed; cached digest
+  ships only with 5× repeated-scan improvement and ≤20% one-leaf-update regression versus node-only.
+
+### PR-39: Cell-addressable table collaboration
+
+- **PR title:** `feat(tables): stable columns and cell-scoped collaborative edits`
+- **Files/components:** `src/doc/*`, `src/codec/*`, `src/session/*`, snapshots/filesync/workspace,
+  table fixtures and Criterion group, `CHANGELOG.md`
+- **Dependencies:** PR-36, PR-38
+- **Ablation:** row-vector LWW vs per-cell LWW vs per-cell text CRDT vs hybrid policy; publish
+  different/same-cell task results, wire/apply/snapshot cost, dirty bytes, and identity retention.
+- **Description:** Add stable columns/header cells, cell/column operations, deterministic delete/edit
+  races, structural ingest matching, and current-format snapshot/wire changes without compatibility
+  branches.
+- **Gate:** all different-cell schedules survive; one-cell payload is O(cell), and 20+-column cell
+  edits beat row replacement in encoded bytes and apply latency. Text CRDT cells additionally must
+  keep the 1,000×50 snapshot within 25% of per-cell LWW.
+
+### PR-40: Complete structured Markdown workspace operations
+
+- **PR title:** `feat(workspace): structured creation and mutation for every block kind`
+- **Files/components:** `src/doc/*`, `src/codec/*`, `src/session/*`, `src/workspace.rs`, filesync,
+  lossless fixtures, structured-operation benchmarks, public contract fixture, `CHANGELOG.md`
+- **Dependencies:** PR-36–PR-39
+- **Ablation:** per-kind insertion variants vs validated `BlockDraft` plus focused mutations vs raw
+  fragment patching; separately compare whole-value and text-CRDT code bodies.
+- **Description:** Complete list/list-item/task metadata, quote wrap/unwrap, code-fence, compatible
+  kind conversion, and digest-preconditioned opaque raw operations. Enforce nested limits and lower
+  every mutation through the one authoritative session/document model.
+- **Gate:** every `BlockKind` passes create/edit/exchange/reopen/export; 100% unaffected identity
+  retention; scoped structured workflows reduce both dirty and request bytes versus raw refresh.
+
 ---
 
 ### PR dependency graph
@@ -2212,6 +2760,15 @@ flowchart LR
   PR32 --> PR35[PR-35 compatibility purge]
   PR33 --> PR35
   PR34 --> PR35
+  PR35 --> PR36[PR-36 anchored scoped edits]
+  PR36 --> PR37[PR-37 bounded projections]
+  PR37 --> PR38[PR-38 hierarchy cursors]
+  PR36 --> PR39[PR-39 cell tables]
+  PR38 --> PR39
+  PR36 --> PR40[PR-40 structured operations]
+  PR37 --> PR40
+  PR38 --> PR40
+  PR39 --> PR40
 ```
 
 **MVP merge set:** PR-01 … PR-04 + PR-06a/06b + PR-07 (A, A′, B, C). **PR-05 optional.** **PR-06b alone is not a release gate.**  
@@ -2224,6 +2781,9 @@ flowchart LR
 **Agent workspace:** PR-29 … PR-31.  
 **Long-running hardening and release:** PR-32 … PR-35.
 
+**Agent manipulation optimization:** PR-36 … PR-40. Each PR includes its baseline, ablation report,
+selected implementation, benchmark evidence, and refreshed current-only contract fixture.
+
 ---
 
-*End of design document (revision 12 — repository hardening complete; joint consumer gate pending).*
+*End of design document (revision 14 — Phase M complete; Phases N–Q planned).*

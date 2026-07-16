@@ -1,6 +1,6 @@
 //! Concrete, transport-agnostic workspace contract types.
 
-use crate::core::mark::{MarkKind, MarkValue};
+use crate::core::mark::{Anchor, AnchorBias, MarkKind, MarkValue};
 use crate::core::{OpId, Sequence};
 use crate::doc::{
     Block, BlockId, BlockKind, ColumnAlignment, ColumnDef, Document, ListItem, RowId,
@@ -9,6 +9,7 @@ use crate::doc::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::ops::Range;
 use uuid::Uuid;
 
 macro_rules! persistent_id {
@@ -168,6 +169,250 @@ pub struct RemoteApplyOutcome {
     pub changes: ChangeSummary,
 }
 
+/// Stable position within one text-bearing block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextPosition {
+    Start,
+    End,
+    Unit(Anchor),
+}
+
+/// Stable text position tied to one logical block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextPoint {
+    pub block_id: BlockId,
+    pub position: TextPosition,
+}
+
+/// Stable half-open text range. Both endpoints must address the same block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextRange {
+    pub start: TextPoint,
+    pub end: TextPoint,
+}
+
+/// Compact field selector for owned block projections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProjectionFields(u16);
+
+impl ProjectionFields {
+    pub const NONE: Self = Self(0);
+    pub const KIND: Self = Self(1 << 0);
+    pub const TEXT: Self = Self(1 << 1);
+    pub const MARKS: Self = Self(1 << 2);
+    pub const STRUCTURE: Self = Self(1 << 3);
+    pub const CONTENT_DIGEST: Self = Self(1 << 4);
+    pub const TEXT_POINTS: Self = Self(1 << 5);
+    pub const EXACT_MARKDOWN: Self = Self(1 << 6);
+    pub const ALL: Self = Self(
+        Self::KIND.0
+            | Self::TEXT.0
+            | Self::MARKS.0
+            | Self::STRUCTURE.0
+            | Self::CONTENT_DIGEST.0
+            | Self::TEXT_POINTS.0
+            | Self::EXACT_MARKDOWN.0,
+    );
+    pub const MINIMAL: Self = Self(Self::KIND.0 | Self::CONTENT_DIGEST.0);
+    pub const SEMANTIC: Self = Self(
+        Self::KIND.0
+            | Self::TEXT.0
+            | Self::MARKS.0
+            | Self::STRUCTURE.0
+            | Self::CONTENT_DIGEST.0
+            | Self::TEXT_POINTS.0,
+    );
+    pub const EXACT: Self = Self(Self::EXACT_MARKDOWN.0);
+
+    pub const fn contains(self, field: Self) -> bool {
+        self.0 & field.0 == field.0
+    }
+
+    const fn is_valid(self) -> bool {
+        self.0 & !Self::ALL.0 == 0
+    }
+}
+
+impl std::ops::BitOr for ProjectionFields {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+/// Stateless continuation bound to one exact projection request shape.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProjectionContinuation {
+    request_digest: [u8; 16],
+    offset: u64,
+}
+
+/// Bounded, ordered projection request for selected logical block identities.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionRequest {
+    pub document_id: DocumentId,
+    pub base_revision: RevisionToken,
+    pub block_ids: Vec<BlockId>,
+    pub fields: ProjectionFields,
+    pub max_items: usize,
+    pub max_bytes: usize,
+    pub continuation: Option<ProjectionContinuation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlockProjectionKind {
+    Paragraph,
+    Heading { level: u8 },
+    List { ordered: bool },
+    ListItem,
+    CodeFence { info: Option<String> },
+    BlockQuote,
+    RawBlock,
+    Table,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedTableRow {
+    pub id: RowId,
+    pub cells: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlockProjectionStructure {
+    Children {
+        block_ids: Vec<BlockId>,
+    },
+    ListItems {
+        item_ids: Vec<BlockId>,
+    },
+    Table {
+        columns: Vec<ColumnDef>,
+        header: Vec<String>,
+        rows: Vec<ProjectedTableRow>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedMark {
+    pub range: TextRange,
+    pub kind: MarkKind,
+    pub attrs: BTreeMap<String, MarkValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExactMarkdownProjection {
+    pub owner_block_id: BlockId,
+    pub markdown: String,
+}
+
+/// Owned semantic view of one selected block or list-item identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockProjection {
+    pub id: BlockId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<BlockProjectionKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marks: Option<Vec<ProjectedMark>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structure: Option<BlockProjectionStructure>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_digest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_ranges: Option<Vec<TextRange>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact: Option<ExactMarkdownProjection>,
+}
+
+/// One hard-bounded serialized page of selected block projections.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionPage {
+    pub document_id: DocumentId,
+    pub revision: RevisionToken,
+    pub items: Vec<BlockProjection>,
+    pub omitted_ids: Vec<BlockId>,
+    pub continuation: Option<ProjectionContinuation>,
+    pub bytes_used: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProjectionError {
+    #[error("projection limits must both be greater than zero")]
+    InvalidLimits,
+    #[error("projection field mask contains unknown fields")]
+    UnknownFields,
+    #[error("duplicate projection block id: {block_id}")]
+    DuplicateBlockId { block_id: BlockId },
+    #[error("projection continuation does not match the request")]
+    InvalidContinuation,
+    #[error("projection item {block_id} requires {required_bytes} bytes, limit is {max_bytes}")]
+    ItemTooLarge {
+        block_id: BlockId,
+        required_bytes: usize,
+        max_bytes: usize,
+    },
+    #[error("projection page requires {required_bytes} bytes, limit is {max_bytes}")]
+    PageTooLarge {
+        block_id: Option<BlockId>,
+        required_bytes: usize,
+        max_bytes: usize,
+    },
+    #[error("projection serialization failed")]
+    Serialization,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum WorkspaceTargetError {
+    #[error("block not found: {block_id}")]
+    BlockNotFound { block_id: BlockId },
+    #[error("block is not text-bearing: {block_id}")]
+    NotText { block_id: BlockId },
+    #[error("text offset {offset} is outside block {block_id}")]
+    InvalidOffset { block_id: BlockId, offset: usize },
+    #[error("text range endpoints must address the same block in forward order")]
+    InvalidRange,
+    #[error("anchor {anchor:?} belongs to block {actual_block_id}, not {block_id}")]
+    WrongBlock {
+        block_id: BlockId,
+        actual_block_id: BlockId,
+        anchor: OpId,
+    },
+    #[error("anchor {anchor:?} was deleted from block {block_id}")]
+    DeletedAnchor { block_id: BlockId, anchor: OpId },
+    #[error("anchor {anchor:?} is unknown in block {block_id}")]
+    UnknownAnchor { block_id: BlockId, anchor: OpId },
+    #[error("anchor {anchor:?} has multiple candidate blocks when resolving from {block_id}")]
+    AmbiguousAnchor {
+        block_id: BlockId,
+        anchor: OpId,
+        candidate_blocks: Vec<BlockId>,
+    },
+    #[error("workspace target precondition no longer matches")]
+    PreconditionMismatch,
+}
+
+/// One scoped optimistic-concurrency assertion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TargetPrecondition {
+    Text {
+        range: TextRange,
+        content_digest: u64,
+    },
+    Block {
+        block_id: BlockId,
+        content_digest: u64,
+    },
+    Placement {
+        block_id: Option<BlockId>,
+        parent: Option<BlockId>,
+        after: Option<BlockId>,
+        structural_digest: u64,
+    },
+}
+
 /// Stable, identity-targeted edit operations accepted by atomic workspace batches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceEdit {
@@ -186,19 +431,14 @@ pub enum WorkspaceEdit {
         block_id: BlockId,
     },
     InsertText {
-        block_id: BlockId,
-        grapheme_offset: usize,
+        at: TextPoint,
         text: String,
     },
     DeleteText {
-        block_id: BlockId,
-        grapheme_offset: usize,
-        grapheme_count: usize,
+        range: TextRange,
     },
     SetMark {
-        block_id: BlockId,
-        start: usize,
-        end: usize,
+        range: TextRange,
         kind: MarkKind,
         attrs: BTreeMap<String, MarkValue>,
     },
@@ -220,8 +460,7 @@ pub enum WorkspaceEdit {
         after: Option<BlockId>,
     },
     SplitBlock {
-        block_id: BlockId,
-        grapheme_offset: usize,
+        at: TextPoint,
     },
     MergeBlocks {
         left_id: BlockId,
@@ -259,12 +498,35 @@ pub enum WorkspaceEdit {
     },
 }
 
-/// Concrete single-document batch applied against one exact revision.
+/// One ordered workspace operation and its scoped concurrency assertions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceMutation {
+    pub edit: WorkspaceEdit,
+    pub preconditions: Vec<TargetPrecondition>,
+}
+
+impl WorkspaceMutation {
+    pub fn strict(edit: WorkspaceEdit) -> Self {
+        Self {
+            edit,
+            preconditions: Vec::new(),
+        }
+    }
+
+    pub fn scoped(edit: WorkspaceEdit, preconditions: Vec<TargetPrecondition>) -> Self {
+        Self {
+            edit,
+            preconditions,
+        }
+    }
+}
+
+/// Concrete single-document batch applied against a base revision and scoped targets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditBatch {
     pub document_id: DocumentId,
-    pub expected_revision: RevisionToken,
-    pub operations: Vec<WorkspaceEdit>,
+    pub base_revision: RevisionToken,
+    pub operations: Vec<WorkspaceMutation>,
 }
 
 /// Opaque binding of an exact revision to an exact batch operation sequence.
@@ -356,6 +618,427 @@ enum DescriptorChildren<'a> {
 }
 
 impl Document {
+    pub fn text_point(
+        &self,
+        block_id: BlockId,
+        grapheme_offset: usize,
+    ) -> Result<TextPoint, WorkspaceTargetError> {
+        let text = self.text_sequence(block_id)?;
+        let ids = paragraph_visible_ids(text);
+        if grapheme_offset > ids.len() {
+            return Err(WorkspaceTargetError::InvalidOffset {
+                block_id,
+                offset: grapheme_offset,
+            });
+        }
+        let position = if grapheme_offset == 0 {
+            TextPosition::Start
+        } else if grapheme_offset == ids.len() {
+            TextPosition::End
+        } else {
+            TextPosition::Unit(Anchor {
+                elem_id: ids[grapheme_offset],
+                bias: AnchorBias::Before,
+            })
+        };
+        Ok(TextPoint { block_id, position })
+    }
+
+    pub fn text_range(
+        &self,
+        block_id: BlockId,
+        range: Range<usize>,
+    ) -> Result<TextRange, WorkspaceTargetError> {
+        let text = self.text_sequence(block_id)?;
+        text_range_for_sequence(block_id, text, range)
+    }
+
+    pub fn resolve_text_point(&self, point: &TextPoint) -> Result<usize, WorkspaceTargetError> {
+        let text = self.text_sequence(point.block_id)?;
+        match point.position {
+            TextPosition::Start => Ok(0),
+            TextPosition::End => Ok(text.len_visible()),
+            TextPosition::Unit(anchor) => {
+                let Some(element) = text.get_element(&anchor.elem_id) else {
+                    let candidate_blocks = self.text_unit_owners(anchor.elem_id);
+                    if candidate_blocks.len() > 1 {
+                        return Err(WorkspaceTargetError::AmbiguousAnchor {
+                            block_id: point.block_id,
+                            anchor: anchor.elem_id,
+                            candidate_blocks,
+                        });
+                    }
+                    if let Some(actual_block_id) = candidate_blocks.first().copied() {
+                        return Err(WorkspaceTargetError::WrongBlock {
+                            block_id: point.block_id,
+                            actual_block_id,
+                            anchor: anchor.elem_id,
+                        });
+                    }
+                    return Err(WorkspaceTargetError::UnknownAnchor {
+                        block_id: point.block_id,
+                        anchor: anchor.elem_id,
+                    });
+                };
+                if element.value.is_none() {
+                    return Err(WorkspaceTargetError::DeletedAnchor {
+                        block_id: point.block_id,
+                        anchor: anchor.elem_id,
+                    });
+                }
+                let ids = paragraph_visible_ids(text);
+                let index = ids.iter().position(|id| *id == anchor.elem_id).ok_or(
+                    WorkspaceTargetError::DeletedAnchor {
+                        block_id: point.block_id,
+                        anchor: anchor.elem_id,
+                    },
+                )?;
+                Ok(match anchor.bias {
+                    AnchorBias::Before => index,
+                    AnchorBias::After => index + 1,
+                })
+            }
+        }
+    }
+
+    pub fn resolve_text_range(
+        &self,
+        range: &TextRange,
+    ) -> Result<Range<usize>, WorkspaceTargetError> {
+        if range.start.block_id != range.end.block_id {
+            return Err(WorkspaceTargetError::InvalidRange);
+        }
+        let start = self.resolve_text_point(&range.start)?;
+        let end = self.resolve_text_point(&range.end)?;
+        if start > end {
+            return Err(WorkspaceTargetError::InvalidRange);
+        }
+        Ok(start..end)
+    }
+
+    pub fn preconditions_for_edit(
+        &self,
+        edit: &WorkspaceEdit,
+    ) -> Result<Vec<TargetPrecondition>, WorkspaceTargetError> {
+        let mut preconditions = Vec::new();
+        match edit {
+            WorkspaceEdit::InsertParagraph { parent, after, .. }
+            | WorkspaceEdit::InsertHeading { parent, after, .. }
+            | WorkspaceEdit::InsertTable { parent, after, .. } => {
+                preconditions.push(self.placement_precondition(None, *parent, *after)?);
+            }
+            WorkspaceEdit::DeleteBlock { block_id } => {
+                preconditions.push(self.block_precondition(*block_id)?);
+                preconditions.push(self.current_placement_precondition(*block_id)?);
+            }
+            WorkspaceEdit::InsertText { at, .. } | WorkspaceEdit::SplitBlock { at } => {
+                self.resolve_text_point(at)?;
+                preconditions.push(self.block_precondition(at.block_id)?);
+            }
+            WorkspaceEdit::DeleteText { range } | WorkspaceEdit::SetMark { range, .. } => {
+                preconditions.push(self.text_precondition(*range)?);
+            }
+            WorkspaceEdit::RemoveMark { block_id, .. } => {
+                preconditions.push(self.block_precondition(*block_id)?);
+            }
+            WorkspaceEdit::SetFrontmatterField { .. } => {}
+            WorkspaceEdit::MoveBlock {
+                block_id,
+                parent,
+                after,
+            } => {
+                preconditions.push(self.block_precondition(*block_id)?);
+                preconditions.push(self.current_placement_precondition(*block_id)?);
+                preconditions.push(self.placement_precondition(None, *parent, *after)?);
+            }
+            WorkspaceEdit::MoveSection { heading_id, after } => {
+                preconditions.push(self.block_precondition(*heading_id)?);
+                let source = self.current_placement_precondition(*heading_id)?;
+                let TargetPrecondition::Placement { parent, .. } = &source else {
+                    return Err(WorkspaceTargetError::PreconditionMismatch);
+                };
+                let parent = *parent;
+                preconditions.push(source);
+                preconditions.push(self.placement_precondition(None, parent, *after)?);
+            }
+            WorkspaceEdit::MergeBlocks { left_id, right_id } => {
+                preconditions.push(self.block_precondition(*left_id)?);
+                preconditions.push(self.block_precondition(*right_id)?);
+                preconditions.push(self.current_placement_precondition(*left_id)?);
+                preconditions.push(self.current_placement_precondition(*right_id)?);
+            }
+            WorkspaceEdit::InsertTableRow { table_id, .. }
+            | WorkspaceEdit::SetTableRowCells { table_id, .. }
+            | WorkspaceEdit::DeleteTableRow { table_id, .. }
+            | WorkspaceEdit::SetTableMetadata { table_id, .. }
+            | WorkspaceEdit::MoveTableRow { table_id, .. } => {
+                preconditions.push(self.block_precondition(*table_id)?);
+            }
+        }
+        Ok(preconditions)
+    }
+
+    pub(crate) fn projection_page(
+        &self,
+        request: &ProjectionRequest,
+        revision: RevisionToken,
+    ) -> Result<ProjectionPage, ProjectionError> {
+        if request.max_items == 0 || request.max_bytes == 0 {
+            return Err(ProjectionError::InvalidLimits);
+        }
+        if !request.fields.is_valid() {
+            return Err(ProjectionError::UnknownFields);
+        }
+        let mut unique = BTreeSet::new();
+        for block_id in &request.block_ids {
+            if !unique.insert(*block_id) {
+                return Err(ProjectionError::DuplicateBlockId {
+                    block_id: *block_id,
+                });
+            }
+        }
+        let request_digest = projection_request_digest(request)?;
+        let offset = match &request.continuation {
+            Some(continuation) if continuation.request_digest == request_digest => {
+                usize::try_from(continuation.offset)
+                    .ok()
+                    .filter(|offset| *offset <= request.block_ids.len())
+                    .ok_or(ProjectionError::InvalidContinuation)?
+            }
+            Some(_) => return Err(ProjectionError::InvalidContinuation),
+            None => 0,
+        };
+        let page_targets: BTreeSet<_> = request.block_ids[offset..]
+            .iter()
+            .take(request.max_items)
+            .copied()
+            .collect();
+        let mut selected_nodes = BTreeMap::new();
+        collect_projection_nodes(self.blocks(), &page_targets, &mut selected_nodes);
+        let mut page = ProjectionPage {
+            document_id: request.document_id,
+            revision,
+            items: Vec::with_capacity(request.max_items.min(request.block_ids.len() - offset)),
+            omitted_ids: Vec::new(),
+            continuation: projection_continuation(request_digest, offset, request.block_ids.len()),
+            bytes_used: 0,
+        };
+        stabilize_projection_bytes(&mut page)?;
+        if page.bytes_used > request.max_bytes {
+            return Err(ProjectionError::PageTooLarge {
+                block_id: request.block_ids.get(offset).copied(),
+                required_bytes: page.bytes_used,
+                max_bytes: request.max_bytes,
+            });
+        }
+
+        let mut index = offset;
+        let mut processed = 0usize;
+        while index < request.block_ids.len() && processed < request.max_items {
+            let block_id = request.block_ids[index];
+            let projection = selected_nodes
+                .get(&block_id)
+                .copied()
+                .map(|node| self.project_node(node, request.fields))
+                .transpose()?;
+            let found = projection.is_some();
+            match projection {
+                Some(projection) => page.items.push(projection),
+                None => page.omitted_ids.push(block_id),
+            }
+            index += 1;
+            page.continuation =
+                projection_continuation(request_digest, index, request.block_ids.len());
+            stabilize_projection_bytes(&mut page)?;
+            if page.bytes_used > request.max_bytes {
+                if found {
+                    page.items.pop();
+                } else {
+                    page.omitted_ids.pop();
+                }
+                index -= 1;
+                page.continuation =
+                    projection_continuation(request_digest, index, request.block_ids.len());
+                let required_bytes = page.bytes_used;
+                stabilize_projection_bytes(&mut page)?;
+                if processed == 0 {
+                    return Err(ProjectionError::ItemTooLarge {
+                        block_id,
+                        required_bytes,
+                        max_bytes: request.max_bytes,
+                    });
+                }
+                break;
+            }
+            processed += 1;
+        }
+        page.continuation = projection_continuation(request_digest, index, request.block_ids.len());
+        stabilize_projection_bytes(&mut page)?;
+        Ok(page)
+    }
+
+    fn project_node(
+        &self,
+        node: ProjectionNode<'_>,
+        fields: ProjectionFields,
+    ) -> Result<BlockProjection, ProjectionError> {
+        let id = node.id();
+        let kind = fields
+            .contains(ProjectionFields::KIND)
+            .then(|| projection_kind(node));
+        let text = fields
+            .contains(ProjectionFields::TEXT)
+            .then(|| projection_visible_text(node));
+        let marks = fields
+            .contains(ProjectionFields::MARKS)
+            .then(|| {
+                let mut marks = Vec::new();
+                collect_projection_marks(node, &mut marks)?;
+                Ok(marks)
+            })
+            .transpose()?;
+        let structure = fields
+            .contains(ProjectionFields::STRUCTURE)
+            .then(|| projection_structure(node))
+            .flatten();
+        let content_digest = fields
+            .contains(ProjectionFields::CONTENT_DIGEST)
+            .then(|| projection_node_digest(node));
+        let text_ranges = fields
+            .contains(ProjectionFields::TEXT_POINTS)
+            .then(|| {
+                let mut ranges = Vec::new();
+                collect_projection_text_ranges(node, &mut ranges)?;
+                Ok(ranges)
+            })
+            .transpose()?;
+        let exact = fields
+            .contains(ProjectionFields::EXACT_MARKDOWN)
+            .then(|| {
+                self.projection_exact_region(id)
+                    .map(|(owner_block_id, markdown)| ExactMarkdownProjection {
+                        owner_block_id,
+                        markdown,
+                    })
+            })
+            .flatten();
+        Ok(BlockProjection {
+            id,
+            kind,
+            text,
+            marks,
+            structure,
+            content_digest,
+            text_ranges,
+            exact,
+        })
+    }
+
+    fn text_sequence(
+        &self,
+        block_id: BlockId,
+    ) -> Result<&Sequence<crate::doc::TextUnit>, WorkspaceTargetError> {
+        let block = self
+            .find_block_by_id(block_id)
+            .ok_or(WorkspaceTargetError::BlockNotFound { block_id })?;
+        block_text_seq(&block.kind).ok_or(WorkspaceTargetError::NotText { block_id })
+    }
+
+    fn text_unit_owners(&self, elem_id: OpId) -> Vec<BlockId> {
+        capture_outline(self)
+            .entries
+            .keys()
+            .filter_map(|block_id| {
+                let block = self.find_block_by_id(*block_id)?;
+                block_text_seq(&block.kind)
+                    .and_then(|text| text.get_element(&elem_id))
+                    .map(|_| *block_id)
+            })
+            .collect()
+    }
+
+    fn block_precondition(
+        &self,
+        block_id: BlockId,
+    ) -> Result<TargetPrecondition, WorkspaceTargetError> {
+        let block = self
+            .find_block_by_id(block_id)
+            .ok_or(WorkspaceTargetError::BlockNotFound { block_id })?;
+        Ok(TargetPrecondition::Block {
+            block_id,
+            content_digest: block_digest(block),
+        })
+    }
+
+    fn text_precondition(
+        &self,
+        range: TextRange,
+    ) -> Result<TargetPrecondition, WorkspaceTargetError> {
+        Ok(TargetPrecondition::Text {
+            range,
+            content_digest: text_range_digest(self, &range)?,
+        })
+    }
+
+    fn current_placement_precondition(
+        &self,
+        block_id: BlockId,
+    ) -> Result<TargetPrecondition, WorkspaceTargetError> {
+        let outline = capture_outline(self);
+        let entry = outline
+            .entries
+            .get(&block_id)
+            .ok_or(WorkspaceTargetError::BlockNotFound { block_id })?;
+        let parent = entry.descriptor.parent;
+        let after = outline
+            .entries
+            .values()
+            .filter(|candidate| {
+                candidate.descriptor.parent == parent
+                    && candidate.descriptor.order < entry.descriptor.order
+            })
+            .max_by_key(|candidate| candidate.descriptor.order)
+            .map(|candidate| candidate.descriptor.id);
+        self.placement_precondition(Some(block_id), parent, after)
+    }
+
+    fn placement_precondition(
+        &self,
+        block_id: Option<BlockId>,
+        parent: Option<BlockId>,
+        after: Option<BlockId>,
+    ) -> Result<TargetPrecondition, WorkspaceTargetError> {
+        let outline = capture_outline(self);
+        if let Some(parent_id) = parent {
+            match find_descriptor_children(self.blocks(), parent_id) {
+                Some(DescriptorChildren::Blocks(_)) => {}
+                Some(DescriptorChildren::Items(_) | DescriptorChildren::Empty) => {
+                    return Err(WorkspaceTargetError::PreconditionMismatch);
+                }
+                None => {
+                    return Err(WorkspaceTargetError::BlockNotFound {
+                        block_id: parent_id,
+                    });
+                }
+            }
+        }
+        if let Some(after_id) = after {
+            let after_entry = outline
+                .entries
+                .get(&after_id)
+                .ok_or(WorkspaceTargetError::BlockNotFound { block_id: after_id })?;
+            if after_entry.descriptor.parent != parent {
+                return Err(WorkspaceTargetError::PreconditionMismatch);
+            }
+        }
+        Ok(TargetPrecondition::Placement {
+            block_id,
+            parent,
+            after,
+            structural_digest: placement_digest(&outline, parent),
+        })
+    }
+
     /// Return at most `limit` body-free descriptors for direct children of `parent`.
     ///
     /// `None` addresses the document root. A blockquote or list item exposes block
@@ -404,6 +1087,318 @@ impl Document {
             items,
         })
     }
+}
+
+#[derive(Clone, Copy)]
+enum ProjectionNode<'a> {
+    Block(&'a Block),
+    ListItem(&'a ListItem),
+}
+
+impl ProjectionNode<'_> {
+    fn id(self) -> BlockId {
+        match self {
+            Self::Block(block) => block.id,
+            Self::ListItem(item) => item.id,
+        }
+    }
+}
+
+fn collect_projection_nodes<'a>(
+    blocks: &'a Sequence<Block>,
+    targets: &BTreeSet<BlockId>,
+    selected: &mut BTreeMap<BlockId, ProjectionNode<'a>>,
+) {
+    if selected.len() == targets.len() {
+        return;
+    }
+    for block in blocks.iter() {
+        if targets.contains(&block.id) {
+            selected.insert(block.id, ProjectionNode::Block(block));
+        }
+        if selected.len() == targets.len() {
+            return;
+        }
+        match &block.kind {
+            BlockKind::BlockQuote { children } => {
+                collect_projection_nodes(children, targets, selected);
+                if selected.len() == targets.len() {
+                    return;
+                }
+            }
+            BlockKind::List { items, .. } => {
+                for item in items.iter() {
+                    if targets.contains(&item.id) {
+                        selected.insert(item.id, ProjectionNode::ListItem(item));
+                    }
+                    if selected.len() == targets.len() {
+                        return;
+                    }
+                    collect_projection_nodes(&item.children, targets, selected);
+                    if selected.len() == targets.len() {
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn projection_kind(node: ProjectionNode<'_>) -> BlockProjectionKind {
+    match node {
+        ProjectionNode::ListItem(_) => BlockProjectionKind::ListItem,
+        ProjectionNode::Block(block) => match &block.kind {
+            BlockKind::Paragraph { .. } => BlockProjectionKind::Paragraph,
+            BlockKind::Heading { level, .. } => BlockProjectionKind::Heading { level: *level },
+            BlockKind::List { ordered, .. } => BlockProjectionKind::List { ordered: *ordered },
+            BlockKind::CodeFence { info, .. } => {
+                BlockProjectionKind::CodeFence { info: info.clone() }
+            }
+            BlockKind::BlockQuote { .. } => BlockProjectionKind::BlockQuote,
+            BlockKind::RawBlock { .. } => BlockProjectionKind::RawBlock,
+            BlockKind::Table { .. } => BlockProjectionKind::Table,
+        },
+    }
+}
+
+fn projection_visible_text(node: ProjectionNode<'_>) -> String {
+    match node {
+        ProjectionNode::ListItem(item) => projection_blocks_text(&item.children),
+        ProjectionNode::Block(block) => match &block.kind {
+            BlockKind::Paragraph { text } | BlockKind::Heading { text, .. } => {
+                crate::doc::paragraph_visible_string(text)
+            }
+            BlockKind::List { items, .. } => items
+                .iter()
+                .map(|item| projection_blocks_text(&item.children))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            BlockKind::CodeFence { text, .. } => text.clone(),
+            BlockKind::BlockQuote { children } => projection_blocks_text(children),
+            BlockKind::RawBlock { raw } => raw.clone(),
+            BlockKind::Table { table } => {
+                table.header.get_ref().join("\t")
+                    + &table
+                        .rows
+                        .iter()
+                        .filter(|row| !*row.deleted.get_ref())
+                        .map(|row| format!("\n{}", row.cells.get_ref().join("\t")))
+                        .collect::<String>()
+            }
+        },
+    }
+}
+
+fn projection_blocks_text(blocks: &Sequence<Block>) -> String {
+    blocks
+        .iter()
+        .map(|block| projection_visible_text(ProjectionNode::Block(block)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn projection_structure(node: ProjectionNode<'_>) -> Option<BlockProjectionStructure> {
+    match node {
+        ProjectionNode::ListItem(item) => Some(BlockProjectionStructure::Children {
+            block_ids: item.children.iter().map(|block| block.id).collect(),
+        }),
+        ProjectionNode::Block(block) => match &block.kind {
+            BlockKind::BlockQuote { children } => Some(BlockProjectionStructure::Children {
+                block_ids: children.iter().map(|child| child.id).collect(),
+            }),
+            BlockKind::List { items, .. } => Some(BlockProjectionStructure::ListItems {
+                item_ids: items.iter().map(|item| item.id).collect(),
+            }),
+            BlockKind::Table { table } => Some(BlockProjectionStructure::Table {
+                columns: table.columns.get_ref().clone(),
+                header: table.header.get_ref().clone(),
+                rows: table
+                    .rows
+                    .iter()
+                    .filter(|row| !*row.deleted.get_ref())
+                    .map(|row| ProjectedTableRow {
+                        id: row.id,
+                        cells: row.cells.get_ref().clone(),
+                    })
+                    .collect(),
+            }),
+            _ => None,
+        },
+    }
+}
+
+fn text_range_for_sequence(
+    block_id: BlockId,
+    text: &Sequence<crate::doc::TextUnit>,
+    range: Range<usize>,
+) -> Result<TextRange, WorkspaceTargetError> {
+    let ids = paragraph_visible_ids(text);
+    if range.start > range.end || range.end > ids.len() {
+        return Err(WorkspaceTargetError::InvalidRange);
+    }
+    let point = |offset: usize, end: bool| TextPoint {
+        block_id,
+        position: if offset == 0 {
+            TextPosition::Start
+        } else if offset == ids.len() {
+            TextPosition::End
+        } else {
+            TextPosition::Unit(Anchor {
+                elem_id: ids[if end { offset - 1 } else { offset }],
+                bias: if end {
+                    AnchorBias::After
+                } else {
+                    AnchorBias::Before
+                },
+            })
+        },
+    };
+    Ok(TextRange {
+        start: point(range.start, false),
+        end: point(range.end, true),
+    })
+}
+
+fn collect_projection_marks(
+    node: ProjectionNode<'_>,
+    output: &mut Vec<ProjectedMark>,
+) -> Result<(), ProjectionError> {
+    match node {
+        ProjectionNode::ListItem(item) => {
+            for child in item.children.iter() {
+                collect_projection_marks(ProjectionNode::Block(child), output)?;
+            }
+        }
+        ProjectionNode::Block(block) => {
+            if let Some(text) = block_text_seq(&block.kind) {
+                let ids = paragraph_visible_ids(text);
+                for (interval, start, end) in block.marks.resolved_intervals(&ids) {
+                    let range = text_range_for_sequence(block.id, text, start..end)
+                        .map_err(|_| ProjectionError::Serialization)?;
+                    output.push(ProjectedMark {
+                        range,
+                        kind: interval.kind.clone(),
+                        attrs: interval
+                            .attrs
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.get_ref().clone()))
+                            .collect(),
+                    });
+                }
+            }
+            match &block.kind {
+                BlockKind::BlockQuote { children } => {
+                    for child in children.iter() {
+                        collect_projection_marks(ProjectionNode::Block(child), output)?;
+                    }
+                }
+                BlockKind::List { items, .. } => {
+                    for item in items.iter() {
+                        collect_projection_marks(ProjectionNode::ListItem(item), output)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_projection_text_ranges(
+    node: ProjectionNode<'_>,
+    output: &mut Vec<TextRange>,
+) -> Result<(), ProjectionError> {
+    match node {
+        ProjectionNode::ListItem(item) => {
+            for child in item.children.iter() {
+                collect_projection_text_ranges(ProjectionNode::Block(child), output)?;
+            }
+        }
+        ProjectionNode::Block(block) => {
+            if let Some(text) = block_text_seq(&block.kind) {
+                output.push(
+                    text_range_for_sequence(block.id, text, 0..text.len_visible())
+                        .map_err(|_| ProjectionError::Serialization)?,
+                );
+            }
+            match &block.kind {
+                BlockKind::BlockQuote { children } => {
+                    for child in children.iter() {
+                        collect_projection_text_ranges(ProjectionNode::Block(child), output)?;
+                    }
+                }
+                BlockKind::List { items, .. } => {
+                    for item in items.iter() {
+                        collect_projection_text_ranges(ProjectionNode::ListItem(item), output)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn projection_node_digest(node: ProjectionNode<'_>) -> u64 {
+    match node {
+        ProjectionNode::Block(block) => block_digest(block),
+        ProjectionNode::ListItem(item) => list_item_digest(item),
+    }
+}
+
+fn list_item_digest(item: &ListItem) -> u64 {
+    let mut digest = StableDigest::new();
+    digest.field(b"list-item");
+    for child in item.children.iter() {
+        digest.field(&block_digest(child).to_le_bytes());
+    }
+    digest.finish()
+}
+
+fn projection_request_digest(request: &ProjectionRequest) -> Result<[u8; 16], ProjectionError> {
+    let encoded = serde_json::to_vec(&(
+        request.document_id,
+        &request.base_revision,
+        &request.block_ids,
+        request.fields,
+        request.max_items,
+        request.max_bytes,
+    ))
+    .map_err(|_| ProjectionError::Serialization)?;
+    Ok(stable_projection_hash(&encoded).to_be_bytes())
+}
+
+fn stable_projection_hash(bytes: &[u8]) -> u128 {
+    const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+    bytes.iter().fold(OFFSET, |hash, byte| {
+        (hash ^ u128::from(*byte)).wrapping_mul(PRIME)
+    })
+}
+
+fn projection_continuation(
+    request_digest: [u8; 16],
+    offset: usize,
+    total: usize,
+) -> Option<ProjectionContinuation> {
+    (offset < total).then(|| ProjectionContinuation {
+        request_digest,
+        offset: u64::try_from(offset).unwrap_or(u64::MAX),
+    })
+}
+
+fn stabilize_projection_bytes(page: &mut ProjectionPage) -> Result<(), ProjectionError> {
+    for _ in 0..usize::BITS {
+        let bytes = serde_json::to_vec(page)
+            .map_err(|_| ProjectionError::Serialization)?
+            .len();
+        if bytes == page.bytes_used {
+            return Ok(());
+        }
+        page.bytes_used = bytes;
+    }
+    Err(ProjectionError::Serialization)
 }
 
 fn find_descriptor_children(
@@ -468,8 +1463,6 @@ fn block_descriptor(
 }
 
 fn list_item_descriptor(item: &ListItem, parent: Option<BlockId>, order: usize) -> BlockDescriptor {
-    let mut digest = StableDigest::new();
-    digest.field(b"list-item");
     BlockDescriptor {
         id: item.id,
         parent,
@@ -478,7 +1471,7 @@ fn list_item_descriptor(item: &ListItem, parent: Option<BlockId>, order: usize) 
         heading_level: None,
         source_bytes: 0,
         text_bytes: 0,
-        content_digest: digest.finish(),
+        content_digest: list_item_digest(item),
     }
 }
 
@@ -549,7 +1542,13 @@ fn block_digest(block: &Block) -> u64 {
             digest.field(info.as_deref().unwrap_or_default().as_bytes());
             digest.field(text.as_bytes());
         }
-        BlockKind::BlockQuote { .. } => digest.field(b"block-quote"),
+        BlockKind::BlockQuote { children } => {
+            digest.field(b"block-quote");
+            for child in children.iter() {
+                digest.field(b"child");
+                digest.field(&block_digest(child).to_le_bytes());
+            }
+        }
         BlockKind::RawBlock { raw } => {
             digest.field(b"raw");
             digest.field(raw.as_bytes());
@@ -563,9 +1562,19 @@ fn block_digest(block: &Block) -> u64 {
                 digest.field(cell.as_bytes());
             }
             for row in table.rows.iter().filter(|row| !*row.deleted.get_ref()) {
+                digest.field(b"row");
                 for cell in row.cells.get_ref() {
                     digest.field(cell.as_bytes());
                 }
+            }
+        }
+    }
+    if let BlockKind::List { items, .. } = &block.kind {
+        for item in items.iter() {
+            digest.field(b"item");
+            for child in item.children.iter() {
+                digest.field(b"child");
+                digest.field(&block_digest(child).to_le_bytes());
             }
         }
     }
@@ -590,6 +1599,41 @@ fn block_digest(block: &Block) -> u64 {
         }
     }
     digest.finish()
+}
+
+fn text_range_digest(document: &Document, range: &TextRange) -> Result<u64, WorkspaceTargetError> {
+    let resolved = document.resolve_text_range(range)?;
+    let block_id = range.start.block_id;
+    let block = document
+        .find_block_by_id(block_id)
+        .ok_or(WorkspaceTargetError::BlockNotFound { block_id })?;
+    let text = block_text_seq(&block.kind).ok_or(WorkspaceTargetError::NotText { block_id })?;
+    let mut digest = StableDigest::new();
+    digest.field(block_id.as_bytes());
+    for unit in text.iter().skip(resolved.start).take(resolved.len()) {
+        digest.field(unit.grapheme.as_bytes());
+    }
+    let ids = paragraph_visible_ids(text);
+    for span in block.marks.render_spans(&ids, ids.len()) {
+        let start = span.start.max(resolved.start);
+        let end = span.end.min(resolved.end);
+        if start >= end {
+            continue;
+        }
+        digest.field(&(start - resolved.start).to_le_bytes());
+        digest.field(&(end - resolved.start).to_le_bytes());
+        for interval_id in span.marks {
+            let Some(interval) = block.marks.interval(&interval_id) else {
+                continue;
+            };
+            hash_mark_kind(&mut digest, &interval.kind);
+            for (key, value) in &interval.attrs {
+                digest.field(key.as_bytes());
+                hash_mark_value(&mut digest, value.get_ref());
+            }
+        }
+    }
+    Ok(digest.finish())
 }
 
 fn alignment_tag(alignment: &ColumnAlignment) -> &'static [u8] {
@@ -641,6 +1685,25 @@ pub(crate) fn capture_outline(document: &Document) -> DocumentOutline {
     let mut entries = BTreeMap::new();
     collect_block_outline(document, document.blocks(), None, None, &mut entries);
     DocumentOutline { entries }
+}
+
+fn placement_digest(outline: &DocumentOutline, parent: Option<BlockId>) -> u64 {
+    let mut children: Vec<_> = outline
+        .entries
+        .values()
+        .filter(|entry| entry.descriptor.parent == parent)
+        .map(|entry| (entry.descriptor.order, entry.descriptor.id))
+        .collect();
+    children.sort_by_key(|(order, _)| *order);
+    let mut digest = StableDigest::new();
+    match parent {
+        Some(parent) => digest.field(parent.as_bytes()),
+        None => digest.field(b"document-root"),
+    }
+    for (_, id) in children {
+        digest.field(id.as_bytes());
+    }
+    digest.finish()
 }
 
 fn collect_block_outline(
@@ -852,4 +1915,71 @@ fn longest_increasing_ids(items: &[(BlockId, usize)]) -> BTreeSet<BlockId> {
         cursor = previous[index];
     }
     stationary
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use crate::doc::Parser;
+
+    fn selected_projection_size(blocks: usize) -> usize {
+        let markdown = (0..blocks)
+            .map(|index| format!("item-{index:05}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let document = Parser::parse(&markdown);
+        let id = document.blocks_in_order()[0].id;
+        let request = ProjectionRequest {
+            document_id: DocumentId::from_u128(1),
+            base_revision: RevisionToken::from_u128(2),
+            block_ids: vec![id],
+            fields: ProjectionFields::SEMANTIC,
+            max_items: 1,
+            max_bytes: 1_024,
+            continuation: None,
+        };
+        document
+            .projection_page(&request, request.base_revision.clone())
+            .unwrap()
+            .bytes_used
+    }
+
+    #[test]
+    fn selected_projection_size_does_not_scale_with_document() {
+        let small = selected_projection_size(100);
+        let large = selected_projection_size(10_000);
+        assert_eq!(small, large);
+        assert!(large < 1_024);
+    }
+
+    #[test]
+    fn exact_projection_without_source_uses_the_structural_root() {
+        for markdown in ["plain", "> quoted", "- listed"] {
+            let mut document = Parser::parse(markdown);
+            let root = document.blocks_in_order()[0];
+            let selected_id = match &root.kind {
+                BlockKind::BlockQuote { children } => children.iter().next().unwrap().id,
+                BlockKind::List { items, .. } => items.iter().next().unwrap().id,
+                _ => root.id,
+            };
+            let owner_id = root.id;
+            document.set_source_state(None);
+            let request = ProjectionRequest {
+                document_id: DocumentId::from_u128(1),
+                base_revision: RevisionToken::from_u128(2),
+                block_ids: vec![selected_id],
+                fields: ProjectionFields::EXACT,
+                max_items: 1,
+                max_bytes: 1_024,
+                continuation: None,
+            };
+
+            let page = document
+                .projection_page(&request, request.base_revision.clone())
+                .unwrap();
+            let exact = page.items[0].exact.as_ref().unwrap();
+            assert_eq!(exact.owner_block_id, owner_id);
+            assert_eq!(exact.markdown, markdown);
+        }
+    }
 }

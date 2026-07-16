@@ -1,5 +1,5 @@
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "document_handle": {
     "vault_id": "00000000-0000-0000-0000-000000000001",
     "document_id": "00000000-0000-0000-0000-000000000002",
@@ -31,23 +31,42 @@
   },
   "edit_batch": {
     "document_id": "00000000-0000-0000-0000-000000000002",
-    "expected_revision": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
+    "base_revision": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
     "operations": [
-      {"MoveSection": {"heading_id": "00000000-0000-0000-0000-00000000000a", "after": null}},
-      {"InsertTable": {
-        "parent": null,
-        "after": "00000000-0000-0000-0000-00000000000a",
-        "columns": [{"alignment": "Left"}],
-        "header": ["Name"]
-      }},
-      {"SetMark": {
-        "block_id": "00000000-0000-0000-0000-00000000000c",
-        "start": 0,
-        "end": 4,
-        "kind": "Link",
-        "attrs": {"href": {"String": "#target"}}
-      }},
-      {"SetFrontmatterField": {"key": "status", "value": "ready"}}
+      {
+        "edit": {"MoveSection": {"heading_id": "00000000-0000-0000-0000-00000000000a", "after": null}},
+        "preconditions": [{"Block": {"block_id": "00000000-0000-0000-0000-00000000000a", "content_digest": 77}}]
+      },
+      {
+        "edit": {"InsertTable": {
+          "parent": null,
+          "after": "00000000-0000-0000-0000-00000000000a",
+          "columns": [{"alignment": "Left"}],
+          "header": ["Name"]
+        }},
+        "preconditions": []
+      },
+      {
+        "edit": {"SetMark": {
+          "range": {
+            "start": {"block_id": "00000000-0000-0000-0000-00000000000c", "position": "Start"},
+            "end": {"block_id": "00000000-0000-0000-0000-00000000000c", "position": "End"}
+          },
+          "kind": "Link",
+          "attrs": {"href": {"String": "#target"}}
+        }},
+        "preconditions": [{"Text": {
+          "range": {
+            "start": {"block_id": "00000000-0000-0000-0000-00000000000c", "position": "Start"},
+            "end": {"block_id": "00000000-0000-0000-0000-00000000000c", "position": "End"}
+          },
+          "content_digest": 88
+        }}]
+      },
+      {
+        "edit": {"SetFrontmatterField": {"key": "status", "value": "ready"}},
+        "preconditions": []
+      }
     ]
   },
   "batch_preview": {

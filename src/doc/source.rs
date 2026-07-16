@@ -32,6 +32,19 @@ impl DocumentSource {
             .map(|region| region.body_end.saturating_sub(region.body_start))
     }
 
+    pub(crate) fn render_root_region(&self, root: BlockId, block: &Block) -> Option<String> {
+        let region = self.regions.get(&root)?;
+        if self.dirty.contains(&root) {
+            Some(super::serialize::serialize_block(block))
+        } else {
+            Some(self.original[region.body_start..region.body_end].to_string())
+        }
+    }
+
+    pub(crate) fn root_for_block(&self, block_id: BlockId) -> Option<BlockId> {
+        self.root_by_block.get(&block_id).copied()
+    }
+
     pub(crate) fn new(
         original: String,
         spans: Vec<(BlockId, usize, usize)>,

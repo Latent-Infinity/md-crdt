@@ -3,7 +3,8 @@ use md_crdt::{
     CheckpointRequest, ColumnAlignment, ColumnDef, DescriptorPage, DiskFingerprint,
     DocumentExportRequest, DocumentHandle, DocumentId, DocumentTombstonePolicy, EditBatch,
     MarkKind, MarkValue, PeerLease, PreviewToken, RebaseRequired, RecoveryReport, RevisionToken,
-    StateVector, VaultId, WorkspaceEdit,
+    StateVector, TargetPrecondition, TextPoint, TextPosition, TextRange, VaultId, WorkspaceEdit,
+    WorkspaceMutation,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -30,40 +31,60 @@ fn contract_fixture() -> Value {
     };
     let mut attrs = BTreeMap::new();
     attrs.insert("href".into(), MarkValue::String("#target".into()));
+    let marked_range = TextRange {
+        start: TextPoint {
+            block_id: paragraph_id,
+            position: TextPosition::Start,
+        },
+        end: TextPoint {
+            block_id: paragraph_id,
+            position: TextPosition::End,
+        },
+    };
     let batch = EditBatch {
         document_id,
-        expected_revision: revision.clone(),
+        base_revision: revision.clone(),
         operations: vec![
-            WorkspaceEdit::MoveSection {
-                heading_id,
-                after: None,
-            },
-            WorkspaceEdit::InsertTable {
+            WorkspaceMutation::scoped(
+                WorkspaceEdit::MoveSection {
+                    heading_id,
+                    after: None,
+                },
+                vec![TargetPrecondition::Block {
+                    block_id: heading_id,
+                    content_digest: 77,
+                }],
+            ),
+            WorkspaceMutation::strict(WorkspaceEdit::InsertTable {
                 parent: None,
                 after: Some(heading_id),
                 columns: vec![ColumnDef {
                     alignment: ColumnAlignment::Left,
                 }],
                 header: vec!["Name".into()],
-            },
-            WorkspaceEdit::SetMark {
-                block_id: paragraph_id,
-                start: 0,
-                end: 4,
-                kind: MarkKind::Link,
-                attrs,
-            },
-            WorkspaceEdit::SetFrontmatterField {
+            }),
+            WorkspaceMutation::scoped(
+                WorkspaceEdit::SetMark {
+                    range: marked_range,
+                    kind: MarkKind::Link,
+                    attrs,
+                },
+                vec![TargetPrecondition::Text {
+                    range: marked_range,
+                    content_digest: 88,
+                }],
+            ),
+            WorkspaceMutation::strict(WorkspaceEdit::SetFrontmatterField {
                 key: "status".into(),
                 value: Some("ready".into()),
-            },
+            }),
         ],
     };
     let mut acknowledged = StateVector::new();
     acknowledged.set(7, 9);
 
     json!({
-        "contract_version": 1,
+        "contract_version": 2,
         "document_handle": DocumentHandle {
             vault_id,
             document_id,
@@ -124,7 +145,7 @@ fn contract_fixture() -> Value {
 
 #[test]
 fn versioned_workspace_contract_fixture_matches_public_serialization() {
-    let frozen: Value = serde_json::from_str(include_str!("fixtures/workspace-contract-v1.json"))
+    let frozen: Value = serde_json::from_str(include_str!("fixtures/workspace-contract-v2.json"))
         .expect("valid frozen workspace contract fixture");
     assert_eq!(frozen, contract_fixture());
 }
