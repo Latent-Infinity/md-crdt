@@ -5,7 +5,7 @@
 | **Document title** | Architecture Evolution Design for md-crdt |
 | **Author** | Travis Silvers |
 | **Date** | 2026-07-09 |
-| **Status** | Draft (revision 14 — Phase M complete; Phases N–Q planned for lower-token Markdown manipulation) |
+| **Status** | Draft (revision 15 — Phases M–O complete; Phases P–Q planned for lower-token Markdown manipulation) |
 | **Repository** | `/Users/firestrand/Projects/latenty-infinity/md-crdt` |
 | **Current version** | `0.2.1` (pre-1.0; breaking changes allowed with changelog discipline) |
 | **License** | MIT |
@@ -30,6 +30,7 @@
 | **12** | Completed operation-segment integrity, bounded checkpoint/rebase history, a versioned producer fixture, and current-format-only recovery | Bounds long-running state and removes unpublished compatibility branches; the sibling `md-mcp` fixture-consumer and joint token/task gate remain release work |
 | **13** | Added a five-phase post-L roadmap for stable edit anchors, bounded semantic reads, revision-bound descriptor cursors, cell-addressable tables, and complete structured Markdown mutations | The CRDT core converges, but the workspace boundary still causes avoidable stale retries, broad reads, coarse table conflicts, and raw-text fallbacks; every new choice is gated by an ablation and a measurable correctness/performance win |
 | **14** | Completed stable text targets and per-operation scoped preconditions, including replay ablation and a breaking workspace contract v2 fixture | Unrelated edits no longer force reread/retry, while changed text, marks, nested content, placement, deleted anchors, and ambiguous split identities fail closed |
+| **15** | Completed revision-bound hierarchy cursors and node-local semantic summaries, with a breaking workspace contract v3 fixture | Agents can traverse bounded maps without mixed revisions or offset drift; descriptors expose hierarchy size without recursively hashing descendant content |
 
 **Compatibility policy (supersedes earlier migration notes):** completed sections below retain
 historical implementation details, but they are not release requirements. The joint release accepts
@@ -1457,7 +1458,7 @@ After the concrete consumer contract is frozen, remove compatibility code before
   expiry was rejected because it makes the same checkpoint request nondeterministic. Tombstones
   remain `KeepAll`; operation acknowledgements alone do not prove that structural causal metadata
   can be collected safely.
-- `tests/fixtures/workspace-contract-v1.json` freezes the serialized producer contract for the
+- `tests/fixtures/workspace-contract-v3.json` freezes the current serialized producer contract for the
   concrete workspace, edit, receipt, export, recovery, checkpoint, and rebase DTOs. Consuming that
   fixture in `../md-mcp` and running the joint token/task-success gate remain external release work.
 - Only V3 session snapshots and current V2 dual-slot storage are readable. Non-current formats and
@@ -1566,8 +1567,8 @@ regression at equal batch size. If latency misses, profile and optimize before r
 - Block digests include inline marks, tables, list descendants, and blockquote descendants. Text
   digests include the selected graphemes and intersecting resolved marks. Placement digests bind the
   target, parent, predecessor, and ordered direct children.
-- The versioned producer fixture is now `workspace-contract-v2.json`. The old pre-release v1 fixture
-  and offset-bearing edit shape were deleted rather than adapted.
+- Phase M introduced `workspace-contract-v2.json`; Phase O replaced it with the current
+  `workspace-contract-v3.json`. Prior pre-release fixtures were deleted rather than adapted.
 
 | Ablation | Conflict result | First try under unrelated churn | Representative four-op compact JSON | Decision |
 | --- | --- | --- | ---: | --- |
@@ -1683,7 +1684,8 @@ affected blocks transcript totals 3,055 core response bytes.
 
 **Problem:** descriptor pagination uses numeric offsets and pages carry no revision. Concurrent
 insert/move operations can produce duplicates or omissions across calls. Composite/list-item
-descriptors also lack descendant-aware digests, so cached maps cannot skip unchanged subtrees.
+descriptors also conflate node and recursive content, omit hierarchy counts, and make a bounded map
+read pay to hash descendants it did not request.
 
 #### O1 — Cursor and digest contract
 
@@ -1727,8 +1729,9 @@ shipping an expensive cache.
   valid stateless last-id cursor.
 - Mutation tests: insert/delete/move between pages forces restart; restarted traversal matches a
   fresh authoritative outline.
-- Digest tests: semantic descendant changes alter every required ancestor digest; unrelated
-  subtrees remain unchanged; identical semantic trees with different local trivia match.
+- Digest tests: node-local semantic changes alter the node digest; hierarchy counts change for
+  affected ancestors; unrelated nodes remain unchanged; identical semantics with different source
+  trivia match. A selected subtree-digest strategy must additionally prove ancestor propagation.
 - `workspace_hierarchy` benchmarks: wide/deep trees, page sizes 1/32/256, cold and repeated scans,
   plus one-leaf update followed by root-page read. Record latency, allocation, cursor bytes, and
   descriptors skipped by digest.
@@ -1736,6 +1739,39 @@ shipping an expensive cache.
 **Gate:** consistent traversal is proven, cursor size is bounded independently of document size,
 and the selected digest strategy improves repeated map latency or bytes by the ablation threshold
 without making one-leaf mutations exceed the stated budget.
+
+#### Phase O repository implementation outcome
+
+- `DescriptorCursor` is opaque and stateless. Its checksum binds encoding version, document id,
+  revision, parent, direct-child traversal, last logical id, physical continuation hint, and next
+  logical order. The page limit is intentionally unbound, so callers may change it between pages.
+  The physical hint is validated against the last logical id in O(1), avoiding the quadratic scan
+  that would result from hiding a numeric offset in the cursor.
+- `DescriptorPage` carries document id, revision, parent, traversal, items, and the next cursor.
+  Zero limits, missing parents, corrupt cursors, and document/revision/parent/traversal/anchor
+  mismatches are distinct typed failures. Insert, delete, or move between calls invalidates the old
+  cursor; a restart matches the authoritative current outline without duplication or omission.
+- Descriptors expose direct-child and descendant counts, a node-local semantic digest, and
+  `subtree_digest: None`. Node digests include semantic kind/configuration, visible text, tables,
+  and canonicalized active marks while excluding CRDT identities and the presentation-only mark
+  delimiter. Recursive digests remain in projections and scoped block preconditions, so their
+  descendant-conflict guarantees were not weakened.
+- O-B was selected over O-A because offsets cannot bind a revision, and over O-C/O-D because no
+  retained server state or mutation ambiguity is needed for a bounded restart workflow. O-G was
+  selected over O-E: the 64-level recursive control measured 2.8430–2.8982 µs versus
+  1.1362–1.1452 µs for the node-local read. O-F was rejected because it could not satisfy the
+  specified 5× proof without adding ancestor-cache invalidation across every mutation path; the
+  optional subtree digest remains absent.
+- The 10,000-wide benchmark measured full traversal at 27.309–27.958 ms for page size 1,
+  37.580–37.911 ms for 32, and 36.089–36.437 ms for 256. A 32-item page serialized to 8,302 bytes,
+  allocated 19,562 bytes, and emitted a fixed-shape 200-byte opaque JSON cursor. Eliminating unnecessary
+  mark-order materialization and cursor serialization during checksumming reduced page allocation
+  by 96.4% and page-size-1 traversal by 66.2% versus the first correct implementation. The full
+  one-leaf-update plus root-read workflow measured 1.5160–1.5225 s; it is the O-G mutation baseline,
+  and the O-F 20% comparison was not invoked after O-F failed the primary repeated-read criterion.
+  O-G skips zero descriptors by subtree digest because it intentionally ships no subtree cache.
+- The frozen producer contract is `workspace-contract-v3.json`; the deterministic map/read/edit
+  transcript is `workspace-projection-transcript-v2.json`. Prior pre-release fixtures were removed.
 
 ### Phase P — Cell-addressable table collaboration
 

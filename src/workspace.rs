@@ -125,17 +125,240 @@ pub struct BlockDescriptor {
     /// Byte length of this block's region in the last ingested/exported on-disk source.
     /// It reflects the pinned source span, **not** live in-memory edits — after a local
     /// edit `source_bytes` is stale until the next export re-pins the source. Use
-    /// `text_bytes`/`content_digest` (which track live content) to detect edits.
+    /// `text_bytes`/`node_digest` (which track live content) to detect edits.
     pub source_bytes: usize,
     pub text_bytes: usize,
-    pub content_digest: u64,
+    /// Semantic digest of this node only. Descendant content and source trivia are excluded.
+    pub node_digest: u64,
+    pub direct_child_count: u64,
+    pub descendant_count: u64,
+    /// Reserved for a measured, invalidation-safe subtree cache. The current node-local
+    /// strategy deliberately omits it.
+    pub subtree_digest: Option<u64>,
 }
 
-/// One bounded page of direct children under a document or container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DescriptorTraversal {
+    DirectChildren,
+}
+
+/// Opaque continuation for a revision-bound descriptor traversal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescriptorCursor {
+    version: u8,
+    document_id: DocumentId,
+    revision: RevisionToken,
+    parent: Option<BlockId>,
+    traversal: DescriptorTraversal,
+    last_id: BlockId,
+    next_index: u64,
+    next_order: u64,
+    checksum: [u8; 16],
+}
+
+impl DescriptorCursor {
+    const VERSION: u8 = 1;
+    const WIRE_BYTES: usize = 99;
+
+    fn new(
+        document_id: DocumentId,
+        revision: RevisionToken,
+        parent: Option<BlockId>,
+        traversal: DescriptorTraversal,
+        last_id: BlockId,
+        next_index: usize,
+        next_order: usize,
+    ) -> Self {
+        let mut cursor = Self {
+            version: Self::VERSION,
+            document_id,
+            revision,
+            parent,
+            traversal,
+            last_id,
+            next_index: u64::try_from(next_index).unwrap_or(u64::MAX),
+            next_order: u64::try_from(next_order).unwrap_or(u64::MAX),
+            checksum: [0; 16],
+        };
+        cursor.checksum = cursor.expected_checksum();
+        cursor
+    }
+
+    fn expected_checksum(&self) -> [u8; 16] {
+        let mut digest = StableDigest128::new();
+        digest.bytes(&[self.version]);
+        digest.bytes(self.document_id.as_uuid().as_bytes());
+        digest.bytes(self.revision.as_bytes());
+        match self.parent {
+            Some(parent) => {
+                digest.bytes(&[1]);
+                digest.bytes(parent.as_bytes());
+            }
+            None => digest.bytes(&[0]),
+        }
+        digest.bytes(&[match self.traversal {
+            DescriptorTraversal::DirectChildren => 0,
+        }]);
+        digest.bytes(self.last_id.as_bytes());
+        digest.bytes(&self.next_index.to_le_bytes());
+        digest.bytes(&self.next_order.to_le_bytes());
+        digest.finish().to_be_bytes()
+    }
+
+    fn validate(
+        &self,
+        document_id: DocumentId,
+        revision: &RevisionToken,
+        parent: Option<BlockId>,
+        traversal: DescriptorTraversal,
+    ) -> Result<(), DescriptorError> {
+        if self.version != Self::VERSION || self.checksum != self.expected_checksum() {
+            return Err(DescriptorError::CorruptCursor);
+        }
+        if self.document_id != document_id {
+            return Err(DescriptorError::CursorDocumentMismatch {
+                expected: document_id,
+                actual: self.document_id,
+            });
+        }
+        if &self.revision != revision {
+            return Err(DescriptorError::CursorRevisionMismatch {
+                expected: revision.clone(),
+                actual: self.revision.clone(),
+            });
+        }
+        if self.parent != parent {
+            return Err(DescriptorError::CursorParentMismatch {
+                expected: parent,
+                actual: self.parent,
+            });
+        }
+        if self.traversal != traversal {
+            return Err(DescriptorError::CursorTraversalMismatch);
+        }
+        Ok(())
+    }
+
+    fn wire_bytes(&self) -> [u8; Self::WIRE_BYTES] {
+        let mut bytes = [0; Self::WIRE_BYTES];
+        bytes[0] = self.version;
+        bytes[1..17].copy_from_slice(self.document_id.as_uuid().as_bytes());
+        bytes[17..33].copy_from_slice(self.revision.as_bytes());
+        if let Some(parent) = self.parent {
+            bytes[33] = 1;
+            bytes[34..50].copy_from_slice(parent.as_bytes());
+        }
+        bytes[50] = match self.traversal {
+            DescriptorTraversal::DirectChildren => 0,
+        };
+        bytes[51..67].copy_from_slice(self.last_id.as_bytes());
+        bytes[67..75].copy_from_slice(&self.next_index.to_le_bytes());
+        bytes[75..83].copy_from_slice(&self.next_order.to_le_bytes());
+        bytes[83..99].copy_from_slice(&self.checksum);
+        bytes
+    }
+
+    fn from_wire_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::WIRE_BYTES {
+            return None;
+        }
+        let parent_bytes = fixed_bytes(bytes, 34..50)?;
+        Some(Self {
+            version: bytes[0],
+            document_id: DocumentId::from_uuid(Uuid::from_bytes(fixed_bytes(bytes, 1..17)?)),
+            revision: RevisionToken(fixed_bytes(bytes, 17..33)?),
+            parent: (bytes[33] == 1).then(|| Uuid::from_bytes(parent_bytes)),
+            traversal: DescriptorTraversal::DirectChildren,
+            last_id: Uuid::from_bytes(fixed_bytes(bytes, 51..67)?),
+            next_index: u64::from_le_bytes(fixed_bytes(bytes, 67..75)?),
+            next_order: u64::from_le_bytes(fixed_bytes(bytes, 75..83)?),
+            checksum: fixed_bytes(bytes, 83..99)?,
+        })
+    }
+}
+
+fn fixed_bytes<const N: usize>(bytes: &[u8], range: Range<usize>) -> Option<[u8; N]> {
+    bytes.get(range)?.try_into().ok()
+}
+
+impl Serialize for DescriptorCursor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let bytes = self.wire_bytes();
+        let mut encoded = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            use std::fmt::Write;
+            write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        serializer.serialize_str(&encoded)
+    }
+}
+
+impl<'de> Deserialize<'de> for DescriptorCursor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        if encoded.len() != Self::WIRE_BYTES * 2 || !encoded.is_ascii() {
+            return Err(serde::de::Error::custom(
+                "invalid descriptor cursor encoding",
+            ));
+        }
+        let mut bytes = Vec::with_capacity(Self::WIRE_BYTES);
+        for pair in encoded.as_bytes().chunks_exact(2) {
+            let text = std::str::from_utf8(pair)
+                .map_err(|_| serde::de::Error::custom("invalid descriptor cursor encoding"))?;
+            bytes.push(
+                u8::from_str_radix(text, 16)
+                    .map_err(|_| serde::de::Error::custom("invalid descriptor cursor encoding"))?,
+            );
+        }
+        Self::from_wire_bytes(&bytes)
+            .ok_or_else(|| serde::de::Error::custom("invalid descriptor cursor encoding"))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DescriptorError {
+    #[error("descriptor page limit must be greater than zero")]
+    InvalidLimit,
+    #[error("descriptor cursor is corrupt or has an unsupported encoding")]
+    CorruptCursor,
+    #[error("descriptor cursor document mismatch: expected {expected}, actual {actual}")]
+    CursorDocumentMismatch {
+        expected: DocumentId,
+        actual: DocumentId,
+    },
+    #[error("descriptor cursor revision mismatch: expected {expected}, actual {actual}")]
+    CursorRevisionMismatch {
+        expected: RevisionToken,
+        actual: RevisionToken,
+    },
+    #[error("descriptor cursor parent mismatch")]
+    CursorParentMismatch {
+        expected: Option<BlockId>,
+        actual: Option<BlockId>,
+    },
+    #[error("descriptor cursor traversal mismatch")]
+    CursorTraversalMismatch,
+    #[error("descriptor cursor anchor no longer resolves: {block_id}")]
+    CursorAnchorNotFound { block_id: BlockId },
+    #[error("descriptor parent not found: {parent}")]
+    ParentNotFound { parent: BlockId },
+}
+
+/// One bounded, revision-consistent page of direct children under a document or container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DescriptorPage {
+    pub document_id: DocumentId,
+    pub revision: RevisionToken,
+    pub parent: Option<BlockId>,
+    pub traversal: DescriptorTraversal,
     pub items: Vec<BlockDescriptor>,
-    pub next_offset: Option<usize>,
+    pub next_cursor: Option<DescriptorCursor>,
 }
 
 /// Bounded identities affected by one workspace transition.
@@ -1042,49 +1265,116 @@ impl Document {
     /// Return at most `limit` body-free descriptors for direct children of `parent`.
     ///
     /// `None` addresses the document root. A blockquote or list item exposes block
-    /// children; a list exposes list-item descriptors. Returns `None` only when the
-    /// requested parent id does not exist.
-    pub fn descriptor_page(
+    /// children; a list exposes list-item descriptors. Continuations are bound to
+    /// this document identity, revision, parent, and traversal order.
+    pub(crate) fn descriptor_page(
         &self,
+        document_id: DocumentId,
+        revision: RevisionToken,
         parent: Option<BlockId>,
-        offset: usize,
+        cursor: Option<&DescriptorCursor>,
         limit: usize,
-    ) -> Option<DescriptorPage> {
+    ) -> Result<DescriptorPage, DescriptorError> {
         if limit == 0 {
-            return Some(DescriptorPage {
-                items: Vec::new(),
-                next_offset: None,
-            });
+            return Err(DescriptorError::InvalidLimit);
         }
         let children = match parent {
             None => DescriptorChildren::Blocks(self.blocks()),
-            Some(parent) => find_descriptor_children(self.blocks(), parent)?,
+            Some(parent) => find_descriptor_children(self.blocks(), parent)
+                .ok_or(DescriptorError::ParentNotFound { parent })?,
         };
+        let traversal = DescriptorTraversal::DirectChildren;
+        let (start_physical, start_order) = match cursor {
+            Some(cursor) => {
+                cursor.validate(document_id, &revision, parent, traversal)?;
+                (
+                    usize::try_from(cursor.next_index)
+                        .map_err(|_| DescriptorError::CorruptCursor)?,
+                    usize::try_from(cursor.next_order)
+                        .map_err(|_| DescriptorError::CorruptCursor)?,
+                )
+            }
+            None => (0, 0),
+        };
+        if let Some(cursor) = cursor {
+            let prior = start_physical
+                .checked_sub(1)
+                .and_then(|index| match children {
+                    DescriptorChildren::Blocks(blocks) => {
+                        blocks.visible_at_physical(index).map(|block| block.id)
+                    }
+                    DescriptorChildren::Items(items) => {
+                        items.visible_at_physical(index).map(|item| item.id)
+                    }
+                    DescriptorChildren::Empty => None,
+                });
+            if prior != Some(cursor.last_id) {
+                return Err(DescriptorError::CursorAnchorNotFound {
+                    block_id: cursor.last_id,
+                });
+            }
+        }
         let take = limit.saturating_add(1);
-        let mut items: Vec<BlockDescriptor> = match children {
+        let mut indexed_items: Vec<(usize, BlockDescriptor)> = match children {
             DescriptorChildren::Blocks(blocks) => blocks
-                .iter()
+                .iter_visible_from_physical(start_physical)
                 .enumerate()
-                .skip(offset)
                 .take(take)
-                .map(|(order, block)| block_descriptor(self, block, parent, order))
+                .map(|(local_order, (physical, block))| {
+                    (
+                        physical,
+                        block_descriptor(
+                            self,
+                            block,
+                            parent,
+                            start_order.saturating_add(local_order),
+                        ),
+                    )
+                })
                 .collect(),
             DescriptorChildren::Items(items) => items
-                .iter()
+                .iter_visible_from_physical(start_physical)
                 .enumerate()
-                .skip(offset)
                 .take(take)
-                .map(|(order, item)| list_item_descriptor(item, parent, order))
+                .map(|(local_order, (physical, item))| {
+                    (
+                        physical,
+                        list_item_descriptor(item, parent, start_order.saturating_add(local_order)),
+                    )
+                })
                 .collect(),
             DescriptorChildren::Empty => Vec::new(),
         };
-        let has_more = items.len() > limit;
+        let has_more = indexed_items.len() > limit;
         if has_more {
-            items.pop();
+            indexed_items.pop();
         }
-        Some(DescriptorPage {
-            next_offset: has_more.then_some(offset.saturating_add(items.len())),
+        let returned = indexed_items.len();
+        let next_cursor = has_more.then(|| {
+            let (physical, descriptor) = indexed_items
+                .last()
+                .expect("a continuation follows a non-empty page");
+            DescriptorCursor::new(
+                document_id,
+                revision.clone(),
+                parent,
+                traversal,
+                descriptor.id,
+                physical.saturating_add(1),
+                start_order.saturating_add(returned),
+            )
+        });
+        let items = indexed_items
+            .into_iter()
+            .map(|(_, descriptor)| descriptor)
+            .collect();
+        Ok(DescriptorPage {
+            document_id,
+            revision,
+            parent,
+            traversal,
             items,
+            next_cursor,
         })
     }
 }
@@ -1349,7 +1639,8 @@ fn projection_node_digest(node: ProjectionNode<'_>) -> u64 {
 
 fn list_item_digest(item: &ListItem) -> u64 {
     let mut digest = StableDigest::new();
-    digest.field(b"list-item");
+    digest.field(b"list-item-subtree");
+    digest.field(&list_item_node_digest(item).to_le_bytes());
     for child in item.children.iter() {
         digest.field(&block_digest(child).to_le_bytes());
     }
@@ -1366,15 +1657,34 @@ fn projection_request_digest(request: &ProjectionRequest) -> Result<[u8; 16], Pr
         request.max_bytes,
     ))
     .map_err(|_| ProjectionError::Serialization)?;
-    Ok(stable_projection_hash(&encoded).to_be_bytes())
+    Ok(stable_hash_128(&encoded).to_be_bytes())
 }
 
-fn stable_projection_hash(bytes: &[u8]) -> u128 {
+struct StableDigest128(u128);
+
+impl StableDigest128 {
     const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
     const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
-    bytes.iter().fold(OFFSET, |hash, byte| {
-        (hash ^ u128::from(*byte)).wrapping_mul(PRIME)
-    })
+
+    fn new() -> Self {
+        Self(Self::OFFSET)
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u128::from(*byte)).wrapping_mul(Self::PRIME);
+        }
+    }
+
+    fn finish(self) -> u128 {
+        self.0
+    }
+}
+
+pub(crate) fn stable_hash_128(bytes: &[u8]) -> u128 {
+    let mut digest = StableDigest128::new();
+    digest.bytes(bytes);
+    digest.finish()
 }
 
 fn projection_continuation(
@@ -1441,6 +1751,7 @@ fn block_descriptor(
     parent: Option<BlockId>,
     order: usize,
 ) -> BlockDescriptor {
+    let (direct_child_count, descendant_count) = block_hierarchy_counts(block);
     let (kind, heading_level) = match &block.kind {
         BlockKind::Paragraph { .. } => (BlockDescriptorKind::Paragraph, None),
         BlockKind::Heading { level, .. } => (BlockDescriptorKind::Heading, Some(*level)),
@@ -1458,11 +1769,15 @@ fn block_descriptor(
         heading_level,
         source_bytes: document.source_region_bytes(block.id).unwrap_or(0),
         text_bytes: block_text_bytes(block),
-        content_digest: block_digest(block),
+        node_digest: block_node_digest(block),
+        direct_child_count,
+        descendant_count,
+        subtree_digest: None,
     }
 }
 
 fn list_item_descriptor(item: &ListItem, parent: Option<BlockId>, order: usize) -> BlockDescriptor {
+    let (direct_child_count, descendant_count) = list_item_hierarchy_counts(item);
     BlockDescriptor {
         id: item.id,
         parent,
@@ -1471,8 +1786,39 @@ fn list_item_descriptor(item: &ListItem, parent: Option<BlockId>, order: usize) 
         heading_level: None,
         source_bytes: 0,
         text_bytes: 0,
-        content_digest: list_item_digest(item),
+        node_digest: list_item_node_digest(item),
+        direct_child_count,
+        descendant_count,
+        subtree_digest: None,
     }
+}
+
+fn block_hierarchy_counts(block: &Block) -> (u64, u64) {
+    match &block.kind {
+        BlockKind::BlockQuote { children } => {
+            let direct = u64::try_from(children.len_visible()).unwrap_or(u64::MAX);
+            let descendants = children.iter().fold(direct, |count, child| {
+                count.saturating_add(block_hierarchy_counts(child).1)
+            });
+            (direct, descendants)
+        }
+        BlockKind::List { items, .. } => {
+            let direct = u64::try_from(items.len_visible()).unwrap_or(u64::MAX);
+            let descendants = items.iter().fold(direct, |count, item| {
+                count.saturating_add(list_item_hierarchy_counts(item).1)
+            });
+            (direct, descendants)
+        }
+        _ => (0, 0),
+    }
+}
+
+fn list_item_hierarchy_counts(item: &ListItem) -> (u64, u64) {
+    let direct = u64::try_from(item.children.len_visible()).unwrap_or(u64::MAX);
+    let descendants = item.children.iter().fold(direct, |count, child| {
+        count.saturating_add(block_hierarchy_counts(child).1)
+    });
+    (direct, descendants)
 }
 
 fn block_text_bytes(block: &Block) -> usize {
@@ -1525,8 +1871,39 @@ impl StableDigest {
     }
 }
 
+fn block_node_digest(block: &Block) -> u64 {
+    let mut digest = StableDigest::new();
+    hash_block_node(&mut digest, block);
+    digest.finish()
+}
+
+fn list_item_node_digest(_item: &ListItem) -> u64 {
+    let mut digest = StableDigest::new();
+    digest.field(b"list-item");
+    digest.finish()
+}
+
 fn block_digest(block: &Block) -> u64 {
     let mut digest = StableDigest::new();
+    digest.field(b"block-subtree");
+    digest.field(&block_node_digest(block).to_le_bytes());
+    match &block.kind {
+        BlockKind::BlockQuote { children } => {
+            for child in children.iter() {
+                digest.field(&block_digest(child).to_le_bytes());
+            }
+        }
+        BlockKind::List { items, .. } => {
+            for item in items.iter() {
+                digest.field(&list_item_digest(item).to_le_bytes());
+            }
+        }
+        _ => {}
+    }
+    digest.finish()
+}
+
+fn hash_block_node(digest: &mut StableDigest, block: &Block) {
     match &block.kind {
         BlockKind::Paragraph { .. } => digest.field(b"paragraph"),
         BlockKind::Heading { level, .. } => {
@@ -1542,12 +1919,8 @@ fn block_digest(block: &Block) -> u64 {
             digest.field(info.as_deref().unwrap_or_default().as_bytes());
             digest.field(text.as_bytes());
         }
-        BlockKind::BlockQuote { children } => {
+        BlockKind::BlockQuote { .. } => {
             digest.field(b"block-quote");
-            for child in children.iter() {
-                digest.field(b"child");
-                digest.field(&block_digest(child).to_le_bytes());
-            }
         }
         BlockKind::RawBlock { raw } => {
             digest.field(b"raw");
@@ -1569,36 +1942,15 @@ fn block_digest(block: &Block) -> u64 {
             }
         }
     }
-    if let BlockKind::List { items, .. } = &block.kind {
-        for item in items.iter() {
-            digest.field(b"item");
-            for child in item.children.iter() {
-                digest.field(b"child");
-                digest.field(&block_digest(child).to_le_bytes());
-            }
-        }
-    }
     if let Some(text) = block_text_seq(&block.kind) {
         for unit in text.iter() {
             digest.field(unit.grapheme.as_bytes());
         }
-        let ids = paragraph_visible_ids(text);
-        for span in block.marks.render_spans(&ids, ids.len()) {
-            digest.field(&span.start.to_le_bytes());
-            digest.field(&span.end.to_le_bytes());
-            for interval_id in span.marks {
-                let Some(interval) = block.marks.interval(&interval_id) else {
-                    continue;
-                };
-                hash_mark_kind(&mut digest, &interval.kind);
-                for (key, value) in &interval.attrs {
-                    digest.field(key.as_bytes());
-                    hash_mark_value(&mut digest, value.get_ref());
-                }
-            }
+        if block.marks.iter_active_intervals().next().is_some() {
+            let ids = paragraph_visible_ids(text);
+            hash_semantic_marks(digest, block, &ids, 0..ids.len());
         }
     }
-    digest.finish()
 }
 
 fn text_range_digest(document: &Document, range: &TextRange) -> Result<u64, WorkspaceTargetError> {
@@ -1613,27 +1965,65 @@ fn text_range_digest(document: &Document, range: &TextRange) -> Result<u64, Work
     for unit in text.iter().skip(resolved.start).take(resolved.len()) {
         digest.field(unit.grapheme.as_bytes());
     }
-    let ids = paragraph_visible_ids(text);
-    for span in block.marks.render_spans(&ids, ids.len()) {
-        let start = span.start.max(resolved.start);
-        let end = span.end.min(resolved.end);
+    if block.marks.iter_active_intervals().next().is_some() {
+        let ids = paragraph_visible_ids(text);
+        hash_semantic_marks(&mut digest, block, &ids, resolved);
+    }
+    Ok(digest.finish())
+}
+
+type SemanticMark = (MarkKind, Vec<(String, MarkValue)>);
+
+fn hash_semantic_marks(
+    digest: &mut StableDigest,
+    block: &Block,
+    ids: &[OpId],
+    range: Range<usize>,
+) {
+    let mut runs: Vec<(usize, usize, BTreeSet<SemanticMark>)> = Vec::new();
+    for span in block.marks.render_spans(ids, ids.len()) {
+        let start = span.start.max(range.start);
+        let end = span.end.min(range.end);
         if start >= end {
             continue;
         }
-        digest.field(&(start - resolved.start).to_le_bytes());
-        digest.field(&(end - resolved.start).to_le_bytes());
-        for interval_id in span.marks {
-            let Some(interval) = block.marks.interval(&interval_id) else {
-                continue;
-            };
-            hash_mark_kind(&mut digest, &interval.kind);
-            for (key, value) in &interval.attrs {
+        let marks: BTreeSet<_> = span
+            .marks
+            .into_iter()
+            .filter_map(|interval_id| block.marks.interval(&interval_id))
+            .map(|interval| {
+                let attrs = interval
+                    .attrs
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "delimiter")
+                    .map(|(key, value)| (key.clone(), value.get_ref().clone()))
+                    .collect();
+                (interval.kind.clone(), attrs)
+            })
+            .collect();
+        if marks.is_empty() {
+            continue;
+        }
+        if let Some((_, prior_end, prior_marks)) = runs.last_mut()
+            && *prior_end == start
+            && *prior_marks == marks
+        {
+            *prior_end = end;
+        } else {
+            runs.push((start, end, marks));
+        }
+    }
+    for (start, end, marks) in runs {
+        digest.field(&(start - range.start).to_le_bytes());
+        digest.field(&(end - range.start).to_le_bytes());
+        for (kind, attrs) in marks {
+            hash_mark_kind(digest, &kind);
+            for (key, value) in attrs {
                 digest.field(key.as_bytes());
-                hash_mark_value(&mut digest, value.get_ref());
+                hash_mark_value(digest, &value);
             }
         }
     }
-    Ok(digest.finish())
 }
 
 fn alignment_tag(alignment: &ColumnAlignment) -> &'static [u8] {
@@ -1845,7 +2235,10 @@ fn descriptor_content_changed(old: &BlockDescriptor, new: &BlockDescriptor) -> b
         || old.heading_level != new.heading_level
         || old.source_bytes != new.source_bytes
         || old.text_bytes != new.text_bytes
-        || old.content_digest != new.content_digest
+        || old.node_digest != new.node_digest
+        || old.direct_child_count != new.direct_child_count
+        || old.descendant_count != new.descendant_count
+        || old.subtree_digest != new.subtree_digest
 }
 
 fn reordered_ids(before: &DocumentOutline, after: &DocumentOutline) -> BTreeSet<BlockId> {

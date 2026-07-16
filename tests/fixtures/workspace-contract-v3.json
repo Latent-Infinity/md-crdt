@@ -1,5 +1,5 @@
 {
-  "contract_version": 2,
+  "contract_version": 3,
   "document_handle": {
     "vault_id": "00000000-0000-0000-0000-000000000001",
     "document_id": "00000000-0000-0000-0000-000000000002",
@@ -7,6 +7,10 @@
     "disk_fingerprint": 6
   },
   "descriptor_page": {
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "revision": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
+    "parent": null,
+    "traversal": "DirectChildren",
     "items": [{
       "id": "00000000-0000-0000-0000-00000000000a",
       "parent": null,
@@ -15,9 +19,12 @@
       "heading_level": 1,
       "source_bytes": 8,
       "text_bytes": 5,
-      "content_digest": 99
+      "node_digest": 99,
+      "direct_child_count": 0,
+      "descendant_count": 0,
+      "subtree_digest": null
     }],
-    "next_offset": 1
+    "next_cursor": null
   },
   "change_summary": {
     "created": ["00000000-0000-0000-0000-00000000000b"],

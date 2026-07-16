@@ -35,7 +35,7 @@ fn semantic_projection_matches_authoritative_markdown_model() {
     .unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let descriptors = vault.descriptor_page("note.md", None, 0, 8).unwrap();
+    let descriptors = vault.descriptor_page("note.md", None, None, 8).unwrap();
     let ids: Vec<_> = descriptors.items.iter().map(|item| item.id).collect();
 
     let page = vault
@@ -105,11 +105,12 @@ fn semantic_projection_matches_authoritative_markdown_model() {
     ));
 
     for (projection, descriptor) in page.items.iter().zip(&descriptors.items) {
-        assert_eq!(projection.content_digest, Some(descriptor.content_digest));
+        assert!(projection.content_digest.is_some());
+        assert_ne!(descriptor.node_digest, 0);
     }
 
     let list_items = vault
-        .descriptor_page("note.md", Some(ids[2]), 0, 2)
+        .descriptor_page("note.md", Some(ids[2]), None, 2)
         .unwrap();
     let item = vault
         .project_blocks(
@@ -123,10 +124,8 @@ fn semantic_projection_matches_authoritative_markdown_model() {
         .unwrap();
     assert_eq!(item.items[0].kind, Some(BlockProjectionKind::ListItem));
     assert_eq!(item.items[0].text.as_deref(), Some("one"));
-    assert_eq!(
-        item.items[0].content_digest,
-        Some(list_items.items[0].content_digest)
-    );
+    assert!(item.items[0].content_digest.is_some());
+    assert_ne!(list_items.items[0].node_digest, 0);
     assert!(matches!(
         item.items[0].structure,
         Some(BlockProjectionStructure::Children { ref block_ids }) if block_ids.len() == 1
@@ -144,7 +143,7 @@ fn projection_masks_order_missing_duplicates_and_revision_fail_closed() {
     fs::write(dir.path().join("note.md"), "alpha\n\nbeta\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let descriptors = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let descriptors = vault.descriptor_page("note.md", None, None, 2).unwrap();
     let alpha = descriptors.items[0].id;
     let beta = descriptors.items[1].id;
     let missing = uuid::Uuid::from_u128(u128::MAX);
@@ -210,7 +209,7 @@ fn continuation_and_serialized_byte_limits_are_hard() {
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
     let ids: Vec<_> = vault
-        .descriptor_page("note.md", None, 0, 3)
+        .descriptor_page("note.md", None, None, 3)
         .unwrap()
         .items
         .iter()
@@ -337,7 +336,7 @@ fn code_and_raw_blocks_project_typed_kind_and_visible_content() {
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
     let ids: Vec<_> = vault
-        .descriptor_page("note.md", None, 0, 2)
+        .descriptor_page("note.md", None, None, 2)
         .unwrap()
         .items
         .into_iter()
@@ -369,7 +368,7 @@ fn exact_projection_uses_only_the_owned_source_region_before_and_after_edit() {
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
     let ids: Vec<_> = vault
-        .descriptor_page("note.md", None, 0, 2)
+        .descriptor_page("note.md", None, None, 2)
         .unwrap()
         .items
         .iter()
@@ -430,10 +429,10 @@ fn nested_exact_projection_identifies_and_rerenders_only_its_source_owner() {
     .unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let roots = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let roots = vault.descriptor_page("note.md", None, None, 2).unwrap();
     let quote_id = roots.items[0].id;
     let child_id = vault
-        .descriptor_page("note.md", Some(quote_id), 0, 2)
+        .descriptor_page("note.md", Some(quote_id), None, 2)
         .unwrap()
         .items[1]
         .id;

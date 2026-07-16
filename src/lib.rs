@@ -103,9 +103,10 @@ pub use session::{
 
 pub use workspace::{
     BatchPreview, BatchReceipt, BlockDescriptor, BlockDescriptorKind, BlockProjection,
-    BlockProjectionKind, BlockProjectionStructure, ChangeSummary, DeletedDocument, DescriptorPage,
-    DiskFingerprint, DocumentEditBatch, DocumentExportRequest, DocumentHandle, DocumentId,
-    EditBatch, ExactMarkdownProjection, ExportOutcome, LocalEditOutcome, MultiBatchReceipt,
+    BlockProjectionKind, BlockProjectionStructure, ChangeSummary, DeletedDocument,
+    DescriptorCursor, DescriptorError, DescriptorPage, DescriptorTraversal, DiskFingerprint,
+    DocumentEditBatch, DocumentExportRequest, DocumentHandle, DocumentId, EditBatch,
+    ExactMarkdownProjection, ExportOutcome, LocalEditOutcome, MultiBatchReceipt,
     MultiExportOutcome, PreviewToken, ProjectedMark, ProjectedTableRow, ProjectionContinuation,
     ProjectionError, ProjectionFields, ProjectionPage, ProjectionRequest, RecoveryReport,
     RemoteApplyOutcome, RevisionToken, TargetPrecondition, TextPoint, TextPosition, TextRange,

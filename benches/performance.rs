@@ -252,18 +252,120 @@ fn document_serialize(c: &mut Criterion) {
     group.finish();
 }
 
-fn descriptor_page(c: &mut Criterion) {
-    let markdown = (0..10_000)
+fn traverse_descriptors(vault: &mut VaultSession, path: &str, limit: usize) -> usize {
+    let mut stack = vec![None];
+    let mut visited = 0usize;
+    while let Some(parent) = stack.pop() {
+        let mut cursor = None;
+        loop {
+            let page = vault
+                .descriptor_page(path, parent, cursor.as_ref(), limit)
+                .unwrap();
+            visited = visited.saturating_add(page.items.len());
+            stack.extend(
+                page.items
+                    .iter()
+                    .filter(|item| item.direct_child_count > 0)
+                    .map(|item| Some(item.id)),
+            );
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+    }
+    visited
+}
+
+fn workspace_hierarchy(c: &mut Criterion) {
+    let wide_markdown = (0..10_000)
         .map(|index| format!("{index:05} {}", "x".repeat(122)))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let document = Parser::parse(&markdown);
-    let mut group = c.benchmark_group("workspace_inspection_10000_blocks");
-    group.bench_function("descriptor_page_32", |b| {
-        b.iter(|| black_box(document.descriptor_page(None, 0, 32)))
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join("wide.md"), wide_markdown).unwrap();
+    fs::write(
+        directory.path().join("deep.md"),
+        format!("{}leaf\n", "> ".repeat(64)),
+    )
+    .unwrap();
+    let mut vault = VaultSession::open(directory.path()).unwrap();
+    vault.open_document("wide.md").unwrap();
+    let deep_handle = vault.open_document("deep.md").unwrap();
+    let (gate_page, gate_allocated) =
+        allocated_bytes(|| vault.descriptor_page("wide.md", None, None, 32).unwrap());
+    let cursor_bytes = serde_json::to_vec(gate_page.next_cursor.as_ref().unwrap())
+        .unwrap()
+        .len();
+    println!(
+        "workspace_hierarchy_gate page_allocated={} cursor_bytes={} descriptor_bytes={}",
+        gate_allocated,
+        cursor_bytes,
+        serde_json::to_vec(&gate_page).unwrap().len(),
+    );
+
+    let mut group = c.benchmark_group("workspace_hierarchy");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_millis(500));
+    for limit in [1usize, 32, 256] {
+        group.bench_function(BenchmarkId::new("wide_cold_page", limit), |b| {
+            b.iter(|| {
+                black_box(
+                    vault
+                        .descriptor_page("wide.md", None, None, black_box(limit))
+                        .unwrap(),
+                )
+            })
+        });
+        group.bench_function(BenchmarkId::new("wide_repeated_scan", limit), |b| {
+            b.iter(|| black_box(traverse_descriptors(&mut vault, "wide.md", limit)))
+        });
+        group.bench_function(BenchmarkId::new("deep_repeated_scan", limit), |b| {
+            b.iter(|| black_box(traverse_descriptors(&mut vault, "deep.md", limit)))
+        });
+    }
+
+    let deep_root = vault
+        .descriptor_page("deep.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
+    let recursive_request = ProjectionRequest {
+        document_id: deep_handle.document_id,
+        base_revision: deep_handle.revision,
+        block_ids: vec![deep_root],
+        fields: ProjectionFields::CONTENT_DIGEST,
+        max_items: 1,
+        max_bytes: 4 * 1024,
+        continuation: None,
+    };
+    group.bench_function("digest_recursive_deep", |b| {
+        b.iter(|| {
+            black_box(
+                vault
+                    .project_blocks("deep.md", black_box(recursive_request.clone()))
+                    .unwrap(),
+            )
+        })
     });
-    group.bench_function("full_document_serialization", |b| {
-        b.iter(|| black_box(document.serialize(EquivalenceMode::Structural)))
+    group.bench_function("digest_node_local_deep", |b| {
+        b.iter(|| black_box(vault.descriptor_page("deep.md", None, None, 1).unwrap()))
+    });
+
+    let target = vault
+        .descriptor_page("wide.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
+    group.bench_function("one_leaf_update_then_root_read", |b| {
+        b.iter(|| {
+            vault
+                .session_mut("wide.md")
+                .unwrap()
+                .insert_text(target, 0, "x")
+                .unwrap();
+            black_box(vault.descriptor_page("wide.md", None, None, 1).unwrap())
+        })
     });
     group.finish();
 }
@@ -335,7 +437,7 @@ fn workspace_edit_replay(c: &mut Criterion) {
         fs::write(directory.path().join("note.md"), markdown).unwrap();
         let mut vault = VaultSession::open(directory.path()).unwrap();
         let handle = vault.open_document("note.md").unwrap();
-        let page = vault.descriptor_page("note.md", None, 0, 1).unwrap();
+        let page = vault.descriptor_page("note.md", None, None, 1).unwrap();
         let target = page.items[0].id;
         let edit = WorkspaceEdit::InsertText {
             at: vault.text_point("note.md", target, 11).unwrap(),
@@ -386,9 +488,12 @@ fn workspace_edit_replay(c: &mut Criterion) {
         }
 
         let unrelated = vault
-            .descriptor_page("note.md", None, block_count - 1, 1)
+            .session_mut("note.md")
             .unwrap()
-            .items[0]
+            .document()
+            .blocks_in_order()
+            .last()
+            .unwrap()
             .id;
         vault
             .session_mut("note.md")
@@ -473,7 +578,7 @@ fn workspace_projection(c: &mut Criterion) {
         let mut vault = VaultSession::open(directory.path()).unwrap();
         let handle = vault.open_document("note.md").unwrap();
         let ids: Vec<_> = vault
-            .descriptor_page("note.md", None, 0, 32)
+            .descriptor_page("note.md", None, None, 32)
             .unwrap()
             .items
             .into_iter()
@@ -572,7 +677,7 @@ criterion_group!(
     nested_text_insert,
     session_insert_text,
     document_serialize,
-    descriptor_page,
+    workspace_hierarchy,
     checkpoint_history,
     workspace_edit_replay,
     workspace_projection

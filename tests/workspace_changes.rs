@@ -17,18 +17,20 @@ fn descriptor_pages_are_body_free_and_follow_the_document_hierarchy() {
     let mut vault = VaultSession::open(dir.path()).unwrap();
     vault.open_document("note.md").unwrap();
 
-    let first = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let first = vault.descriptor_page("note.md", None, None, 2).unwrap();
     assert_eq!(first.items.len(), 2);
-    assert_eq!(first.next_offset, Some(2));
+    assert!(first.next_cursor.is_some());
     assert_eq!(first.items[0].kind, BlockDescriptorKind::Heading);
     assert_eq!(first.items[0].heading_level, Some(1));
     assert_eq!(first.items[0].text_bytes, "Scope".len());
     assert!(first.items[0].source_bytes >= first.items[0].text_bytes);
-    assert_ne!(first.items[0].content_digest, 0);
+    assert_ne!(first.items[0].node_digest, 0);
     assert_eq!(first.items[1].kind, BlockDescriptorKind::Paragraph);
 
-    let remainder = vault.descriptor_page("note.md", None, 2, 8).unwrap();
-    assert_eq!(remainder.next_offset, None);
+    let remainder = vault
+        .descriptor_page("note.md", None, first.next_cursor.as_ref(), 8)
+        .unwrap();
+    assert_eq!(remainder.next_cursor, None);
     let list = remainder
         .items
         .iter()
@@ -41,7 +43,7 @@ fn descriptor_pages_are_body_free_and_follow_the_document_hierarchy() {
         .unwrap();
 
     let list_items = vault
-        .descriptor_page("note.md", Some(list.id), 0, 8)
+        .descriptor_page("note.md", Some(list.id), None, 8)
         .unwrap();
     assert_eq!(list_items.items.len(), 2);
     assert!(
@@ -51,13 +53,13 @@ fn descriptor_pages_are_body_free_and_follow_the_document_hierarchy() {
             .all(|item| item.kind == BlockDescriptorKind::ListItem && item.parent == Some(list.id))
     );
     let item_children = vault
-        .descriptor_page("note.md", Some(list_items.items[0].id), 0, 8)
+        .descriptor_page("note.md", Some(list_items.items[0].id), None, 8)
         .unwrap();
     assert_eq!(item_children.items.len(), 1);
     assert_eq!(item_children.items[0].parent, Some(list_items.items[0].id));
 
     let quote_children = vault
-        .descriptor_page("note.md", Some(quote.id), 0, 8)
+        .descriptor_page("note.md", Some(quote.id), None, 8)
         .unwrap();
     assert_eq!(quote_children.items.len(), 1);
     assert_eq!(quote_children.items[0].parent, Some(quote.id));
@@ -77,7 +79,7 @@ fn local_edit_summary_is_bounded_and_identifies_the_owning_section() {
     fs::write(dir.path().join("note.md"), markdown).unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let opened = vault.open_document("note.md").unwrap();
-    let descriptors = vault.descriptor_page("note.md", None, 0, 101).unwrap();
+    let descriptors = vault.descriptor_page("note.md", None, None, 101).unwrap();
     let heading = descriptors.items[0].id;
     let target = descriptors.items[51].id;
 
@@ -105,7 +107,11 @@ fn remote_apply_returns_created_ids_and_post_revision() {
     let mut target = VaultSession::open(target_dir.path()).unwrap();
     source.open_document("note.md").unwrap();
     let before = target.open_document("note.md").unwrap();
-    let expected_id = source.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
+    let expected_id = source
+        .descriptor_page("note.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
     let changes = source
         .encode_changes_since("note.md", &target.state_vector("note.md").unwrap())
         .unwrap();
@@ -131,7 +137,7 @@ fn ingest_and_export_return_scoped_change_summaries() {
     fs::write(&path, "# Scope\n\nalpha\n\nbeta\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let opened = vault.open_document("note.md").unwrap();
-    let descriptors = vault.descriptor_page("note.md", None, 0, 3).unwrap();
+    let descriptors = vault.descriptor_page("note.md", None, None, 3).unwrap();
     let heading = descriptors.items[0].id;
     let alpha = descriptors.items[1].id;
 
@@ -173,7 +179,7 @@ fn insertions_do_not_report_shifted_siblings_as_moves() {
     assert_eq!(inserted.changes.created, vec![inserted_id]);
     assert!(inserted.changes.moved.is_empty());
 
-    let page = vault.descriptor_page("note.md", None, 0, 8).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 8).unwrap();
     let last = page.items.last().unwrap().id;
     let moved = vault
         .with_local_edit("note.md", |session| session.move_block(last, None, None))
@@ -190,7 +196,7 @@ fn parent_moves_and_mark_updates_report_precise_metadata() {
     fs::write(dir.path().join("note.md"), "plain\n\n> nested\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     vault.open_document("note.md").unwrap();
-    let page = vault.descriptor_page("note.md", None, 0, 8).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 8).unwrap();
     let paragraph = page.items[0].id;
     let quote = page.items[1].id;
     let quote_elem = vault
@@ -225,13 +231,18 @@ fn descriptor_page_handles_zero_limit_and_unknown_parent() {
     let mut vault = VaultSession::open(dir.path()).unwrap();
     vault.open_document("note.md").unwrap();
 
-    let empty = vault.descriptor_page("note.md", None, 0, 0).unwrap();
-    assert!(empty.items.is_empty());
-    assert_eq!(empty.next_offset, None);
+    assert!(matches!(
+        vault.descriptor_page("note.md", None, None, 0),
+        Err(md_crdt::filesync::VaultError::Descriptor(
+            md_crdt::DescriptorError::InvalidLimit
+        ))
+    ));
     let missing = uuid::Uuid::from_u128(u128::MAX);
     assert!(matches!(
-        vault.descriptor_page("note.md", Some(missing), 0, 10),
-        Err(md_crdt::filesync::VaultError::DescriptorParentNotFound(id)) if id == missing
+        vault.descriptor_page("note.md", Some(missing), None, 10),
+        Err(md_crdt::filesync::VaultError::Descriptor(
+            md_crdt::DescriptorError::ParentNotFound { parent }
+        )) if parent == missing
     ));
 }
 
@@ -241,7 +252,7 @@ fn local_edit_summary_reports_deleted_block_ids() {
     fs::write(dir.path().join("note.md"), "alpha\n\nbeta\n\ngamma\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     vault.open_document("note.md").unwrap();
-    let page = vault.descriptor_page("note.md", None, 0, 8).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 8).unwrap();
     let victim = page.items[1].id; // the "beta" paragraph
 
     let outcome = vault
@@ -261,6 +272,6 @@ fn local_edit_summary_reports_deleted_block_ids() {
     assert_eq!(outcome.changes.operation_count, 1);
 
     // The deleted block no longer appears in the descriptor outline.
-    let after = vault.descriptor_page("note.md", None, 0, 8).unwrap();
+    let after = vault.descriptor_page("note.md", None, None, 8).unwrap();
     assert!(after.items.iter().all(|item| item.id != victim));
 }

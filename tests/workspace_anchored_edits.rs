@@ -29,7 +29,7 @@ fn scoped_edit_accepts_an_unrelated_revision_change() {
     fs::write(dir.path().join("note.md"), "alpha\n\nbeta\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let page = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 2).unwrap();
     let alpha = page.items[0].id;
     let beta = page.items[1].id;
     let edit = WorkspaceEdit::InsertText {
@@ -66,7 +66,7 @@ fn changed_target_rejects_the_whole_batch_without_clock_burn() {
     fs::write(dir.path().join("note.md"), "alpha\n\nbeta\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let page = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 2).unwrap();
     let alpha = page.items[0].id;
     let beta = page.items[1].id;
 
@@ -122,7 +122,7 @@ fn missing_scoped_preconditions_preserve_strict_revision_behavior() {
     fs::write(dir.path().join("note.md"), "alpha\n\nbeta\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let page = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 2).unwrap();
     let alpha = page.items[0].id;
     let beta = page.items[1].id;
     let edit = WorkspaceEdit::InsertText {
@@ -152,7 +152,7 @@ fn scoped_validation_rejects_targetless_spoofing_and_reports_capture_errors() {
     fs::write(dir.path().join("note.md"), "alpha\n\nbeta\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let current = vault.open_document("note.md").unwrap();
-    let page = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 2).unwrap();
     let alpha = page.items[0].id;
     let beta = page.items[1].id;
     let target_edit = WorkspaceEdit::InsertText {
@@ -230,7 +230,7 @@ fn text_points_cover_empty_unicode_deleted_and_wrong_block_targets() {
     fs::write(dir.path().join("note.md"), "a👍🏽é\n\nother\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     vault.open_document("note.md").unwrap();
-    let page = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 2).unwrap();
     let unicode = page.items[0].id;
     let other = page.items[1].id;
 
@@ -287,7 +287,7 @@ fn text_target_boundaries_and_valid_delete_are_explicit() {
     fs::write(dir.path().join("note.md"), "alpha\n\nbeta\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let page = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 2).unwrap();
     let alpha = page.items[0].id;
     let beta = page.items[1].id;
 
@@ -383,7 +383,7 @@ fn every_structural_precondition_shape_is_captured_and_invalid_parents_fail_earl
     .unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     vault.open_document("note.md").unwrap();
-    let root = vault.descriptor_page("note.md", None, 0, 8).unwrap();
+    let root = vault.descriptor_page("note.md", None, None, 8).unwrap();
     let first_heading = root.items[0].id;
     let alpha = root.items[1].id;
     let second_heading = root.items[2].id;
@@ -503,7 +503,7 @@ fn every_structural_precondition_shape_is_captured_and_invalid_parents_fail_earl
         ))
     ));
     let nested = vault
-        .descriptor_page("note.md", Some(quote), 0, 1)
+        .descriptor_page("note.md", Some(quote), None, 1)
         .unwrap()
         .items[0]
         .id;
@@ -528,7 +528,11 @@ fn anchored_target_survives_snapshot_reopen() {
     let point = {
         let mut vault = VaultSession::open(dir.path()).unwrap();
         vault.open_document("note.md").unwrap();
-        let block = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
+        let block = vault
+            .descriptor_page("note.md", None, None, 1)
+            .unwrap()
+            .items[0]
+            .id;
         let point = vault.text_point("note.md", block, 2).unwrap();
         vault.save_all_state().unwrap();
         point
@@ -545,7 +549,11 @@ fn text_precondition_rejects_a_semantic_mark_change() {
     fs::write(dir.path().join("note.md"), "alpha\n\nbeta\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let alpha = vault.descriptor_page("note.md", None, 0, 2).unwrap().items[0].id;
+    let alpha = vault
+        .descriptor_page("note.md", None, None, 2)
+        .unwrap()
+        .items[0]
+        .id;
     let edit = WorkspaceEdit::DeleteText {
         range: vault.text_range("note.md", alpha, 0..5).unwrap(),
     };
@@ -576,7 +584,7 @@ fn placement_precondition_accepts_unrelated_text_but_rejects_sibling_changes() {
     .unwrap();
     let mut accepted = VaultSession::open(accepted_dir.path()).unwrap();
     let accepted_handle = accepted.open_document("note.md").unwrap();
-    let accepted_page = accepted.descriptor_page("note.md", None, 0, 3).unwrap();
+    let accepted_page = accepted.descriptor_page("note.md", None, None, 3).unwrap();
     let accepted_edit = WorkspaceEdit::InsertParagraph {
         parent: None,
         after: Some(accepted_page.items[0].id),
@@ -605,7 +613,7 @@ fn placement_precondition_accepts_unrelated_text_but_rejects_sibling_changes() {
     .unwrap();
     let mut rejected = VaultSession::open(rejected_dir.path()).unwrap();
     let rejected_handle = rejected.open_document("note.md").unwrap();
-    let rejected_page = rejected.descriptor_page("note.md", None, 0, 3).unwrap();
+    let rejected_page = rejected.descriptor_page("note.md", None, None, 3).unwrap();
     let rejected_edit = WorkspaceEdit::InsertParagraph {
         parent: None,
         after: Some(rejected_page.items[0].id),
@@ -695,11 +703,11 @@ fn container_block_precondition_includes_descendant_content() {
     fs::write(dir.path().join("note.md"), "> nested\n\noutside\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let root = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let root = vault.descriptor_page("note.md", None, None, 2).unwrap();
     let quote = root.items[0].id;
     let outside = root.items[1].id;
     let nested = vault
-        .descriptor_page("note.md", Some(quote), 0, 1)
+        .descriptor_page("note.md", Some(quote), None, 1)
         .unwrap()
         .items[0]
         .id;
@@ -739,7 +747,7 @@ fn run_scoped_peer_schedule(remote_before_batch: bool) {
     second
         .apply_remote("note.md", initial, &ValidationLimits::default())
         .unwrap();
-    let page = first.descriptor_page("note.md", None, 0, 2).unwrap();
+    let page = first.descriptor_page("note.md", None, None, 2).unwrap();
     let identities: Vec<_> = page.items.iter().map(|item| item.id).collect();
     let edit = WorkspaceEdit::SetMark {
         range: first.text_range("note.md", page.items[0].id, 0..5).unwrap(),
@@ -796,7 +804,7 @@ fn run_scoped_peer_schedule(remote_before_batch: bool) {
     assert_eq!(
         identities,
         first
-            .descriptor_page("note.md", None, 0, 2)
+            .descriptor_page("note.md", None, None, 2)
             .unwrap()
             .items
             .iter()
@@ -817,7 +825,7 @@ fn scoped_replay_accepts_every_unrelated_churn_attempt_while_exact_revision_retr
     fs::write(dir.path().join("note.md"), "alpha\n\nbeta\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     vault.open_document("note.md").unwrap();
-    let page = vault.descriptor_page("note.md", None, 0, 2).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 2).unwrap();
     let alpha = page.items[0].id;
     let beta = page.items[1].id;
     let mut strict_retries = 0;

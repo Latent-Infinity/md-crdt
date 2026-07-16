@@ -84,7 +84,7 @@ fn contract_fixture() -> Value {
     acknowledged.set(7, 9);
 
     json!({
-        "contract_version": 2,
+        "contract_version": 3,
         "document_handle": DocumentHandle {
             vault_id,
             document_id,
@@ -92,6 +92,10 @@ fn contract_fixture() -> Value {
             disk_fingerprint: Some(DiskFingerprint(6)),
         },
         "descriptor_page": DescriptorPage {
+            document_id,
+            revision: revision.clone(),
+            parent: None,
+            traversal: md_crdt::DescriptorTraversal::DirectChildren,
             items: vec![BlockDescriptor {
                 id: heading_id,
                 parent: None,
@@ -100,9 +104,12 @@ fn contract_fixture() -> Value {
                 heading_level: Some(1),
                 source_bytes: 8,
                 text_bytes: 5,
-                content_digest: 99,
+                node_digest: 99,
+                direct_child_count: 0,
+                descendant_count: 0,
+                subtree_digest: None,
             }],
-            next_offset: Some(1),
+            next_cursor: None,
         },
         "change_summary": summary,
         "edit_batch": batch,
@@ -145,7 +152,7 @@ fn contract_fixture() -> Value {
 
 #[test]
 fn versioned_workspace_contract_fixture_matches_public_serialization() {
-    let frozen: Value = serde_json::from_str(include_str!("fixtures/workspace-contract-v2.json"))
+    let frozen: Value = serde_json::from_str(include_str!("fixtures/workspace-contract-v3.json"))
         .expect("valid frozen workspace contract fixture");
     assert_eq!(frozen, contract_fixture());
 }

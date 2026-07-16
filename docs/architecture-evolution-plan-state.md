@@ -4,7 +4,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 | Field | Value |
 | --- | --- |
-| **Plan** | `docs/architecture-evolution.md` (Draft revision 14) |
+| **Plan** | `docs/architecture-evolution.md` (Draft revision 15) |
 | **Last updated** | 2026-07-16 |
 | **Tracking unit** | PR slices under design phases A–Q |
 | **Joint consumer plan** | `../md-mcp/docs/joint-md-crdt-v2-implementation-plan.md` |
@@ -59,7 +59,7 @@ reinitialized and re-ingested from Markdown.
 | **PR-35** Final compatibility purge | **done** | Snapshot V1/V2 and storage V1 readers/fixtures/aliases removed; current formats only |
 | **PR-36** Stable anchored edits/scoped preconditions | **done** | Stable start/end/unit targets; scoped semantic/placement digests; contract fixture v2; 100/100 unrelated-churn replay; Criterion gate ≤3.45% midpoint overhead; 98.12% changed-line coverage |
 | **PR-37** Bounded semantic projections | **done** | Owned field-selective DTOs, hard bounds/continuations, exact owned regions, frozen 3,055-byte transcript; 10k one-block gate ≈1,618× latency, 313× output, and 2,231× allocation improvement |
-| **PR-38** Revision-bound hierarchy cursors | **planned** | Depends on PR-37 |
+| **PR-38** Revision-bound hierarchy cursors | **done** | Stateless revision/parent/identity cursor; typed restart failures; node-local digest/count summaries; contract v3; wide/deep ablation gate |
 | **PR-39** Cell-addressable tables | **planned** | Depends on PR-36/38 |
 | **PR-40** Complete structured mutations | **planned** | Depends on PR-36–39 |
 
@@ -141,6 +141,9 @@ reinitialized and re-ingested from Markdown.
 | Joint contract fixture | Versioned serialized public-DTO producer fixture in this repository | Freezes a concrete cross-repo shape without introducing MCP response types into the core |
 | Projection representation ablation | Owned typed DTOs; exact source is opt-in; borrowed visitor remains benchmark-only | Visitor traversal is faster but cannot provide serde ownership, hard byte accounting, continuation, or a cross-language contract |
 | Projection lookup | One early-exit traversal retaining only requested identities | Avoids cold construction of the document-sized block index while preserving ordered selected output |
+| Descriptor continuation | Stateless revision/parent/traversal/last-id cursor with validated physical hint | Fails closed on mutation without retained server state and advances in O(page size), including page-size-1 scans |
+| Descriptor digest | Node-local semantic digest plus hierarchy counts and `ChangeSummary`; subtree digest omitted | The recursive control was only about 2.5× slower than the node-local lower-cost control, so a cache did not demonstrate the required 5× threshold and would add invalidation risk |
+| Semantic mark digest | Sort/deduplicate active semantic marks and exclude the `delimiter` attribute | CRDT interval ids/order and source delimiter choice are presentation/history, not semantic content |
 | Lossless representation ablation | Per-root semantic block source regions with owned leading trivia | Smallest option that preserves unsupported bytes and localizes edits. A piece table still needs semantic ownership mapping; a compact CST duplicates the authoritative CRDT tree and increases synchronization risk. |
 | Workspace identity files | UUID text in `.mdcrdt/vault_id` and path-scoped `.mdcrdt/document_ids/` entries, published durably | Content-independent handles survive edits/reopen; invalid identity bytes fail closed instead of silently replacing identity. |
 | Revision representation | Opaque 128-bit digest of the session snapshot | Detects observable state changes without exposing log or hashing details as API. |
@@ -260,7 +263,7 @@ repository was modified during this slice.
 - Caller-managed acknowledgement leases were selected over wall-clock expiry because the latter
   makes identical checkpoint requests depend on runtime timing. Tombstone GC remains `KeepAll`:
   acknowledgements do not prove that retained structural references are unreachable.
-- The producer fixture at `tests/fixtures/workspace-contract-v1.json` is generated from actual
+- The producer fixture at `tests/fixtures/workspace-contract-v3.json` is generated from actual
   public DTO serialization and covers handles, descriptors, summaries, edit batches, receipts,
   export/recovery, checkpoint requests, and rebase errors. The sibling consumer gate was not run
   because this slice is restricted to `md-crdt`.
@@ -461,7 +464,7 @@ The session result retains the same scaling signal as the lower-level sequence p
 
 All three verified **TRUE** with no functional bug in the atomicity/recovery cores; the gaps were proof (tests) and two minor real issues, both fixed. Plan-state progress rows were marked done and the Phase K checklist completed (they were still "planned" while implemented — a plan↔code drift, and the design-doc revision reference lagged 10 vs 11).
 
-**PR-29 descriptors/change summaries — TRUE.** Genuinely bounded: `Document::descriptor_page` paginates direct children with parameter `offset`/`limit` (no hardcoded size), reads `limit+1` to compute `next_offset`, and copies no text body; summaries are a real before/after structural diff hardened with an explicit-move-op override and an LIS false-positive guard. **Fixed:** `source_bytes` is pinned to the on-disk parse and goes stale after in-memory edits — documented on the field (`text_bytes`/`content_digest` track live content). **TDD gap closed:** added `local_edit_summary_reports_deleted_block_ids` (the `deleted` category had zero coverage). Residual (documented): the LIS reorder detector is only reachable via a non-move reorder path that isn't deterministically constructible through the public API; list-item descriptors are content-blind by design.
+**PR-29 descriptors/change summaries — TRUE.** The original bounded direct-child descriptor and summary mechanism was genuine; Phase O later replaced its numeric offset surface with revision-bound cursors and replaced recursive descriptor content digests with node-local semantic digests plus hierarchy counts. Summaries remain a real before/after structural diff hardened with an explicit-move-op override and an LIS false-positive guard. **Fixed:** `source_bytes` is pinned to the on-disk parse and goes stale after in-memory edits. **TDD gap closed:** added `local_edit_summary_reports_deleted_block_ids` (the `deleted` category had zero coverage). Residual (documented): the LIS reorder detector is only reachable via a non-move reorder path that isn't deterministically constructible through the public API.
 
 **PR-30 atomic document batches — TRUE (atomic in memory).** Batches apply to a snapshot-restored *probe* and swap into the live doc only on full success, so a mid-batch failure is inherently a no-op — no partial mutation, no Lamport-clock burn (probe drops on rejection; `preview`/`apply_previewed` re-verify the revision, so the token can't let a stale apply through). **Documented:** multi-doc `apply_edit_batches` persistence is in-memory-atomic but **not crash-atomic** (no journal, unlike the export path) — added a doc comment steering durability-sensitive callers to `export_markdown_transaction`. **TDD gaps closed:** added `batch_with_a_stale_expected_revision_is_rejected_without_mutation_or_clock_burn` (the headline precondition had no direct test) and `previewed_batch_rejects_apply_after_an_intervening_edit` (TOCTOU guard).
 
@@ -475,12 +478,51 @@ All verified with no functional bug; the critical CRDT-safety property (PR-33) h
 
 **PR-32 operation-segment integrity — TRUE (fail-closed).** `encode_op_segment` frames magic(8)+version(2)+length(8)+CRC(4)+payload; decode validates all four (header floor, magic, version, declared-length==actual, CRC over the payload slice), so truncation / bad magic / bad version / length / CRC all return `CorruptOperationSegment`. A corrupt or missing **middle** segment fails the whole read (no silent op drop); ordering is numeric (`parse::<usize>` + numeric sort), not lexicographic; appends are atomic+durable. **TDD gaps closed:** added `operation_segment_bad_magic_version_and_short_header_fail_closed` and `operation_segments_read_in_numeric_order_and_reject_a_middle_gap` (bad magic, bad version, header-floor truncation, ≥10 numeric ordering, and the non-contiguous middle-gap path were all untested). **Noted:** the op-segment machinery is complete + tested but **not yet wired into any recovery path** (no production caller) — forward-prep, unit-proven only.
 
-**PR-34 frozen `md-mcp` contract (producer side) — TRUE.** `workspace_fixture.rs` builds live instances of every public workspace DTO (handle, descriptors, `EditBatch` with a rich `WorkspaceEdit` mix, receipts, `CheckpointRequest`/`PeerLease`/`RebaseRequired`) and asserts byte-equality against the committed, versioned `fixtures/workspace-contract-v1.json` — a genuine field-by-field regression guard that fails on any renamed/removed/retyped public field. Sibling `md-mcp` consumption + token/task gate remain correctly out-of-repo (PR-34 "joint gate pending").
+**PR-34 frozen `md-mcp` contract (producer side) — TRUE.** `workspace_fixture.rs` builds live instances of every public workspace DTO (handle, descriptors, `EditBatch` with a rich `WorkspaceEdit` mix, receipts, `CheckpointRequest`/`PeerLease`/`RebaseRequired`) and asserts byte-equality against the committed current fixture (`fixtures/workspace-contract-v3.json`, superseding the pre-release v1/v2 shapes) — a genuine field-by-field regression guard that fails on any renamed/removed/retyped public field. Sibling `md-mcp` consumption + token/task gate remain correctly out-of-repo (PR-34 "joint gate pending").
 
 **PR-35 final compatibility purge — TRUE (fail-closed, complete).** `SNAPSHOT_FORMAT_VERSION = 3`; both snapshot loaders reject any non-V3 with a clear `ReinitializeRequired { found, expected }` (no panic, no silent-empty), and storage returns `ReinitializeRequired` when `LEGACY_SEGMENT_FILE` exists. Grep confirms no leftover dead references (`SuperblockV1`/`ArchivedSuperblockV1`/`SNAPSHOT_FORMAT_VERSION_V1`/`RichMarkSet`/`RichMarkInterval` all removed). Old on-disk state fails closed with a reinitialize-and-re-ingest error rather than corrupting.
 
+## PR-38 revision-bound hierarchy cursors — **done**
+
+- Public numeric offsets are removed. `DescriptorCursor` binds the document, revision, parent,
+  traversal, last logical id, and a checksum-protected O(1) physical continuation hint;
+  `DescriptorPage` returns the same scope plus `next_cursor`.
+- Typed failures cover zero limits, missing parents, corrupt encodings, wrong document/revision/
+  parent/traversal, and unresolved cursor anchors. Tests prove changing limits is safe, unchanged
+  traversal has no gaps/duplicates, and insert/delete/move require a fresh traversal whose result
+  matches the authoritative outline.
+- `BlockDescriptor` now reports direct-child/descendant counts and a node-local semantic digest.
+  `subtree_digest` is explicitly absent. Presentation-only mark delimiters and causal interval
+  ordering are excluded, while recursive projection and scoped-precondition digests remain intact.
+- Cursor ablation selected the stateless restart-on-change design: offset paging mixes revisions,
+  server snapshots add lifecycle state, and mutation-tolerant resume can obscure reordered or
+  inserted siblings. The cursor is fixed-shape (≤256 bytes in memory; 200 bytes in the JSON
+  encoding) independently of document size.
+- Digest ablation selected node-local summaries. The 64-level recursive end-to-end control measured
+  2.8430–2.8982 µs versus 1.1362–1.1452 µs for node-local descriptors. A Merkle cache therefore did
+  not demonstrate the required 5× repeated-read threshold and would add ancestor invalidation to
+  every mutation path; no cache or optional runtime mode ships.
+- The optimized 10,000-wide scan measured 27.309–27.958 ms (limit 1), 37.580–37.911 ms (32), and
+  36.089–36.437 ms (256). A 32-item page allocated 19,562 bytes and serialized to 8,302 bytes.
+  During audit, removing mark-order materialization for unmarked text and allocation-heavy cursor
+  checksumming cut allocation 96.4% and page-size-1 scan latency 66.2% from the first correct build.
+  One leaf update plus a root read measured 1.5160–1.5225 s. Node-local summaries skip zero
+  descriptors by subtree digest because no subtree cache ships.
+- Breaking fixtures are current-only: `workspace-contract-v3.json` and
+  `workspace-projection-transcript-v2.json`; the replaced pre-release fixtures were deleted.
+
 ## Gate
 
+- `just check` — **passed** for PR-38 (format, all-target/all-feature Clippy with warnings denied,
+  499 listed workspace tests/doctests, 0 failures).
+- `cargo llvm-cov --workspace --all-features --summary-only --quiet` — **passed**; 94.27%
+  repository line coverage, above the 94.00% Phase N baseline. `workspace.rs` is 97.08%,
+  `core/mod.rs` is 90.40%, and `filesync/session.rs` is 91.87% line-covered.
+- `cargo bench --features filesync --bench performance -- workspace_hierarchy --sample-size 10
+  --measurement-time 0.2` — **passed** for wide/deep page sizes 1/32/256, recursive/node-local
+  digest controls, and the one-leaf update/root-read case; measurements are recorded above.
+- `cargo check --features filesync --bench performance` — **passed** during implementation; the
+  final benchmark target also compiled under the all-target Clippy gate.
 - `just check` — **passed** for Phase N (format, all-target/all-feature Clippy with warnings denied,
   495 listed workspace tests/doctests, 0 failures)
 - `cargo llvm-cov --workspace --all-features --summary-only --quiet` — **passed**; 94.00%

@@ -44,7 +44,7 @@ fn transcript() -> Value {
 
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let map = vault.descriptor_page("note.md", None, 0, 4).unwrap();
+    let map = vault.descriptor_page("note.md", None, None, 4).unwrap();
     let section_ids = map.items[..2].iter().map(|item| item.id).collect();
     let initial_read = vault
         .project_blocks("note.md", projection_request(&handle, section_ids))
@@ -78,7 +78,7 @@ fn transcript() -> Value {
     let total_core_response_bytes =
         map_bytes + initial_read.bytes_used + edit_bytes + affected_read.bytes_used;
     json!({
-        "fixture_version": 1,
+        "fixture_version": 2,
         "map": map,
         "initial_read": initial_read,
         "edit_receipt": receipt,
@@ -96,8 +96,14 @@ fn transcript() -> Value {
 #[test]
 fn deterministic_map_read_edit_read_transcript_matches_fixture() {
     let actual = transcript();
+    if std::env::var_os("MD_CRDT_UPDATE_FIXTURES").is_some() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/workspace-projection-transcript-v2.json");
+        fs::write(path, serde_json::to_string_pretty(&actual).unwrap() + "\n").unwrap();
+        return;
+    }
     let frozen: Value = serde_json::from_str(include_str!(
-        "fixtures/workspace-projection-transcript-v1.json"
+        "fixtures/workspace-projection-transcript-v2.json"
     ))
     .expect("valid frozen projection transcript");
     assert_eq!(frozen, actual);

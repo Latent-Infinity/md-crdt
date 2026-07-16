@@ -155,6 +155,21 @@ impl<T: Clone> Sequence<T> {
             .count()
     }
 
+    pub(crate) fn visible_at_physical(&self, index: usize) -> Option<&T> {
+        self.elements.get(index)?.value.as_ref()
+    }
+
+    pub(crate) fn iter_visible_from_physical(
+        &self,
+        start: usize,
+    ) -> impl Iterator<Item = (usize, &T)> {
+        self.elements
+            .iter()
+            .enumerate()
+            .skip(start)
+            .filter_map(|(index, element)| element.value.as_ref().map(|value| (index, value)))
+    }
+
     pub fn get_element(&self, id: &OpId) -> Option<&Element<T>> {
         self.index.get(id).and_then(|idx| self.elements.get(*idx))
     }

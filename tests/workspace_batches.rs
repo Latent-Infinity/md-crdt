@@ -64,7 +64,11 @@ fn preview_is_non_mutating_and_apply_returns_the_same_compact_delta() {
     fs::write(dir.path().join("note.md"), "alpha\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let block_id = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
+    let block_id = vault
+        .descriptor_page("note.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
     let insert = insert_text(&mut vault, "note.md", block_id, 5, " beta");
     let mark = set_mark(&mut vault, "note.md", block_id, 0..5, MarkKind::Bold);
     let request = batch(&handle, vec![insert, mark]);
@@ -136,7 +140,11 @@ fn preview_token_rejects_a_different_operation_sequence_without_mutation() {
     fs::write(dir.path().join("note.md"), "alpha\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let block_id = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
+    let block_id = vault
+        .descriptor_page("note.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
     let first_edit = insert_text(&mut vault, "note.md", block_id, 5, " one");
     let first = batch(&handle, vec![first_edit]);
     let preview = vault.preview_edit_batch("note.md", &first).unwrap();
@@ -158,8 +166,8 @@ fn multi_document_prevalidation_is_all_or_nothing() {
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let a = vault.open_document("a.md").unwrap();
     let b = vault.open_document("b.md").unwrap();
-    let a_id = vault.descriptor_page("a.md", None, 0, 1).unwrap().items[0].id;
-    let b_id = vault.descriptor_page("b.md", None, 0, 1).unwrap().items[0].id;
+    let a_id = vault.descriptor_page("a.md", None, None, 1).unwrap().items[0].id;
+    let b_id = vault.descriptor_page("b.md", None, None, 1).unwrap().items[0].id;
     let a_next = vault.session_mut("a.md").unwrap().peek_next_id();
     let b_next = vault.session_mut("b.md").unwrap().peek_next_id();
 
@@ -211,8 +219,8 @@ fn multi_document_batches_enforce_identity_and_uniqueness_then_install_together(
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let a = vault.open_document("a.md").unwrap();
     let b = vault.open_document("b.md").unwrap();
-    let a_id = vault.descriptor_page("a.md", None, 0, 1).unwrap().items[0].id;
-    let b_id = vault.descriptor_page("b.md", None, 0, 1).unwrap().items[0].id;
+    let a_id = vault.descriptor_page("a.md", None, None, 1).unwrap().items[0].id;
+    let b_id = vault.descriptor_page("b.md", None, None, 1).unwrap().items[0].id;
 
     let wrong_identity = EditBatch {
         document_id: md_crdt::DocumentId::from_u128(1),
@@ -276,7 +284,7 @@ fn batch_supports_structural_mark_frontmatter_and_section_operations() {
     .unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let mut handle = vault.open_document("note.md").unwrap();
-    let page = vault.descriptor_page("note.md", None, 0, 8).unwrap();
+    let page = vault.descriptor_page("note.md", None, None, 8).unwrap();
     let first_heading = page.items[0].id;
     let alpha = page.items[1].id;
     let second_heading = page.items[2].id;
@@ -401,7 +409,11 @@ fn batch_supports_table_metadata_rows_and_reorder() {
     fs::write(dir.path().join("note.md"), "anchor\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let mut handle = vault.open_document("note.md").unwrap();
-    let anchor = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
+    let anchor = vault
+        .descriptor_page("note.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
     let table_id = block_id_from_op(vault.session_mut("note.md").unwrap().peek_next_id());
     let (inserted, next) = apply_one(
         &mut vault,
@@ -507,7 +519,11 @@ fn strict_batch_with_a_stale_base_revision_is_rejected_without_mutation_or_clock
     fs::write(dir.path().join("note.md"), "alpha\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let stale_handle = vault.open_document("note.md").unwrap();
-    let block_id = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
+    let block_id = vault
+        .descriptor_page("note.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
     let stale_edit = insert_text(&mut vault, "note.md", block_id, 0, "X");
 
     // Advance the document so `stale_handle.revision` is no longer current.
@@ -547,7 +563,11 @@ fn empty_batch_retains_strict_stale_revision_behavior() {
     fs::write(dir.path().join("note.md"), "alpha\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let stale_handle = vault.open_document("note.md").unwrap();
-    let block_id = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
+    let block_id = vault
+        .descriptor_page("note.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
     vault
         .session_mut("note.md")
         .unwrap()
@@ -566,7 +586,11 @@ fn previewed_batch_rejects_apply_after_an_intervening_edit() {
     fs::write(dir.path().join("note.md"), "alpha\n").unwrap();
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let handle = vault.open_document("note.md").unwrap();
-    let block_id = vault.descriptor_page("note.md", None, 0, 1).unwrap().items[0].id;
+    let block_id = vault
+        .descriptor_page("note.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
     let edit = insert_text(&mut vault, "note.md", block_id, 5, " beta");
     let request = batch(&handle, vec![edit]);
 

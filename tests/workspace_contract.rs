@@ -56,7 +56,10 @@ fn workspace_contract_types_are_concrete_and_mcp_agnostic() {
         heading_level: None,
         source_bytes: 5,
         text_bytes: 5,
-        content_digest: 9,
+        node_digest: 9,
+        direct_child_count: 0,
+        descendant_count: 0,
+        subtree_digest: None,
     };
     let batch = EditBatch {
         document_id,

@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regions
 - `workspace_projection` benchmarks and a counting-allocation gate across 100/1,000/10,000-block
   corpora with 1/8/32 selected blocks, plus a frozen map → read → edit → read byte transcript
+- Opaque revision-bound descriptor cursors with typed scope/corruption failures, safe variable page
+  limits, and O(page-size) continuation
+- Descriptor direct-child/descendant counts, node-local semantic digests, and wide/deep hierarchy
+  benchmarks covering page sizes 1/32/256 and recursive-versus-node digest controls
 
 ### Changed
 
@@ -28,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Nested container descendants and relevant inline marks now participate in scoped semantic digests
 - Vault revision tokens are cached across read-only calls and invalidated at mutable session
   boundaries, avoiding full-session snapshot serialization on bounded projection reads
+- Breaking workspace contract v3 replaces descriptor offsets with cursors and replaces descriptor
+  `content_digest` with node-local `node_digest`, hierarchy counts, and an optional subtree digest
 
 ## [0.2.1] - 2026-07-15
 

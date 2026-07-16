@@ -51,8 +51,8 @@ pub enum VaultError {
     Session(String),
     #[error("unsupported block kind during ingest: {0}")]
     UnsupportedIngestBlock(&'static str),
-    #[error("descriptor parent not found: {0}")]
-    DescriptorParentNotFound(BlockId),
+    #[error(transparent)]
+    Descriptor(#[from] crate::DescriptorError),
     #[error("document id mismatch: expected {expected}, actual {actual}")]
     DocumentIdMismatch {
         expected: crate::DocumentId,

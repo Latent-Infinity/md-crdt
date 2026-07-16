@@ -63,8 +63,8 @@ fn multi_document_export_publishes_every_file_and_cleans_the_journal() {
         Err(VaultError::PathDoesNotExist(_))
     ));
     let b = vault.open_document("b.md").unwrap();
-    let a_id = vault.descriptor_page("a.md", None, 0, 1).unwrap().items[0].id;
-    let b_id = vault.descriptor_page("b.md", None, 0, 1).unwrap().items[0].id;
+    let a_id = vault.descriptor_page("a.md", None, None, 1).unwrap().items[0].id;
+    let b_id = vault.descriptor_page("b.md", None, None, 1).unwrap().items[0].id;
     vault
         .with_local_edit("a.md", |session| session.insert_text(a_id, 5, " one"))
         .unwrap()
@@ -117,7 +117,7 @@ fn multi_document_export_prevalidation_writes_nothing_on_one_stale_request() {
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let a = vault.open_document("a.md").unwrap();
     let b = vault.open_document("b.md").unwrap();
-    let a_id = vault.descriptor_page("a.md", None, 0, 1).unwrap().items[0].id;
+    let a_id = vault.descriptor_page("a.md", None, None, 1).unwrap().items[0].id;
     vault
         .with_local_edit("a.md", |session| session.insert_text(a_id, 5, " changed"))
         .unwrap()
@@ -201,7 +201,7 @@ fn open_recovers_a_half_applied_multi_file_export_intent() {
 
     let b = vault.open_document("b.md").unwrap();
     assert_eq!(
-        vault.descriptor_page("b.md", None, 0, 1).unwrap().items[0].text_bytes,
+        vault.descriptor_page("b.md", None, None, 1).unwrap().items[0].text_bytes,
         "new-b".len()
     );
     assert_eq!(

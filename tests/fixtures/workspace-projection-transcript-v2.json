@@ -1,0 +1,325 @@
+{
+  "affected_read": {
+    "bytes_used": 763,
+    "continuation": null,
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "items": [
+      {
+        "content_digest": 6363820711575891168,
+        "id": "00000000-0000-0007-0000-000000000007",
+        "kind": "Paragraph",
+        "marks": [
+          {
+            "attrs": {
+              "delimiter": {
+                "String": "**"
+              }
+            },
+            "kind": "Bold",
+            "range": {
+              "end": {
+                "block_id": "00000000-0000-0007-0000-000000000007",
+                "position": "End"
+              },
+              "start": {
+                "block_id": "00000000-0000-0007-0000-000000000007",
+                "position": {
+                  "Unit": {
+                    "bias": "Before",
+                    "elem_id": {
+                      "counter": 14,
+                      "peer": 7
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "text": "first! bold",
+        "text_ranges": [
+          {
+            "end": {
+              "block_id": "00000000-0000-0007-0000-000000000007",
+              "position": "End"
+            },
+            "start": {
+              "block_id": "00000000-0000-0007-0000-000000000007",
+              "position": "Start"
+            }
+          }
+        ]
+      }
+    ],
+    "omitted_ids": [],
+    "revision": [
+      147,
+      134,
+      230,
+      61,
+      21,
+      150,
+      23,
+      94,
+      127,
+      13,
+      96,
+      231,
+      156,
+      183,
+      176,
+      2
+    ]
+  },
+  "edit_receipt": {
+    "changes": {
+      "affected_parents": [],
+      "affected_sections": [
+        "00000000-0000-0007-0000-000000000001"
+      ],
+      "created": [],
+      "deleted": [],
+      "moved": [],
+      "operation_count": 1,
+      "revision": [
+        147,
+        134,
+        230,
+        61,
+        21,
+        150,
+        23,
+        94,
+        127,
+        13,
+        96,
+        231,
+        156,
+        183,
+        176,
+        2
+      ],
+      "updated": [
+        "00000000-0000-0007-0000-000000000007"
+      ]
+    },
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "previous_revision": [
+      9,
+      185,
+      59,
+      151,
+      212,
+      162,
+      79,
+      89,
+      192,
+      209,
+      177,
+      244,
+      245,
+      65,
+      59,
+      103
+    ],
+    "revision": [
+      147,
+      134,
+      230,
+      61,
+      21,
+      150,
+      23,
+      94,
+      127,
+      13,
+      96,
+      231,
+      156,
+      183,
+      176,
+      2
+    ]
+  },
+  "fixture_version": 2,
+  "initial_read": {
+    "bytes_used": 1076,
+    "continuation": null,
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "items": [
+      {
+        "content_digest": 5740975494226343204,
+        "id": "00000000-0000-0007-0000-000000000001",
+        "kind": {
+          "Heading": {
+            "level": 1
+          }
+        },
+        "marks": [],
+        "text": "Alpha",
+        "text_ranges": [
+          {
+            "end": {
+              "block_id": "00000000-0000-0007-0000-000000000001",
+              "position": "End"
+            },
+            "start": {
+              "block_id": "00000000-0000-0007-0000-000000000001",
+              "position": "Start"
+            }
+          }
+        ]
+      },
+      {
+        "content_digest": 8851096902144624347,
+        "id": "00000000-0000-0007-0000-000000000007",
+        "kind": "Paragraph",
+        "marks": [
+          {
+            "attrs": {
+              "delimiter": {
+                "String": "**"
+              }
+            },
+            "kind": "Bold",
+            "range": {
+              "end": {
+                "block_id": "00000000-0000-0007-0000-000000000007",
+                "position": "End"
+              },
+              "start": {
+                "block_id": "00000000-0000-0007-0000-000000000007",
+                "position": {
+                  "Unit": {
+                    "bias": "Before",
+                    "elem_id": {
+                      "counter": 14,
+                      "peer": 7
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "text": "first bold",
+        "text_ranges": [
+          {
+            "end": {
+              "block_id": "00000000-0000-0007-0000-000000000007",
+              "position": "End"
+            },
+            "start": {
+              "block_id": "00000000-0000-0007-0000-000000000007",
+              "position": "Start"
+            }
+          }
+        ]
+      }
+    ],
+    "omitted_ids": [],
+    "revision": [
+      9,
+      185,
+      59,
+      151,
+      212,
+      162,
+      79,
+      89,
+      192,
+      209,
+      177,
+      244,
+      245,
+      65,
+      59,
+      103
+    ]
+  },
+  "map": {
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "items": [
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": 1,
+        "id": "00000000-0000-0007-0000-000000000001",
+        "kind": "Heading",
+        "node_digest": 9104507374200258119,
+        "order": 0,
+        "parent": null,
+        "source_bytes": 7,
+        "subtree_digest": null,
+        "text_bytes": 5
+      },
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-000000000007",
+        "kind": "Paragraph",
+        "node_digest": 15260871790262204594,
+        "order": 1,
+        "parent": null,
+        "source_bytes": 14,
+        "subtree_digest": null,
+        "text_bytes": 10
+      },
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": 1,
+        "id": "00000000-0000-0007-0000-000000000013",
+        "kind": "Heading",
+        "node_digest": 9105769454269044054,
+        "order": 2,
+        "parent": null,
+        "source_bytes": 6,
+        "subtree_digest": null,
+        "text_bytes": 4
+      },
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-000000000018",
+        "kind": "Paragraph",
+        "node_digest": 15299414219624207660,
+        "order": 3,
+        "parent": null,
+        "source_bytes": 6,
+        "subtree_digest": null,
+        "text_bytes": 6
+      }
+    ],
+    "next_cursor": null,
+    "parent": null,
+    "revision": [
+      9,
+      185,
+      59,
+      151,
+      212,
+      162,
+      79,
+      89,
+      192,
+      209,
+      177,
+      244,
+      245,
+      65,
+      59,
+      103
+    ],
+    "traversal": "DirectChildren"
+  },
+  "response_bytes": {
+    "affected_read": 763,
+    "edit": 474,
+    "initial_read": 1076,
+    "map": 1158,
+    "total": 3471
+  }
+}

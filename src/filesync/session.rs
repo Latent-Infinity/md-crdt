@@ -15,9 +15,11 @@ use crate::doc::{
 use crate::session::{CollaborativeDocument, SessionError, SnapshotError, SyncResponse};
 use crate::storage::{Storage, StorageError};
 use crate::sync::{ChangeMessage, ValidationLimits};
-use crate::workspace::{capture_outline, replace_moved_ids, summarize_outline_change};
+use crate::workspace::{
+    capture_outline, replace_moved_ids, stable_hash_128, summarize_outline_change,
+};
 use crate::{
-    BatchPreview, BatchReceipt, DeletedDocument, DescriptorPage, DiskFingerprint,
+    BatchPreview, BatchReceipt, DeletedDocument, DescriptorCursor, DescriptorPage, DiskFingerprint,
     DocumentEditBatch, DocumentExportRequest, DocumentHandle, DocumentId, EditBatch,
     LocalEditOutcome, MultiBatchReceipt, MultiExportOutcome, PreviewToken, ProjectionPage,
     ProjectionRequest, RecoveryReport, RemoteApplyOutcome, RevisionToken, VaultId, WorkspaceEdit,
@@ -123,18 +125,16 @@ impl VaultSession {
         &mut self,
         rel_path: impl AsRef<Path>,
         parent: Option<BlockId>,
-        offset: usize,
+        cursor: Option<&DescriptorCursor>,
         limit: usize,
     ) -> Result<DescriptorPage, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
+        let document_id = self.document_id(&rel)?;
+        let revision = self.revision(&rel)?;
         self.session(&rel)?
             .document()
-            .descriptor_page(parent, offset, limit)
-            .ok_or_else(|| {
-                VaultError::DescriptorParentNotFound(
-                    parent.expect("the document root always resolves to a descriptor sequence"),
-                )
-            })
+            .descriptor_page(document_id, revision, parent, cursor, limit)
+            .map_err(Into::into)
     }
 
     /// Create a stable text point from a current grapheme offset.
@@ -1749,14 +1749,6 @@ fn summarize_session_transition(
         replace_moved_ids(&mut summary, before, &after, explicit_moved);
     }
     Ok(summary)
-}
-
-fn stable_hash_128(bytes: &[u8]) -> u128 {
-    const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
-    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
-    bytes.iter().fold(OFFSET, |hash, byte| {
-        (hash ^ u128::from(*byte)).wrapping_mul(PRIME)
-    })
 }
 
 fn disk_fingerprint(path: &Path) -> Result<Option<DiskFingerprint>, VaultError> {
