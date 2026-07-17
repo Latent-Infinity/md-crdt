@@ -263,14 +263,19 @@ fn nested_paragraph_in_list_item_converges() {
         ListItem {
             id: block_id_from_op(item_elem),
             elem_id: item_elem,
+            task: None,
+            task_op: item_elem,
+            task_observed: md_crdt::core::StateVector::new(),
+            placement_observed: md_crdt::core::StateVector::new(),
             children: Sequence::new(),
         },
     )]);
     a.insert_block(
         None,
         BlockKind::List {
-            ordered: false,
+            style: md_crdt::ListStyle::default(),
             items,
+            pending_moves: Vec::new(),
         },
     )
     .expect("list");

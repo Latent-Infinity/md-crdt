@@ -122,7 +122,10 @@ fn semantic_projection_matches_authoritative_markdown_model() {
             ),
         )
         .unwrap();
-    assert_eq!(item.items[0].kind, Some(BlockProjectionKind::ListItem));
+    assert_eq!(
+        item.items[0].kind,
+        Some(BlockProjectionKind::ListItem { task: None })
+    );
     assert_eq!(item.items[0].text.as_deref(), Some("one"));
     assert!(item.items[0].content_digest.is_some());
     assert_ne!(list_items.items[0].node_digest, 0);
@@ -349,6 +352,7 @@ fn code_and_raw_blocks_project_typed_kind_and_visible_content() {
     assert_eq!(
         page.items[0].kind,
         Some(BlockProjectionKind::CodeFence {
+            style: md_crdt::CodeFenceStyle::default(),
             info: Some("rust".into())
         })
     );

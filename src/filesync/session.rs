@@ -9,8 +9,8 @@ use crate::codec::{DocOp, JsonOpCodec, OpBody, OpCodec};
 use crate::core::mark::{MarkKind, MarkValue};
 use crate::core::{OpId, PeerId, Sequence, StateVector};
 use crate::doc::{
-    Block, BlockId, BlockKind, Document, ListItem, Parser, RowId, Table, block_id_from_op,
-    paragraph_visible_string,
+    Block, BlockId, BlockKind, ColumnId, Document, ListItem, Parser, RowId, Table,
+    block_id_from_op, paragraph_visible_string,
 };
 use crate::session::{CollaborativeDocument, SessionError, SnapshotError, SyncResponse};
 use crate::storage::{Storage, StorageError};
@@ -22,7 +22,8 @@ use crate::{
     BatchPreview, BatchReceipt, DeletedDocument, DescriptorCursor, DescriptorPage, DiskFingerprint,
     DocumentEditBatch, DocumentExportRequest, DocumentHandle, DocumentId, EditBatch,
     LocalEditOutcome, MultiBatchReceipt, MultiExportOutcome, PreviewToken, ProjectionPage,
-    ProjectionRequest, RecoveryReport, RemoteApplyOutcome, RevisionToken, VaultId, WorkspaceEdit,
+    ProjectionRequest, RecoveryReport, RemoteApplyOutcome, RevisionToken, StructuredEditLimits,
+    VaultId, WorkspaceEdit,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -1402,6 +1403,15 @@ fn apply_workspace_edit(
     operation: &WorkspaceEdit,
 ) -> Result<(), SessionError> {
     match operation {
+        WorkspaceEdit::InsertBlock {
+            parent,
+            after,
+            draft,
+        } => {
+            let parent = resolve_container(session.document(), *parent)?;
+            let after = resolve_block_elem(session.document(), *after)?;
+            session.insert_draft_in(parent, after, draft, StructuredEditLimits::default())?;
+        }
         WorkspaceEdit::InsertParagraph {
             parent,
             after,
@@ -1528,6 +1538,23 @@ fn apply_workspace_edit(
             let after = resolve_row_elem(session.document(), *table_id, *after)?;
             session.insert_table_row(*table_id, after, cells.clone())?;
         }
+        WorkspaceEdit::InsertTableColumn {
+            table_id,
+            after,
+            alignment,
+            header,
+        } => {
+            let after = resolve_column_elem(session.document(), *table_id, *after)?;
+            session.insert_table_column(*table_id, after, alignment.clone(), header.clone())?;
+        }
+        WorkspaceEdit::SetTableCell {
+            table_id,
+            row_id,
+            column_id,
+            value,
+        } => {
+            session.set_table_cell(*table_id, *row_id, *column_id, value.clone())?;
+        }
         WorkspaceEdit::SetTableRowCells {
             table_id,
             row_id,
@@ -1541,6 +1568,19 @@ fn apply_workspace_edit(
             let row = resolve_row_elem(session.document(), *table_id, Some(*row_id))?
                 .ok_or(SessionError::TableRowNotFound)?;
             session.delete_table_row(*table_id, row)?;
+        }
+        WorkspaceEdit::DeleteTableColumn {
+            table_id,
+            column_id,
+        } => {
+            session.delete_table_column(*table_id, *column_id)?;
+        }
+        WorkspaceEdit::SetTableColumnAlignment {
+            table_id,
+            column_id,
+            alignment,
+        } => {
+            session.set_table_column_alignment(*table_id, *column_id, alignment.clone())?;
         }
         WorkspaceEdit::SetTableMetadata {
             table_id,
@@ -1556,6 +1596,75 @@ fn apply_workspace_edit(
         } => {
             let after = resolve_row_elem(session.document(), *table_id, *after)?;
             session.move_table_row(*table_id, *row_id, after)?;
+        }
+        WorkspaceEdit::MoveTableColumn {
+            table_id,
+            column_id,
+            after,
+        } => {
+            let after = resolve_column_elem(session.document(), *table_id, *after)?;
+            session.move_table_column(*table_id, *column_id, after)?;
+        }
+        WorkspaceEdit::InsertListItem {
+            list_id,
+            after,
+            item,
+        } => {
+            let after = resolve_list_item_elem(session.document(), *list_id, *after)?;
+            session.insert_list_item_draft(
+                *list_id,
+                after,
+                item,
+                StructuredEditLimits::default(),
+            )?;
+        }
+        WorkspaceEdit::DeleteListItem { item_id } => {
+            session.delete_list_item(*item_id)?;
+        }
+        WorkspaceEdit::MoveListItem {
+            item_id,
+            list_id,
+            after,
+        } => {
+            let after = resolve_list_item_elem(session.document(), *list_id, *after)?;
+            session.move_list_item(*item_id, *list_id, after)?;
+        }
+        WorkspaceEdit::SetListStyle { list_id, style } => {
+            session.set_list_style(*list_id, *style)?;
+        }
+        WorkspaceEdit::SetListItemTask { item_id, task } => {
+            session.set_list_item_task(*item_id, *task)?;
+        }
+        WorkspaceEdit::WrapBlocks { block_ids } => {
+            session.wrap_blocks(block_ids)?;
+        }
+        WorkspaceEdit::UnwrapBlockQuote { block_id } => {
+            session.unwrap_blockquote(*block_id)?;
+        }
+        WorkspaceEdit::SetCodeFence {
+            block_id,
+            style,
+            info,
+            text,
+        } => {
+            session.set_code_fence(*block_id, *style, info.clone(), text.clone())?;
+        }
+        WorkspaceEdit::ConvertTextBlock { block_id, kind } => {
+            session.convert_text_block(*block_id, *kind)?;
+        }
+        WorkspaceEdit::ReplaceRawBlock {
+            block_id,
+            expected_digest,
+            raw,
+        } => {
+            let actual = session
+                .document()
+                .node_digest_for(*block_id)
+                .map_err(|_| SessionError::BlockNotFound)?;
+            if actual != *expected_digest {
+                return Err(SessionError::RawDigestMismatch);
+            }
+            session.replace_raw_block(*block_id, raw.clone())?;
         }
     }
     Ok(())
@@ -1629,6 +1738,47 @@ fn resolve_row_elem(
         .row_by_id(row_id)
         .map(|row| Some(row.elem_id))
         .ok_or(SessionError::TableRowNotFound)
+}
+
+fn resolve_list_item_elem(
+    document: &Document,
+    list_id: BlockId,
+    item_id: Option<BlockId>,
+) -> Result<Option<OpId>, SessionError> {
+    let Some(item_id) = item_id else {
+        return Ok(None);
+    };
+    let items = document.list_items(list_id).ok_or(SessionError::NotList)?;
+    items
+        .iter_all()
+        .find(|element| {
+            element
+                .value
+                .as_ref()
+                .is_some_and(|item| item.id == item_id)
+        })
+        .map(|element| Some(element.id))
+        .ok_or(SessionError::ListItemNotFound)
+}
+
+fn resolve_column_elem(
+    document: &Document,
+    table_id: BlockId,
+    column_id: Option<ColumnId>,
+) -> Result<Option<OpId>, SessionError> {
+    let Some(column_id) = column_id else {
+        return Ok(None);
+    };
+    let block = document
+        .find_block_by_id(table_id)
+        .ok_or(SessionError::BlockNotFound)?;
+    let BlockKind::Table { table } = &block.kind else {
+        return Err(SessionError::NotTable);
+    };
+    table
+        .column_by_id(column_id)
+        .map(|column| Some(column.elem_id))
+        .ok_or(SessionError::TableColumnNotFound)
 }
 
 trait PersistentIdentity: Copy + std::fmt::Display + std::str::FromStr {
@@ -2385,12 +2535,56 @@ fn sync_table(
         })
         .ok_or(VaultError::UnsupportedIngestBlock("matched table missing"))?;
     let mut ops = 0usize;
-    if current.columns.get_ref() != parsed.columns.get_ref()
-        || current.header.get_ref() != parsed.header.get_ref()
-    {
+    let current_columns = current.columns_in_order();
+    let parsed_columns = parsed.columns_in_order();
+    let parsed_header = parsed.row_cells(parsed.header_row_id());
+    for (index, (old, new)) in current_columns.iter().zip(&parsed_columns).enumerate() {
+        if old.alignment.get_ref() != new.alignment.get_ref() {
+            session
+                .set_table_column_alignment(table_id, old.id, new.alignment.get())
+                .map_err(session_err)?;
+            ops += 1;
+        }
+        if current
+            .cell_value(current.header_row_id(), old.id)
+            .unwrap_or_default()
+            != parsed_header[index]
+        {
+            session
+                .set_table_cell(table_id, table_id, old.id, parsed_header[index].clone())
+                .map_err(session_err)?;
+            ops += 1;
+        }
+    }
+    for column in current_columns.iter().skip(parsed_columns.len()) {
         session
-            .set_table_metadata(table_id, parsed.columns.get(), parsed.header.get())
+            .delete_table_column(table_id, column.id)
             .map_err(session_err)?;
+        ops += 1;
+    }
+    let mut column_after = current_columns
+        .get(
+            parsed_columns
+                .len()
+                .min(current_columns.len())
+                .saturating_sub(1),
+        )
+        .map(|column| column.elem_id);
+    for (index, column) in parsed_columns
+        .iter()
+        .enumerate()
+        .skip(current_columns.len())
+    {
+        column_after = Some(
+            session
+                .insert_table_column(
+                    table_id,
+                    column_after,
+                    column.alignment.get(),
+                    parsed_header[index].clone(),
+                )
+                .map_err(session_err)?,
+        );
         ops += 1;
     }
 
@@ -2400,7 +2594,8 @@ fn sync_table(
     let mut mapping: Vec<Option<RowId>> = vec![None; new_rows.len()];
     for (new_index, new_row) in new_rows.iter().enumerate() {
         if let Some(old_row) = old_rows.iter().find(|old_row| {
-            !used_old.contains(&old_row.id) && old_row.cells.get_ref() == new_row.cells.get_ref()
+            !used_old.contains(&old_row.id)
+                && current.row_cells(old_row.id) == parsed.row_cells(new_row.id)
         }) {
             used_old.insert(old_row.id);
             mapping[new_index] = Some(old_row.id);
@@ -2418,9 +2613,13 @@ fn sync_table(
     for (old_row, new_index) in remaining_old.iter().zip(&remaining_new) {
         used_old.insert(old_row.id);
         mapping[*new_index] = Some(old_row.id);
-        if old_row.cells.get_ref() != new_rows[*new_index].cells.get_ref() {
+        if current.row_cells(old_row.id) != parsed.row_cells(new_rows[*new_index].id) {
             session
-                .set_table_row_cells(table_id, old_row.elem_id, new_rows[*new_index].cells.get())
+                .set_table_row_cells(
+                    table_id,
+                    old_row.elem_id,
+                    parsed.row_cells(new_rows[*new_index].id),
+                )
                 .map_err(session_err)?;
             ops += 1;
         }
@@ -2448,7 +2647,7 @@ fn sync_table(
                     })
             });
         let elem = session
-            .insert_table_row(table_id, after, new_rows[new_index].cells.get())
+            .insert_table_row(table_id, after, parsed.row_cells(new_rows[new_index].id))
             .map_err(session_err)?;
         mapping[new_index] = Some(block_id_from_op(elem));
         ops += 1;
@@ -2530,7 +2729,7 @@ fn insert_one(
             n += apply_parsed_marks(session, block, block_id_from_op(id))?;
             Ok((id, n))
         }
-        BlockKind::List { ordered, items } => {
+        BlockKind::List { style, items, .. } => {
             // Insert the list with session-allocated, contiguous item ids and empty item
             // children, then insert each item's children (paragraph text via InsertText).
             // Avoids unit-mode text stripping and keeps the list body syncable.
@@ -2539,7 +2738,7 @@ fn insert_one(
             let ordered_items: Vec<&ListItem> = items.iter().collect();
             let mut item_elems: Vec<OpId> = Vec::new();
             let mut empty: Vec<(OpId, ListItem)> = Vec::new();
-            for i in 0..ordered_items.len() {
+            for (i, item) in ordered_items.iter().enumerate() {
                 let elem = OpId {
                     counter: base + 1 + i as u64,
                     peer,
@@ -2550,6 +2749,10 @@ fn insert_one(
                     ListItem {
                         id: crate::doc::block_id_from_op(elem),
                         elem_id: elem,
+                        task: item.task,
+                        task_op: elem,
+                        task_observed: crate::core::StateVector::new(),
+                        placement_observed: crate::core::StateVector::new(),
                         children: Sequence::new(),
                     },
                 ));
@@ -2559,8 +2762,9 @@ fn insert_one(
                     parent,
                     after,
                     BlockKind::List {
-                        ordered: *ordered,
+                        style: *style,
                         items: Sequence::from_ordered(empty),
+                        pending_moves: Vec::new(),
                     },
                 )
                 .map_err(session_err)?;
@@ -2571,12 +2775,13 @@ fn insert_one(
             }
             Ok((list_elem, n))
         }
-        BlockKind::CodeFence { info, text } => {
+        BlockKind::CodeFence { style, info, text } => {
             let id = session
                 .insert_block_in(
                     parent,
                     after,
                     BlockKind::CodeFence {
+                        style: *style,
                         info: info.clone(),
                         text: text.clone(),
                     },
@@ -2605,8 +2810,20 @@ fn insert_one(
             Ok((q, 1 + nested))
         }
         BlockKind::Table { table } => {
+            let columns = table
+                .columns_in_order()
+                .into_iter()
+                .map(|column| crate::doc::ColumnDef {
+                    alignment: column.alignment.get(),
+                })
+                .collect();
             let id = session
-                .insert_table_in(parent, after, table.columns.get(), table.header.get())
+                .insert_table_in(
+                    parent,
+                    after,
+                    columns,
+                    table.row_cells(table.header_row_id()),
+                )
                 .map_err(session_err)?;
             let table_id = block_id_from_op(id);
             let mut row_after = None;
@@ -2614,7 +2831,7 @@ fn insert_one(
             for row in table.rows.iter() {
                 row_after = Some(
                     session
-                        .insert_table_row(table_id, row_after, row.cells.get())
+                        .insert_table_row(table_id, row_after, table.row_cells(row.id))
                         .map_err(session_err)?,
                 );
                 ops += 1;

@@ -90,11 +90,22 @@ pub(super) fn operation_extent(env: &Envelope) -> (OpId, u64) {
         }
         OpBody::Doc(
             DocOp::InsertTableRow { id, .. }
-            | DocOp::SetTableRowCells { id, .. }
+            | DocOp::InsertTableColumn { id, .. }
+            | DocOp::SetTableCell { id, .. }
             | DocOp::DeleteTableRow { id, .. }
             | DocOp::DeleteTableRowById { id, .. }
-            | DocOp::SetTableMetadata { id, .. }
-            | DocOp::MoveTableRow { id, .. },
+            | DocOp::DeleteTableColumnById { id, .. }
+            | DocOp::SetTableColumnAlignment { id, .. }
+            | DocOp::MoveTableRow { id, .. }
+            | DocOp::MoveTableColumn { id, .. }
+            | DocOp::InsertListItem { id, .. }
+            | DocOp::DeleteListItemById { id, .. }
+            | DocOp::MoveListItem { id, .. }
+            | DocOp::SetListStyle { id, .. }
+            | DocOp::SetListItemTask { id, .. }
+            | DocOp::SetCodeFence { id, .. }
+            | DocOp::ConvertTextBlock { id, .. }
+            | DocOp::ReplaceRawBlock { id, .. },
         ) => (*id, 1),
     }
 }
@@ -118,7 +129,7 @@ pub(super) fn max_counter_in_kind(kind: &BlockKindSkeleton, parent: OpId) -> u64
         BlockKindSkeleton::List { items, .. } => {
             let mut hi = parent.counter;
             for item in items {
-                hi = hi.max(item.id.counter);
+                hi = hi.max(item.id.counter).max(item.task_op.counter);
                 for child in &item.children {
                     hi = hi
                         .max(child.id.counter)
@@ -129,7 +140,7 @@ pub(super) fn max_counter_in_kind(kind: &BlockKindSkeleton, parent: OpId) -> u64
         }
         BlockKindSkeleton::CodeFence { .. }
         | BlockKindSkeleton::RawBlock { .. }
-        | BlockKindSkeleton::Table { .. } => parent.counter,
+        | BlockKindSkeleton::Table => parent.counter,
     }
 }
 
@@ -190,11 +201,22 @@ pub(super) fn check_peer_consistency(op: &Operation, env: &Envelope) -> Result<(
         }
         OpBody::Doc(
             DocOp::InsertTableRow { id, .. }
-            | DocOp::SetTableRowCells { id, .. }
+            | DocOp::InsertTableColumn { id, .. }
+            | DocOp::SetTableCell { id, .. }
             | DocOp::DeleteTableRow { id, .. }
             | DocOp::DeleteTableRowById { id, .. }
-            | DocOp::SetTableMetadata { id, .. }
-            | DocOp::MoveTableRow { id, .. },
+            | DocOp::DeleteTableColumnById { id, .. }
+            | DocOp::SetTableColumnAlignment { id, .. }
+            | DocOp::MoveTableRow { id, .. }
+            | DocOp::MoveTableColumn { id, .. }
+            | DocOp::InsertListItem { id, .. }
+            | DocOp::DeleteListItemById { id, .. }
+            | DocOp::MoveListItem { id, .. }
+            | DocOp::SetListStyle { id, .. }
+            | DocOp::SetListItemTask { id, .. }
+            | DocOp::SetCodeFence { id, .. }
+            | DocOp::ConvertTextBlock { id, .. }
+            | DocOp::ReplaceRawBlock { id, .. },
         ) => {
             if id.peer != peer {
                 return Err(SessionError::PeerMismatch);
@@ -216,7 +238,7 @@ pub(super) fn check_kind_peers(peer: PeerId, kind: &BlockKindSkeleton) -> Result
         }
         BlockKindSkeleton::List { items, .. } => {
             for item in items {
-                if item.id.peer != peer {
+                if item.id.peer != peer || item.task_op.peer != peer {
                     return Err(SessionError::PeerMismatch);
                 }
                 for child in &item.children {
@@ -252,7 +274,7 @@ pub(super) fn block_kind_to_skeleton(
                 paragraph_visible_string(text)
             },
         }),
-        BlockKind::List { ordered, items } => {
+        BlockKind::List { style, items, .. } => {
             let mut wire_items = Vec::new();
             for elem in items.iter_all() {
                 if let Some(item) = elem.value.as_ref() {
@@ -275,16 +297,19 @@ pub(super) fn block_kind_to_skeleton(
                         id: elem.id,
                         right_origin: elem.right_origin,
                         block_id: item.id,
+                        task: item.task,
+                        task_op: item.task_op,
                         children,
                     });
                 }
             }
             Ok(BlockKindSkeleton::List {
-                ordered: *ordered,
+                style: *style,
                 items: wire_items,
             })
         }
-        BlockKind::CodeFence { info, text } => Ok(BlockKindSkeleton::CodeFence {
+        BlockKind::CodeFence { style, info, text } => Ok(BlockKindSkeleton::CodeFence {
+            style: *style,
             info: info.clone(),
             text: text.clone(),
         }),
@@ -309,20 +334,16 @@ pub(super) fn block_kind_to_skeleton(
             })
         }
         BlockKind::Table { table } => {
-            if table.rows.iter().next().is_some() {
+            if table.rows.iter().next().is_some() || table.columns.iter().next().is_some() {
                 return Err(SessionError::NonEmptyTableOnInsertBlock);
             }
-            Ok(BlockKindSkeleton::Table {
-                columns: table
-                    .columns
-                    .get()
-                    .into_iter()
-                    .map(|column| alignment_to_wire(&column.alignment))
-                    .collect(),
-                header: table.header.get(),
-            })
+            Ok(BlockKindSkeleton::Table)
         }
     }
+}
+
+fn current_block_elem(document: &Document, block_id: BlockId, fallback: OpId) -> OpId {
+    document.block_elem_id(block_id).unwrap_or(fallback)
 }
 
 pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Envelope) {
@@ -355,10 +376,13 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
             }
         }
         OpBody::Doc(DocOp::InsertText {
-            block_elem, units, ..
+            block_elem,
+            block_id,
+            units,
         }) => {
+            let block_elem = document.block_elem_id(*block_id).unwrap_or(*block_elem);
             // block_elem may be nested inside a blockquote; search the whole tree.
-            let _ = document.with_block_mut(*block_elem, |block| {
+            let _ = document.with_block_mut(block_elem, |block| {
                 let Some(body) = crate::doc::block_text_seq_mut(&mut block.kind) else {
                     return;
                 };
@@ -376,11 +400,13 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
         }
         OpBody::Doc(DocOp::DeleteText {
             block_elem,
+            block_id,
             id,
             targets,
             ..
         }) => {
-            let _ = document.with_block_mut(*block_elem, |block| {
+            let block_elem = document.block_elem_id(*block_id).unwrap_or(*block_elem);
+            let _ = document.with_block_mut(block_elem, |block| {
                 let Some(body) = crate::doc::block_text_seq_mut(&mut block.kind) else {
                     return;
                 };
@@ -394,6 +420,7 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
         }
         OpBody::Doc(DocOp::SetMark {
             block_elem,
+            block_id,
             id,
             kind,
             start,
@@ -401,7 +428,8 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
             attrs,
             ..
         }) => {
-            let _ = document.with_block_mut(*block_elem, |block| {
+            let block_elem = document.block_elem_id(*block_id).unwrap_or(*block_elem);
+            let _ = document.with_block_mut(block_elem, |block| {
                 block
                     .marks
                     .set_mark(*id, kind.clone(), *start, *end, attrs.clone(), *id);
@@ -409,12 +437,14 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
         }
         OpBody::Doc(DocOp::RemoveMark {
             block_elem,
+            block_id,
             interval_id,
             id,
             observed,
             ..
         }) => {
-            let _ = document.with_block_mut(*block_elem, |block| {
+            let block_elem = document.block_elem_id(*block_id).unwrap_or(*block_elem);
+            let _ = document.with_block_mut(block_elem, |block| {
                 block.marks.remove_mark(*interval_id, observed.clone(), *id);
             });
         }
@@ -478,6 +508,8 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
                 let block = Block {
                     id: *new_block_id,
                     elem_id: *id,
+                    kind_op: *id,
+                    kind_observed: StateVector::new(),
                     kind: block_kind,
                     marks,
                 };
@@ -517,19 +549,22 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
         }
         OpBody::Doc(DocOp::InsertTableRow {
             table_elem,
+            table_id,
             after,
             id,
             right_origin,
             cells,
             ..
         }) => {
-            let _ = document.with_block_mut(*table_elem, |block| {
+            let table_elem = current_block_elem(document, *table_id, *table_elem);
+            let _ = document.with_block_mut(table_elem, |block| {
                 if let BlockKind::Table { table } = &mut block.kind {
+                    let row_id = block_id_from_op(*id);
                     let row = crate::doc::TableRow {
-                        id: block_id_from_op(*id),
+                        id: row_id,
                         elem_id: *id,
                         deleted: crate::core::LwwRegister::new(false, *id),
-                        cells: crate::core::LwwRegister::new(cells.clone(), *id),
+                        placement_observed: StateVector::new(),
                     };
                     table.rows.apply(SequenceOp::Insert {
                         after: *after,
@@ -537,29 +572,81 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
                         value: row,
                         right_origin: *right_origin,
                     });
+                    for cell in cells {
+                        table.set_cell(row_id, cell.column_id, cell.value.clone(), *id);
+                    }
+                    table.resolve_pending_row_moves(row_id);
                 }
             });
         }
-        OpBody::Doc(DocOp::SetTableRowCells {
+        OpBody::Doc(DocOp::InsertTableColumn {
             table_elem,
-            row,
+            table_id,
+            after,
             id,
-            cells,
+            right_origin,
+            alignment,
+            header,
             ..
         }) => {
-            let _ = document.with_block_mut(*table_elem, |block| {
+            let table_elem = current_block_elem(document, *table_id, *table_elem);
+            let _ = document.with_block_mut(table_elem, |block| {
                 if let BlockKind::Table { table } = &mut block.kind {
-                    table.set_row_cells(*row, cells.clone(), *id);
+                    let column_id = block_id_from_op(*id);
+                    let column = crate::doc::TableColumn {
+                        id: column_id,
+                        elem_id: *id,
+                        deleted: crate::core::LwwRegister::new(false, *id),
+                        alignment: crate::core::LwwRegister::new(
+                            alignment_from_wire(*alignment),
+                            *id,
+                        ),
+                        alignment_observed: StateVector::new(),
+                        placement_observed: StateVector::new(),
+                    };
+                    table.columns.apply(SequenceOp::Insert {
+                        after: *after,
+                        id: *id,
+                        value: column,
+                        right_origin: *right_origin,
+                    });
+                    table.set_cell(table.header_row_id(), column_id, header.clone(), *id);
+                    table.resolve_pending_column_ops(column_id);
+                }
+            });
+        }
+        OpBody::Doc(DocOp::SetTableCell {
+            table_elem,
+            table_id,
+            row_id,
+            column_id,
+            id,
+            value,
+            observed,
+            ..
+        }) => {
+            let table_elem = current_block_elem(document, *table_id, *table_elem);
+            let _ = document.with_block_mut(table_elem, |block| {
+                if let BlockKind::Table { table } = &mut block.kind {
+                    table.set_cell_observed(
+                        *row_id,
+                        *column_id,
+                        value.clone(),
+                        *id,
+                        observed.clone(),
+                    );
                 }
             });
         }
         OpBody::Doc(DocOp::DeleteTableRow {
             table_elem,
+            table_id,
             target,
             id,
             ..
         }) => {
-            let _ = document.with_block_mut(*table_elem, |block| {
+            let table_elem = current_block_elem(document, *table_id, *table_elem);
+            let _ = document.with_block_mut(table_elem, |block| {
                 if let BlockKind::Table { table } = &mut block.kind {
                     table.remove_row(*target, *id);
                 }
@@ -567,53 +654,216 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
         }
         OpBody::Doc(DocOp::DeleteTableRowById {
             table_elem,
+            table_id,
             target,
             row_id,
             id,
             ..
         }) => {
-            let _ = document.with_block_mut(*table_elem, |block| {
+            let table_elem = current_block_elem(document, *table_id, *table_elem);
+            let _ = document.with_block_mut(table_elem, |block| {
                 if let BlockKind::Table { table } = &mut block.kind {
                     let current = table.row_by_id(*row_id).map_or(*target, |row| row.elem_id);
                     table.remove_row(current, *id);
                 }
             });
         }
-        OpBody::Doc(DocOp::SetTableMetadata {
+        OpBody::Doc(DocOp::DeleteTableColumnById {
             table_elem,
+            table_id,
+            target,
+            column_id,
             id,
-            columns,
-            header,
             ..
         }) => {
-            let _ = document.with_block_mut(*table_elem, |block| {
+            let table_elem = current_block_elem(document, *table_id, *table_elem);
+            let _ = document.with_block_mut(table_elem, |block| {
                 if let BlockKind::Table { table } = &mut block.kind {
-                    table.set_columns(
-                        columns
-                            .iter()
-                            .map(|alignment| ColumnDef {
-                                alignment: alignment_from_wire(*alignment),
-                            })
-                            .collect(),
+                    let current = table
+                        .column_by_id(*column_id)
+                        .map_or(*target, |column| column.elem_id);
+                    table.columns.delete(current, *id);
+                }
+            });
+        }
+        OpBody::Doc(DocOp::SetTableColumnAlignment {
+            table_elem,
+            table_id,
+            column_id,
+            id,
+            alignment,
+            observed,
+            ..
+        }) => {
+            let table_elem = current_block_elem(document, *table_id, *table_elem);
+            let _ = document.with_block_mut(table_elem, |block| {
+                if let BlockKind::Table { table } = &mut block.kind {
+                    table.set_column_alignment_observed(
+                        *column_id,
+                        alignment_from_wire(*alignment),
                         *id,
+                        observed.clone(),
                     );
-                    table.set_header(header.clone(), *id);
                 }
             });
         }
         OpBody::Doc(DocOp::MoveTableRow {
             table_elem,
+            table_id,
             row_id,
+            target,
             id,
             after,
             right_origin,
+            observed,
             ..
         }) => {
-            let _ = document.with_block_mut(*table_elem, |block| {
+            let table_elem = current_block_elem(document, *table_id, *table_elem);
+            let _ = document.with_block_mut(table_elem, |block| {
                 if let BlockKind::Table { table } = &mut block.kind {
-                    table.move_row(*row_id, *id, *after, *right_origin);
+                    table.move_row(
+                        *row_id,
+                        *target,
+                        *id,
+                        *after,
+                        *right_origin,
+                        observed.clone(),
+                    );
                 }
             });
+        }
+        OpBody::Doc(DocOp::MoveTableColumn {
+            table_elem,
+            table_id,
+            column_id,
+            target,
+            id,
+            after,
+            right_origin,
+            observed,
+            ..
+        }) => {
+            let table_elem = current_block_elem(document, *table_id, *table_elem);
+            let _ = document.with_block_mut(table_elem, |block| {
+                if let BlockKind::Table { table } = &mut block.kind {
+                    table.move_column(
+                        *column_id,
+                        *target,
+                        *id,
+                        *after,
+                        *right_origin,
+                        observed.clone(),
+                    );
+                }
+            });
+        }
+        OpBody::Doc(DocOp::InsertListItem {
+            list_elem,
+            list_id,
+            after,
+            id,
+            right_origin,
+            task,
+            ..
+        }) => {
+            let list_elem = current_block_elem(document, *list_id, *list_elem);
+            document.insert_list_item_at(list_elem, *after, *id, *right_origin, *task);
+        }
+        OpBody::Doc(DocOp::DeleteListItemById {
+            list_elem,
+            item_id,
+            target,
+            id,
+            ..
+        }) => {
+            document.delete_list_item_at(*list_elem, *item_id, *target, *id);
+        }
+        OpBody::Doc(DocOp::MoveListItem {
+            from_list_elem,
+            to_list_elem,
+            list_id,
+            item_id,
+            target,
+            id,
+            after,
+            right_origin,
+            observed,
+            ..
+        }) => {
+            let to_list_elem = current_block_elem(document, *list_id, *to_list_elem);
+            document.move_list_item_at(&crate::doc::PendingListItemMove {
+                from_list_elem: *from_list_elem,
+                to_list_elem,
+                list_id: *list_id,
+                item_id: *item_id,
+                target: *target,
+                id: *id,
+                after: *after,
+                right_origin: *right_origin,
+                observed: observed.clone(),
+            });
+        }
+        OpBody::Doc(DocOp::SetListStyle {
+            block_elem,
+            block_id,
+            style,
+            id,
+            observed,
+            ..
+        }) => {
+            let block_elem = current_block_elem(document, *block_id, *block_elem);
+            document.set_list_style(block_elem, *style, *id, observed.clone());
+        }
+        OpBody::Doc(DocOp::SetListItemTask {
+            item_id,
+            task,
+            id,
+            observed,
+            ..
+        }) => {
+            document.set_list_item_task(*item_id, *task, *id, observed.clone());
+        }
+        OpBody::Doc(DocOp::SetCodeFence {
+            block_elem,
+            block_id,
+            style,
+            info,
+            text,
+            id,
+            observed,
+            ..
+        }) => {
+            let block_elem = current_block_elem(document, *block_id, *block_elem);
+            document.set_code_fence(
+                block_elem,
+                *style,
+                info.clone(),
+                text.clone(),
+                *id,
+                observed.clone(),
+            );
+        }
+        OpBody::Doc(DocOp::ConvertTextBlock {
+            block_elem,
+            block_id,
+            kind,
+            id,
+            observed,
+            ..
+        }) => {
+            let block_elem = current_block_elem(document, *block_id, *block_elem);
+            document.convert_text_block(block_elem, *kind, *id, observed.clone());
+        }
+        OpBody::Doc(DocOp::ReplaceRawBlock {
+            block_elem,
+            block_id,
+            raw,
+            id,
+            observed,
+            ..
+        }) => {
+            let block_elem = current_block_elem(document, *block_id, *block_elem);
+            document.replace_raw_block(block_elem, raw.clone(), *id, observed.clone());
         }
     }
 }
@@ -622,6 +872,8 @@ pub(super) fn block_from_skeleton(skel: &BlockSkeleton, elem_id: OpId) -> Block 
     Block {
         id: skel.block_id,
         elem_id,
+        kind_op: elem_id,
+        kind_observed: StateVector::new(),
         kind: kind_from_skeleton(&skel.kind, elem_id),
         marks: MarkSet::new(),
     }
@@ -643,7 +895,7 @@ pub(super) fn kind_from_skeleton(kind: &BlockKindSkeleton, parent_elem: OpId) ->
                 text: units_from_str(text, &mut counter, parent_elem.peer),
             }
         }
-        BlockKindSkeleton::List { ordered, items } => {
+        BlockKindSkeleton::List { style, items } => {
             let mut seq = Sequence::new();
             for item in items {
                 let mut child_seq = Sequence::new();
@@ -651,6 +903,8 @@ pub(super) fn kind_from_skeleton(kind: &BlockKindSkeleton, parent_elem: OpId) ->
                     let block = Block {
                         id: child.block.block_id,
                         elem_id: child.id,
+                        kind_op: child.id,
+                        kind_observed: StateVector::new(),
                         kind: kind_from_skeleton(&child.block.kind, child.id),
                         marks: MarkSet::new(),
                     };
@@ -664,6 +918,10 @@ pub(super) fn kind_from_skeleton(kind: &BlockKindSkeleton, parent_elem: OpId) ->
                 let list_item = ListItem {
                     id: item.block_id,
                     elem_id: item.id,
+                    task: item.task,
+                    task_op: item.task_op,
+                    task_observed: StateVector::new(),
+                    placement_observed: StateVector::new(),
                     children: child_seq,
                 };
                 seq.apply(SequenceOp::Insert {
@@ -674,11 +932,13 @@ pub(super) fn kind_from_skeleton(kind: &BlockKindSkeleton, parent_elem: OpId) ->
                 });
             }
             BlockKind::List {
-                ordered: *ordered,
+                style: *style,
                 items: seq,
+                pending_moves: Vec::new(),
             }
         }
-        BlockKindSkeleton::CodeFence { info, text } => BlockKind::CodeFence {
+        BlockKindSkeleton::CodeFence { style, info, text } => BlockKind::CodeFence {
+            style: *style,
             info: info.clone(),
             text: text.clone(),
         },
@@ -689,6 +949,8 @@ pub(super) fn kind_from_skeleton(kind: &BlockKindSkeleton, parent_elem: OpId) ->
                 let block = Block {
                     id: child.block.block_id,
                     elem_id: child.id,
+                    kind_op: child.id,
+                    kind_observed: StateVector::new(),
                     kind: kind_from_skeleton(&child.block.kind, child.id),
                     marks: MarkSet::new(),
                 };
@@ -701,19 +963,12 @@ pub(super) fn kind_from_skeleton(kind: &BlockKindSkeleton, parent_elem: OpId) ->
             }
             BlockKind::BlockQuote { children: seq }
         }
-        BlockKindSkeleton::Table { columns, header } => BlockKind::Table {
-            table: Table::new(
+        BlockKindSkeleton::Table => BlockKind::Table {
+            table: Box::new(Table::new(
                 block_id_from_op(parent_elem),
                 parent_elem,
-                columns
-                    .iter()
-                    .map(|alignment| ColumnDef {
-                        alignment: alignment_from_wire(*alignment),
-                    })
-                    .collect(),
-                header.clone(),
                 parent_elem,
-            ),
+            )),
         },
     }
 }
@@ -792,18 +1047,26 @@ mod tests {
         let item = ListItem {
             id: block_id_from_op(id(2)),
             elem_id: id(2),
+            task: None,
+            task_op: id(2),
+            task_observed: StateVector::new(),
+            placement_observed: StateVector::new(),
             children: Sequence::from_ordered(vec![(id(3), paragraph), (id(5), quote)]),
         };
         let list = BlockKind::List {
-            ordered: true,
+            style: crate::doc::ListStyle {
+                ordered: true,
+                ..crate::doc::ListStyle::default()
+            },
             items: Sequence::from_ordered(vec![(id(2), item)]),
+            pending_moves: Vec::new(),
         };
 
         let skeleton = block_kind_to_skeleton(&list, false).unwrap();
-        let BlockKindSkeleton::List { ordered, items } = &skeleton else {
+        let BlockKindSkeleton::List { style, items } = &skeleton else {
             panic!("expected list skeleton");
         };
-        assert!(*ordered);
+        assert!(style.ordered);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].children.len(), 2);
         assert!(matches!(
@@ -823,42 +1086,17 @@ mod tests {
         ));
 
         let table = BlockKind::Table {
-            table: Table::new(
-                block_id_from_op(id(20)),
-                id(20),
-                vec![
-                    ColumnDef {
-                        alignment: ColumnAlignment::Left,
-                    },
-                    ColumnDef {
-                        alignment: ColumnAlignment::Center,
-                    },
-                    ColumnDef {
-                        alignment: ColumnAlignment::Right,
-                    },
-                ],
-                vec!["a".into(), "b".into(), "c".into()],
-                id(20),
-            ),
+            table: Box::new(Table::new(block_id_from_op(id(20)), id(20), id(20))),
         };
         let table_skeleton = block_kind_to_skeleton(&table, false).unwrap();
-        assert!(matches!(
-            &table_skeleton,
-            BlockKindSkeleton::Table {
-                columns,
-                ..
-            } if *columns == vec![
-                ColumnAlignmentWire::Left,
-                ColumnAlignmentWire::Center,
-                ColumnAlignmentWire::Right,
-            ]
-        ));
+        assert!(matches!(&table_skeleton, BlockKindSkeleton::Table));
         assert!(matches!(
             kind_from_skeleton(&table_skeleton, id(20)),
             BlockKind::Table { .. }
         ));
 
         let code = BlockKind::CodeFence {
+            style: crate::doc::CodeFenceStyle::default(),
             info: Some("rs".into()),
             text: "fn main() {}".into(),
         };

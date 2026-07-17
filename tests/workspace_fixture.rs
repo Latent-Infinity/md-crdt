@@ -1,10 +1,10 @@
 use md_crdt::{
-    BatchPreview, BatchReceipt, BlockDescriptor, BlockDescriptorKind, ChangeSummary,
-    CheckpointRequest, ColumnAlignment, ColumnDef, DescriptorPage, DiskFingerprint,
+    BatchPreview, BatchReceipt, BlockDescriptor, BlockDescriptorKind, BlockDraft, ChangeSummary,
+    CheckpointRequest, CodeFenceStyle, ColumnAlignment, ColumnDef, DescriptorPage, DiskFingerprint,
     DocumentExportRequest, DocumentHandle, DocumentId, DocumentTombstonePolicy, EditBatch,
     MarkKind, MarkValue, PeerLease, PreviewToken, RebaseRequired, RecoveryReport, RevisionToken,
-    StateVector, TargetPrecondition, TextPoint, TextPosition, TextRange, VaultId, WorkspaceEdit,
-    WorkspaceMutation,
+    StateVector, TargetPrecondition, TextBlockKind, TextPoint, TextPosition, TextRange, VaultId,
+    WorkspaceEdit, WorkspaceMutation,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -17,6 +17,8 @@ fn contract_fixture() -> Value {
     let heading_id = uuid::Uuid::from_u128(10);
     let table_id = uuid::Uuid::from_u128(11);
     let paragraph_id = uuid::Uuid::from_u128(12);
+    let row_id = uuid::Uuid::from_u128(13);
+    let column_id = uuid::Uuid::from_u128(14);
     let token: PreviewToken =
         serde_json::from_value(json!([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5])).unwrap();
     let summary = ChangeSummary {
@@ -26,7 +28,7 @@ fn contract_fixture() -> Value {
         updated: vec![paragraph_id],
         affected_parents: Vec::new(),
         affected_sections: vec![heading_id],
-        operation_count: 4,
+        operation_count: 8,
         revision: next_revision.clone(),
     };
     let mut attrs = BTreeMap::new();
@@ -78,13 +80,45 @@ fn contract_fixture() -> Value {
                 key: "status".into(),
                 value: Some("ready".into()),
             }),
+            WorkspaceMutation::scoped(
+                WorkspaceEdit::SetTableCell {
+                    table_id,
+                    row_id,
+                    column_id,
+                    value: "Ada".into(),
+                },
+                vec![TargetPrecondition::TableCell {
+                    table_id,
+                    row_id,
+                    column_id,
+                    content_digest: 89,
+                }],
+            ),
+            WorkspaceMutation::strict(WorkspaceEdit::MoveTableColumn {
+                table_id,
+                column_id,
+                after: None,
+            }),
+            WorkspaceMutation::strict(WorkspaceEdit::InsertBlock {
+                parent: None,
+                after: Some(table_id),
+                draft: BlockDraft::CodeFence {
+                    style: CodeFenceStyle::default(),
+                    info: Some("rust".into()),
+                    text: "fn main() {}".into(),
+                },
+            }),
+            WorkspaceMutation::strict(WorkspaceEdit::ConvertTextBlock {
+                block_id: paragraph_id,
+                kind: TextBlockKind::Heading { level: 2 },
+            }),
         ],
     };
     let mut acknowledged = StateVector::new();
     acknowledged.set(7, 9);
 
     json!({
-        "contract_version": 3,
+        "contract_version": 5,
         "document_handle": DocumentHandle {
             vault_id,
             document_id,
@@ -152,7 +186,14 @@ fn contract_fixture() -> Value {
 
 #[test]
 fn versioned_workspace_contract_fixture_matches_public_serialization() {
-    let frozen: Value = serde_json::from_str(include_str!("fixtures/workspace-contract-v3.json"))
+    let actual = contract_fixture();
+    if std::env::var_os("MD_CRDT_UPDATE_FIXTURES").is_some() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/workspace-contract-v5.json");
+        std::fs::write(path, serde_json::to_string_pretty(&actual).unwrap() + "\n").unwrap();
+        return;
+    }
+    let frozen: Value = serde_json::from_str(include_str!("fixtures/workspace-contract-v5.json"))
         .expect("valid frozen workspace contract fixture");
-    assert_eq!(frozen, contract_fixture());
+    assert_eq!(frozen, actual);
 }

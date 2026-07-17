@@ -252,6 +252,34 @@ fn insert_block_missing_after_anchor_errors_without_clock_burn() {
 }
 
 #[test]
+fn direct_structured_insert_rejects_invalid_metadata_without_clock_burn() {
+    let mut session = CollaborativeDocument::new(1);
+    let before = session.peek_next_id();
+    let heading = BlockKind::Heading {
+        level: 0,
+        text: md_crdt::core::Sequence::new(),
+    };
+    assert!(matches!(
+        session.insert_block(None, heading),
+        Err(SessionError::InvalidHeadingLevel)
+    ));
+    let fence = BlockKind::CodeFence {
+        style: md_crdt::CodeFenceStyle {
+            marker: md_crdt::FenceMarker::Backtick,
+            length: 2,
+        },
+        info: None,
+        text: String::new(),
+    };
+    assert!(matches!(
+        session.insert_block(None, fence),
+        Err(SessionError::StructuredEdit(_))
+    ));
+    assert_eq!(session.peek_next_id(), before);
+    assert!(session.document().blocks_in_order().is_empty());
+}
+
+#[test]
 fn delete_block_missing_target_errors_without_clock_burn() {
     let mut a = CollaborativeDocument::new(1);
     let ghost = OpId {
@@ -356,24 +384,21 @@ fn remote_peer_mismatch_in_nested_child_rejected() {
 
 #[test]
 fn insert_empty_table_propagates_over_wire() {
-    use md_crdt::doc::{ColumnAlignment, ColumnDef, Table};
+    use md_crdt::doc::Table;
     let mut a = CollaborativeDocument::new(1);
     let mut b = CollaborativeDocument::new(2);
     let table_op = OpId {
         counter: 1,
         peer: 1,
     };
-    let table = Table::new(
-        block_id_from_op(table_op),
-        table_op,
-        vec![ColumnDef {
-            alignment: ColumnAlignment::Left,
-        }],
-        vec!["h".into()],
-        table_op,
-    );
+    let table = Table::new(block_id_from_op(table_op), table_op, table_op);
     let elem = a
-        .insert_block(None, BlockKind::Table { table })
+        .insert_block(
+            None,
+            BlockKind::Table {
+                table: Box::new(table),
+            },
+        )
         .expect("table supported");
     assert_eq!(elem, table_op);
     exchange(&a, &mut b);

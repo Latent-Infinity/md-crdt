@@ -151,12 +151,12 @@ remote.apply_remote(
 Long-running hosts can bound retained operation history with `checkpoint_history`. Each checkpoint
 request names the active peers and the state vector each has acknowledged; peers omitted by the host
 are expired for that checkpoint. `encode_changes_since` returns `RebaseRequired` when a caller is
-older than the retained delta floor, while `sync_since` returns either a compact delta or a boxed V3
+older than the retained delta floor, while `sync_since` returns either a compact delta or a boxed V6
 session checkpoint that the lagging peer can install before incremental exchange resumes. Structural
 tombstones are retained because operation acknowledgement alone is not sufficient for causal garbage
 collection.
 
-Persistence accepts only V3 session snapshots and current V2 dual-slot storage. Older or legacy
+Persistence accepts only V6 session snapshots and current V2 dual-slot storage. Older or legacy
 state fails with an explicit reinitialize/re-ingest error; re-ingest the authoritative Markdown files
 instead of attempting an in-place upgrade.
 

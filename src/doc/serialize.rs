@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_ORDERED_LIST_START: u32 = 999_999_999;
+
 pub(super) fn serialize_block(block: &Block) -> String {
     match &block.kind {
         BlockKind::Paragraph { text } => super::inline::serialize_text(block, text),
@@ -7,15 +9,21 @@ pub(super) fn serialize_block(block: &Block) -> String {
             let hashes = "#".repeat((*level).clamp(1, 6) as usize);
             format!("{} {}", hashes, super::inline::serialize_text(block, text))
         }
-        BlockKind::List { ordered, items } => serialize_list(*ordered, items, 0),
-        BlockKind::CodeFence { info, text } => {
-            let mut output = String::from("```");
+        BlockKind::List { style, items, .. } => serialize_list(*style, items, 0),
+        BlockKind::CodeFence { style, info, text } => {
+            let marker = match style.marker {
+                FenceMarker::Backtick => '`',
+                FenceMarker::Tilde => '~',
+            };
+            let fence = marker.to_string().repeat(usize::from(style.length.max(3)));
+            let mut output = fence.clone();
             if let Some(info) = info {
                 output.push_str(info);
             }
             output.push('\n');
             output.push_str(text);
-            output.push_str("\n```");
+            output.push('\n');
+            output.push_str(&fence);
             output
         }
         BlockKind::BlockQuote { children } => {
@@ -49,18 +57,39 @@ pub(super) fn serialize_block(block: &Block) -> String {
     }
 }
 
-fn serialize_list(ordered: bool, items: &Sequence<ListItem>, indent: usize) -> String {
+fn serialize_list(style: ListStyle, items: &Sequence<ListItem>, indent: usize) -> String {
     let pad = " ".repeat(indent);
     let mut lines = Vec::new();
     for (n, item) in items.iter_asc().enumerate() {
-        let marker = if ordered {
-            format!("{}. ", n + 1)
+        let marker = if style.ordered {
+            let delimiter = match style.delimiter {
+                ListDelimiter::Period => '.',
+                ListDelimiter::Parenthesis => ')',
+            };
+            let ordinal = style
+                .start
+                .saturating_add(n as u32)
+                .min(MAX_ORDERED_LIST_START);
+            format!("{ordinal}{delimiter} ")
         } else {
-            "- ".to_string()
+            let bullet = match style.bullet {
+                BulletMarker::Dash => '-',
+                BulletMarker::Plus => '+',
+                BulletMarker::Asterisk => '*',
+            };
+            format!("{bullet} ")
+        };
+        if style.loose && n > 0 {
+            lines.push(String::new());
+        }
+        let task = match item.task {
+            Some(TaskState::Unchecked) => "[ ] ",
+            Some(TaskState::Checked) => "[x] ",
+            None => "",
         };
         let children: Vec<_> = item.children.iter_asc().collect();
         if children.is_empty() {
-            lines.push(format!("{pad}{marker}"));
+            lines.push(format!("{pad}{marker}{task}"));
             continue;
         }
         for (ci, child) in children.iter().enumerate() {
@@ -70,7 +99,7 @@ fn serialize_list(ordered: bool, items: &Sequence<ListItem>, indent: usize) -> S
                     if ci == 0 {
                         let mut body_lines = body.lines();
                         lines.push(format!(
-                            "{pad}{marker}{}",
+                            "{pad}{marker}{task}{}",
                             body_lines.next().unwrap_or_default()
                         ));
                         for body_line in body_lines {
@@ -85,10 +114,14 @@ fn serialize_list(ordered: bool, items: &Sequence<ListItem>, indent: usize) -> S
                     }
                 }
                 BlockKind::List {
-                    ordered: o2,
+                    style,
                     items: nested,
+                    ..
                 } => {
-                    let nested_s = serialize_list(*o2, nested, indent + 2);
+                    if ci == 0 {
+                        lines.push(format!("{pad}{marker}{task}"));
+                    }
+                    let nested_s = serialize_list(*style, nested, indent + 2);
                     lines.push(nested_s);
                 }
                 other => {
@@ -96,7 +129,7 @@ fn serialize_list(ordered: bool, items: &Sequence<ListItem>, indent: usize) -> S
                     if ci == 0 {
                         // first child non-paragraph: put after marker
                         let first = s.lines().next().unwrap_or("");
-                        lines.push(format!("{pad}{marker}{first}"));
+                        lines.push(format!("{pad}{marker}{task}{first}"));
                         for bline in s.lines().skip(1) {
                             lines.push(format!("{pad}  {bline}"));
                         }
@@ -115,14 +148,14 @@ fn serialize_list(ordered: bool, items: &Sequence<ListItem>, indent: usize) -> S
 }
 
 fn serialize_table(table: &Table) -> String {
-    let header = table.header.get();
+    let columns = table.columns_in_order();
+    let header = table.row_cells(table.header_row_id());
     let mut rows: Vec<Vec<CellContent>> = table
         .rows
         .iter()
         .filter(|row| !row.deleted.get())
-        .map(|row| row.cells.get())
+        .map(|row| table.row_cells(row.id))
         .collect();
-    let columns = table.columns.get();
 
     let mut col_count = header.len().max(columns.len());
     for row in &rows {
@@ -134,13 +167,20 @@ fn serialize_table(table: &Table) -> String {
 
     let mut header_cells = header;
     header_cells.resize(col_count, String::new());
-    let header_line = format!("| {} |", header_cells.join(" | "));
+    let header_line = format!(
+        "| {} |",
+        header_cells
+            .iter()
+            .map(|cell| escape_table_cell(cell))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    );
 
     let mut align_cells = Vec::with_capacity(col_count);
     for idx in 0..col_count {
         let alignment = columns
             .get(idx)
-            .map(|col| &col.alignment)
+            .map(|col| col.alignment.get_ref())
             .unwrap_or(&ColumnAlignment::Left);
         let align = match alignment {
             ColumnAlignment::Left => "---",
@@ -154,7 +194,13 @@ fn serialize_table(table: &Table) -> String {
     let mut rendered_rows = Vec::with_capacity(rows.len());
     for row in &mut rows {
         row.resize(col_count, String::new());
-        rendered_rows.push(format!("| {} |", row.join(" | ")));
+        rendered_rows.push(format!(
+            "| {} |",
+            row.iter()
+                .map(|cell| escape_table_cell(cell))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
     }
 
     let mut output = Vec::with_capacity(2 + rendered_rows.len());
@@ -162,6 +208,17 @@ fn serialize_table(table: &Table) -> String {
     output.push(align_line);
     output.extend(rendered_rows);
     output.join("\n")
+}
+
+fn escape_table_cell(cell: &str) -> String {
+    let mut escaped = String::with_capacity(cell.len());
+    for character in cell.chars() {
+        if matches!(character, '\\' | '|') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
 }
 
 pub(super) fn grapheme_offset_to_byte(text: &str, grapheme_offset: usize) -> Option<usize> {
@@ -230,13 +287,18 @@ mod tests {
         let empty_item = ListItem {
             id: block_id_from_op(id(1)),
             elem_id: id(1),
+            task: None,
+            task_op: id(1),
+            task_observed: StateVector::new(),
+            placement_observed: StateVector::new(),
             children: Sequence::new(),
         };
         let empty_items = Sequence::from_ordered(vec![(id(1), empty_item)]);
-        assert_eq!(serialize_list(false, &empty_items, 0), "- ");
+        assert_eq!(serialize_list(ListStyle::default(), &empty_items, 0), "- ");
 
         let code = Block::new(
             BlockKind::CodeFence {
+                style: CodeFenceStyle::default(),
                 info: Some("rs".into()),
                 text: "let x = 1;".into(),
             },
@@ -251,10 +313,14 @@ mod tests {
         let item = ListItem {
             id: block_id_from_op(id(2)),
             elem_id: id(2),
+            task: None,
+            task_op: id(2),
+            task_observed: StateVector::new(),
+            placement_observed: StateVector::new(),
             children: Sequence::from_ordered(vec![(id(3), code), (id(4), raw)]),
         };
         let items = Sequence::from_ordered(vec![(id(2), item)]);
-        let rendered = serialize_list(false, &items, 0);
+        let rendered = serialize_list(ListStyle::default(), &items, 0);
         assert!(rendered.starts_with("- ```rs\n  let x = 1;\n  ```"));
         assert!(rendered.ends_with("\n\n  :::note"));
     }
@@ -280,7 +346,7 @@ mod tests {
             ),
             (
                 "- first paragraph\n\n  loose paragraph with `code`\n\n- second item",
-                "- first paragraph\n\n  loose paragraph with `code`\n- second item",
+                "- first paragraph\n\n  loose paragraph with `code`\n\n- second item",
             ),
             (
                 "- **bold with *nested italic* text**\n- [**bold link**](target.md)",
@@ -303,7 +369,7 @@ mod tests {
 
     #[test]
     fn empty_table_and_grapheme_boundaries_cover_edge_offsets() {
-        let table = Table::new(block_id_from_op(id(1)), id(1), vec![], vec![], id(1));
+        let table = Table::new(block_id_from_op(id(1)), id(1), id(1));
         assert_eq!(serialize_table(&table), "");
 
         let text = "a👩‍💻b";

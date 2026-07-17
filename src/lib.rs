@@ -73,9 +73,11 @@ pub use core::mark::{
 
 // Re-export doc types
 pub use doc::{
-    Block, BlockId, BlockKind, CellContent, ColumnAlignment, ColumnDef, Document, EditError,
-    EditOp, EquivalenceMode, InsertTextRun, ListItem, Parser, RowId, SerializeConfig, Table,
-    TableRow, block_id_from_op, block_text_seq, block_text_seq_mut,
+    Block, BlockId, BlockKind, BulletMarker, CellAddress, CellContent, CodeFenceStyle,
+    ColumnAlignment, ColumnDef, ColumnId, Document, EditError, EditOp, EquivalenceMode,
+    FenceMarker, InsertTextRun, ListDelimiter, ListItem, ListStyle, Parser, RowId, SerializeConfig,
+    Table, TableCell, TableColumn, TableRow, TaskState, block_id_from_op, block_text_seq,
+    block_text_seq_mut,
 };
 
 // Re-export doc mark operations
@@ -91,7 +93,7 @@ pub use sync::{
 // Re-export codec types
 pub use codec::{
     BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, CodecError, DocOp, Envelope,
-    JsonOpCodec, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, TextUnitWire, WIRE_VERSION,
+    JsonOpCodec, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, TableCellWire, TextUnitWire, WIRE_VERSION,
     insert_block_paragraph_is_empty,
 };
 
@@ -102,15 +104,16 @@ pub use session::{
 };
 
 pub use workspace::{
-    BatchPreview, BatchReceipt, BlockDescriptor, BlockDescriptorKind, BlockProjection,
+    BatchPreview, BatchReceipt, BlockDescriptor, BlockDescriptorKind, BlockDraft, BlockProjection,
     BlockProjectionKind, BlockProjectionStructure, ChangeSummary, DeletedDocument,
     DescriptorCursor, DescriptorError, DescriptorPage, DescriptorTraversal, DiskFingerprint,
     DocumentEditBatch, DocumentExportRequest, DocumentHandle, DocumentId, EditBatch,
-    ExactMarkdownProjection, ExportOutcome, LocalEditOutcome, MultiBatchReceipt,
-    MultiExportOutcome, PreviewToken, ProjectedMark, ProjectedTableRow, ProjectionContinuation,
-    ProjectionError, ProjectionFields, ProjectionPage, ProjectionRequest, RecoveryReport,
-    RemoteApplyOutcome, RevisionToken, TargetPrecondition, TextPoint, TextPosition, TextRange,
-    VaultId, WorkspaceEdit, WorkspaceMutation, WorkspaceTargetError,
+    ExactMarkdownProjection, ExportOutcome, ListItemDraft, LocalEditOutcome, MultiBatchReceipt,
+    MultiExportOutcome, PreviewToken, ProjectedMark, ProjectedTableColumn, ProjectedTableRow,
+    ProjectionContinuation, ProjectionError, ProjectionFields, ProjectionPage, ProjectionRequest,
+    RecoveryReport, RemoteApplyOutcome, RevisionToken, StructuredEditError, StructuredEditLimits,
+    TargetPrecondition, TextBlockKind, TextPoint, TextPosition, TextRange, VaultId, WorkspaceEdit,
+    WorkspaceMutation, WorkspaceTargetError,
 };
 
 // Re-export sync integrate types used with session

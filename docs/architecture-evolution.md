@@ -5,9 +5,9 @@
 | **Document title** | Architecture Evolution Design for md-crdt |
 | **Author** | Travis Silvers |
 | **Date** | 2026-07-09 |
-| **Status** | Draft (revision 15 — Phases M–O complete; Phases P–Q planned for lower-token Markdown manipulation) |
+| **Status** | Draft (revision 18 — Phases M–Q and release audit complete) |
 | **Repository** | `/Users/firestrand/Projects/latenty-infinity/md-crdt` |
-| **Current version** | `0.2.1` (pre-1.0; breaking changes allowed with changelog discipline) |
+| **Current version** | `0.3.0` (pre-1.0; breaking changes allowed with changelog discipline) |
 | **License** | MIT |
 | **Rust** | Edition 2024, `rust-version = "1.85"` |
 
@@ -31,10 +31,13 @@
 | **13** | Added a five-phase post-L roadmap for stable edit anchors, bounded semantic reads, revision-bound descriptor cursors, cell-addressable tables, and complete structured Markdown mutations | The CRDT core converges, but the workspace boundary still causes avoidable stale retries, broad reads, coarse table conflicts, and raw-text fallbacks; every new choice is gated by an ablation and a measurable correctness/performance win |
 | **14** | Completed stable text targets and per-operation scoped preconditions, including replay ablation and a breaking workspace contract v2 fixture | Unrelated edits no longer force reread/retry, while changed text, marks, nested content, placement, deleted anchors, and ambiguous split identities fail closed |
 | **15** | Completed revision-bound hierarchy cursors and node-local semantic summaries, with a breaking workspace contract v3 fixture | Agents can traverse bounded maps without mixed revisions or offset drift; descriptors expose hierarchy size without recursively hashing descendant content |
+| **16** | Completed stable column identities and causally ordered cell-addressable table operations, with wire V2 and snapshot V4 | Independent cell edits now commute, row/column deletion wins, delayed causal delivery is retained, and agents can mutate one table cell without sending the row |
+| **17** | Completed validated structured creation and focused list, quote, code, conversion, and raw-block mutations, with wire V3 and snapshot V5 | Agents can perform bounded Markdown-aware edits without reparsing or replacing a whole document; scoped workflows retain identities and reduce request/dirty bytes |
+| **18** | Release audit hardened causal structured registers, stable-ID targeting after moves, list-move convergence, pending-sequence snapshots, rebase clocks, focused workspace guards, and Markdown list/table round trips; wire V4 and snapshot V6 | Closes silent no-op, divergence, stale-target, crash-recovery, false-accept/retry, and reparsing failures found before the 0.3.0 release |
 
 **Compatibility policy (supersedes earlier migration notes):** completed sections below retain
 historical implementation details, but they are not release requirements. The joint release accepts
-only the current V3 session snapshot and current V2 dual-slot storage format. V1/V2
+only the current V6 session snapshot, current wire V4, and current V2 dual-slot storage format. V1–V5
 session-snapshot readers and V1 storage readers/fixtures are removed; older vault state must be
 reinitialized and re-ingested from Markdown.
 
@@ -471,7 +474,7 @@ Vault ingest and “create block with body” helpers **must** emit this pair (o
 ```rust
 // src/codec/wire.rs
 
-pub const WIRE_VERSION: u16 = 1;
+pub const WIRE_VERSION: u16 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {
@@ -628,7 +631,7 @@ Algorithm `insert_block` (follows **N3**; no public `alloc_id`; **no** text-unit
    - **Phase A:** may put the full string in the skeleton (string body model).
 3. **Allocate inside commit:** `b = self.next_counter`; `block_elem = OpId { peer: self.peer, counter: b }`; `block_id = block_id_from_op(block_elem)`. Do **not** advance `next_counter` yet.
 4. `right_origin = document.blocks.compute_right_origin(after)` (public thin wrapper around today’s private helper).
-5. Build `Envelope { version: 1, body: Doc(InsertBlock { after, id: block_elem, right_origin, block: skeleton }) }`.
+5. Build `Envelope { version: 2, body: Doc(InsertBlock { after, id: block_elem, right_origin, block: skeleton }) }`.
 6. `codec.encode` → on failure discard reservation, return `Err`. (Unit-mode: session has already forced empty paragraph text before encode.)
 7. Apply: insert `Block { id: block_id, elem_id: block_elem, kind, marks: empty }` via `SequenceOp::Insert`. **Unit-mode:** paragraph materializes as **empty** `Sequence<TextUnit>` — never seed units here. **String-mode (Phase A):** paragraph body is the skeleton string.
 8. `sync.add_local_op(Operation { id: block_elem, payload })`.
@@ -794,8 +797,8 @@ pub struct SessionSnapshot {
     pub pending: Vec<(OpId, Vec<u8>)>,
 }
 
-// DocumentDto mirrors Document with serializable Sequence as ordered visible+tombstone
-// element list (id, value?, after, right_origin)—still not the live pending maps.
+// DocumentDto mirrors Document with serializable Sequence elements and unresolved
+// insert/delete operations; SessionSnapshot also retains causally deferred envelopes.
 ```
 
 ```rust
@@ -813,6 +816,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         document: DocumentDto,
         ops: Vec<(OpId, Vec<u8>)>,
         pending: Vec<(OpId, Vec<u8>)>,
+        deferred: Vec<(OpId, Vec<u8>)>,
         local_peer: PeerId,
         codec: C,
     ) -> Result<Self, SnapshotError>;
@@ -1458,10 +1462,10 @@ After the concrete consumer contract is frozen, remove compatibility code before
   expiry was rejected because it makes the same checkpoint request nondeterministic. Tombstones
   remain `KeepAll`; operation acknowledgements alone do not prove that structural causal metadata
   can be collected safely.
-- `tests/fixtures/workspace-contract-v3.json` freezes the current serialized producer contract for the
+- `tests/fixtures/workspace-contract-v5.json` freezes the current serialized producer contract for the
   concrete workspace, edit, receipt, export, recovery, checkpoint, and rebase DTOs. Consuming that
   fixture in `../md-mcp` and running the joint token/task-success gate remain external release work.
-- Only V3 session snapshots and current V2 dual-slot storage are readable. Non-current formats and
+- Only V5 session snapshots and current V2 dual-slot storage are readable. Non-current formats and
   detected legacy storage artifacts fail with an actionable reinitialize/re-ingest error; old DTO
   conversion, V1 storage decoding, fixtures, aliases, and upgrade branches are gone.
 - At 10,000 retained operations, encoding a full delta measured 40.588–41.815 µs versus
@@ -1567,8 +1571,8 @@ regression at equal batch size. If latency misses, profile and optimize before r
 - Block digests include inline marks, tables, list descendants, and blockquote descendants. Text
   digests include the selected graphemes and intersecting resolved marks. Placement digests bind the
   target, parent, predecessor, and ordered direct children.
-- Phase M introduced `workspace-contract-v2.json`; Phase O replaced it with the current
-  `workspace-contract-v3.json`. Prior pre-release fixtures were deleted rather than adapted.
+- Phase M introduced `workspace-contract-v2.json`; Phase Q replaced it with the current
+  `workspace-contract-v5.json`. Prior pre-release fixtures were deleted rather than adapted.
 
 | Ablation | Conflict result | First try under unrelated churn | Representative four-op compact JSON | Decision |
 | --- | --- | --- | ---: | --- |
@@ -1770,8 +1774,8 @@ without making one-leaf mutations exceed the stated budget.
   one-leaf-update plus root-read workflow measured 1.5160–1.5225 s; it is the O-G mutation baseline,
   and the O-F 20% comparison was not invoked after O-F failed the primary repeated-read criterion.
   O-G skips zero descriptors by subtree digest because it intentionally ships no subtree cache.
-- The frozen producer contract is `workspace-contract-v3.json`; the deterministic map/read/edit
-  transcript is `workspace-projection-transcript-v2.json`. Prior pre-release fixtures were removed.
+- The frozen producer contract is `workspace-contract-v5.json`; the deterministic map/read/edit
+  transcript is `workspace-projection-transcript-v3.json`. Prior pre-release fixtures were removed.
 
 ### Phase P — Cell-addressable table collaboration
 
@@ -1814,7 +1818,29 @@ that changes one existing cell's identity semantics.
 rather than row width, and at 20+ columns both encoded bytes and apply latency beat P-A. Snapshot
 growth must satisfy the selected ablation budget and exact export remains table-local.
 
-### Phase Q — Complete structured Markdown mutation surface
+#### P4 — Implementation outcome (complete)
+
+- Columns are stable `ColumnId` sequence elements; the header is the table's distinguished stable
+  row, and values are keyed by `(RowId, ColumnId)`. Per-cell registers carry the observed state
+  vector so a causally newer edit from a fresh peer cannot lose to an older high-counter value;
+  concurrent same-cell edits still use deterministic `OpId` ordering.
+- Wire V2 adds column insert/delete/move/alignment and `SetTableCell`; snapshot V4 persists column
+  placements, cell addresses, and causal metadata. Current formats only are accepted.
+- Workspace projections expose column ids, focused table mutations lower through the same session
+  operations, parsed ingest retains positional column ids and matched row ids when unambiguous,
+  and exact export rerenders only the owning table source region.
+- Two-peer tests cover different/same-cell edits, row/column delete-wins, header addressing, column
+  moves, delayed cell-before-row delivery, checkpoint/rebase, snapshot/reopen, row-width-independent
+  payloads, ingest identity retention, and table-local exact export.
+- P-B was selected. The 20-column control measured 282.90–288.10 ns for row-vector LWW versus
+  95.36–103.21 ns per cell, with 376 versus 311 wire bytes. At 50 columns it measured
+  675.11–685.42 ns versus 273.28–355.67 ns, with 696 versus 313 wire bytes. The 1,000×50 P-B
+  materialized snapshot was 9,579,075 bytes; a conservative P-C text-unit lower bound was
+  29,113,680 bytes (3.04× P-B), so P-C fails the ≤25% budget. P-D remains rejected because no
+  stable pre-creation policy or workload justified two cell semantics. P-A is retained only as the
+  benchmark control.
+
+### Phase Q — Complete structured Markdown mutation surface — **complete**
 
 **Problem:** the document can represent lists, code fences, blockquotes, raw blocks, and tables, but
 atomic workspace batches cannot create or fully edit every supported kind. Agents fall back to raw
@@ -1872,6 +1898,39 @@ concurrent code-edit task success enough to offset measured snapshot and operati
 parse or serialize the full document for a scoped operation, and reduce both dirty bytes and request
 bytes versus raw replacement on every representative workflow. All exchange/snapshot/export gates
 remain green.
+
+#### Phase Q repository implementation outcome
+
+- A recursively validated `BlockDraft` creates paragraph, heading, list, code-fence, quote, and raw
+  trees without invoking the Markdown parser; tables continue through their stable Phase P API.
+  Depth, item, byte, heading, fence, and info limits are checked before any clock id is reserved.
+- Focused list-item insert/delete/move, list/task metadata, quote wrap/unwrap, code-fence update,
+  paragraph/heading conversion, and digest-guarded raw replacement lower through session DocOps.
+  Delayed list moves survive snapshot/reopen, logical delete wins move races, and moved items keep
+  their stable container identity so later child operations still resolve.
+- Scoped cell edits digest only the addressed stable cell. List-item task digests include task state,
+  and list moves bind both current and destination placement so unrelated edits remain applicable
+  without accepting changed move intent.
+- Q-B was selected: its 100/1,000-item draft payloads were 10,760/106,160 bytes versus
+  14,393/144,892 bytes for the repetitive Q-A control. Q-C raw fragments were smaller
+  (5,599/55,999 bytes) and parsed much faster, but cannot provide validated intent, stable nested
+  identity, or focused preconditions; it remains available only as digest-guarded opaque raw-block
+  replacement, not as a structured apply path.
+- Whole-value code bodies remain selected. At 1 KB and 100 KB, focused updates measured
+  1.52–1.62 µs and 45.61–47.35 µs versus 1.218–1.236 ms for the full-document parse control. A
+  conservative text-unit representation costs at least 24× snapshot bytes and 40× operation bytes
+  at 1 KB, 100 KB, and 1 MB without improving the two modeled independent-line/same-line task
+  outcomes; no runtime configuration switch ships.
+- A 100/1,000-item move encoded to 340/342 bytes and retained every item id. The 100-block wrap
+  retained all ids with a 3,930-byte request and 10,497 dirty bytes versus a 75,736-byte raw refresh.
+  Code requests were 1,158/102,534 bytes and dirty regions 1,037/102,413 bytes versus
+  17,423/118,799-byte raw refreshes. Structured move latency (0.314–0.316 ms at 100 and
+  3.316–3.359 ms at 1,000, including snapshot restore) is recorded honestly against the parser-only
+  lower-bound control (0.263–0.268 ms and 2.626–2.672 ms); the selection rests on identity,
+  convergence, and bounded request/dirty scope rather than a claimed parse-latency win.
+- Wire V4 and snapshot V6 are current-only. `workspace-contract-v5.json` freezes the producer API,
+  and `workspace-projection-transcript-v3.json` exercises paged map/read, prose/list/table/quote/code
+  edits, stale-cursor restart, and scoped verification in 8,245 serialized core response bytes.
 
 ---
 
@@ -2220,7 +2279,7 @@ No panics in `apply_remote` / codec / storage library paths.
 20. **Trust model: trusted peers + local disk; limits are resource safety only.**  
     **Rationale:** Honest security boundary for a local CRDT library.
 
-21. **Unit-mode paragraph skeleton JSON stays `{ text: "" }`; units travel only through InsertText/DeleteText. The release accepts only V3 session snapshots and has no string-body snapshot upgrade path.**
+21. **Unit-mode paragraph skeleton JSON stays `{ text: "" }`; units travel only through InsertText/DeleteText. The release accepts only V6 session snapshots and has no string-body snapshot upgrade path.**
     **Rationale:** One current representation removes dead payload, migration branches, and synthetic identities.
 
 22. **Snapshot bootstrap: `restore_from_snapshot` = same peer crash recovery; `import_state` / `rebind_peer` = late join with local peer id.**  
@@ -2274,7 +2333,7 @@ No panics in `apply_remote` / codec / storage library paths.
 
     **Rationale:** Saving only CRDT state after an edit can report success while leaving the user's Markdown file stale.
 
-36. **The release accepts only V3 session snapshots and V2 dual-slot storage; PR-35 deletes all older readers and fixtures. Later compaction still requires an explicit checkpoint/rebase contract for lagging peers.**
+36. **PR-35 accepted only the then-current V5 session snapshot and V2 dual-slot storage; it deleted older readers and fixtures, and later phases advance the current schema without compatibility readers. Later compaction still requires an explicit checkpoint/rebase contract for lagging peers.**
 
     **Rationale:** No published compatibility promise exists. Removing migration code reduces the state space, while bounded storage must still preserve supported peers.
 
@@ -2657,7 +2716,7 @@ Each PR is independently reviewable. Dependencies listed. Spec-dense phases A/B 
 - **PR title:** `refactor(storage): remove legacy snapshot and storage readers`
 - **Files/components:** `src/session/snapshot.rs`, `src/session/mod.rs`, `src/storage/mod.rs`, legacy fixtures/tests, public deprecations, `CHANGELOG.md`
 - **Dependencies:** PR-32, PR-33, PR-34
-- **Description:** Accept only V3 session snapshots and current V2 dual-slot storage. Delete snapshot V1/V2 and storage V1 readers, upgrade branches, constants, fixtures, deprecated compatibility surfaces, and legacy-segment handling. Older vault state must be reinitialized/re-ingested. Rerun both repositories' pinned release gates after deletion.
+- **Description:** Accept only the current session snapshot (V4 after Phase P) and current V2 dual-slot storage. Delete older snapshot and storage V1 readers, upgrade branches, constants, fixtures, deprecated compatibility surfaces, and legacy-segment handling. Older vault state must be reinitialized/re-ingested. Rerun both repositories' pinned release gates after deletion.
 
 ### PR-36: Stable anchored edits and scoped preconditions
 
@@ -2822,4 +2881,4 @@ selected implementation, benchmark evidence, and refreshed current-only contract
 
 ---
 
-*End of design document (revision 14 — Phase M complete; Phases N–Q planned).*
+*End of design document (revision 17 — Phases M–Q complete).*

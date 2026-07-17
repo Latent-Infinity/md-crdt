@@ -1,5 +1,5 @@
 use md_crdt::core::mark::MarkSet;
-use md_crdt::core::{OpId, SequenceOp};
+use md_crdt::core::{OpId, SequenceOp, StateVector};
 use md_crdt::doc::{Block, BlockKind, Document, EquivalenceMode, SerializeConfig};
 use uuid::Uuid;
 
@@ -7,6 +7,8 @@ fn fixed_block(id: Uuid, elem_id: OpId, text: &str) -> Block {
     Block {
         id,
         elem_id,
+        kind_op: elem_id,
+        kind_observed: StateVector::new(),
         kind: BlockKind::paragraph(text, elem_id),
         marks: MarkSet::new(),
     }

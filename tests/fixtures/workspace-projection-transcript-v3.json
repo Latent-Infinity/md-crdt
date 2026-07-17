@@ -1,0 +1,656 @@
+{
+  "affected_read": {
+    "bytes_used": 2105,
+    "continuation": null,
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "items": [
+      {
+        "content_digest": 12175496115298011786,
+        "id": "00000000-0000-0007-0000-000000000001",
+        "kind": "Paragraph",
+        "marks": [
+          {
+            "attrs": {
+              "delimiter": {
+                "String": "**"
+              }
+            },
+            "kind": "Bold",
+            "range": {
+              "end": {
+                "block_id": "00000000-0000-0007-0000-000000000001",
+                "position": "End"
+              },
+              "start": {
+                "block_id": "00000000-0000-0007-0000-000000000001",
+                "position": {
+                  "Unit": {
+                    "bias": "Before",
+                    "elem_id": {
+                      "counter": 8,
+                      "peer": 7
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "text": "intro! bold",
+        "text_ranges": [
+          {
+            "end": {
+              "block_id": "00000000-0000-0007-0000-000000000001",
+              "position": "End"
+            },
+            "start": {
+              "block_id": "00000000-0000-0007-0000-000000000001",
+              "position": "Start"
+            }
+          }
+        ]
+      },
+      {
+        "content_digest": 5950239502761758213,
+        "id": "00000000-0000-0007-0000-00000000000e",
+        "kind": {
+          "ListItem": {
+            "task": "Checked"
+          }
+        },
+        "marks": [],
+        "structure": {
+          "Children": {
+            "block_ids": [
+              "00000000-0000-0007-0000-00000000000f"
+            ]
+          }
+        },
+        "text": "task",
+        "text_ranges": [
+          {
+            "end": {
+              "block_id": "00000000-0000-0007-0000-00000000000f",
+              "position": "End"
+            },
+            "start": {
+              "block_id": "00000000-0000-0007-0000-00000000000f",
+              "position": "Start"
+            }
+          }
+        ]
+      },
+      {
+        "content_digest": 5633760252568808471,
+        "id": "00000000-0000-0007-0000-000000000014",
+        "kind": "Table",
+        "marks": [],
+        "structure": {
+          "Table": {
+            "columns": [
+              {
+                "alignment": "Left",
+                "id": "00000000-0000-0007-0000-000000000015"
+              },
+              {
+                "alignment": "Left",
+                "id": "00000000-0000-0007-0000-000000000016"
+              }
+            ],
+            "header": [
+              "Name",
+              "Value"
+            ],
+            "rows": [
+              {
+                "cells": [
+                  "updated",
+                  "1"
+                ],
+                "id": "00000000-0000-0007-0000-000000000017"
+              }
+            ]
+          }
+        },
+        "text": "Name\tValue\nupdated\t1",
+        "text_ranges": []
+      },
+      {
+        "content_digest": 10060975561359532153,
+        "id": "00000000-0000-0007-0000-000000000019",
+        "kind": "Paragraph",
+        "marks": [],
+        "text": "quoted",
+        "text_ranges": [
+          {
+            "end": {
+              "block_id": "00000000-0000-0007-0000-000000000019",
+              "position": "End"
+            },
+            "start": {
+              "block_id": "00000000-0000-0007-0000-000000000019",
+              "position": "Start"
+            }
+          }
+        ]
+      },
+      {
+        "content_digest": 2895676246483674648,
+        "id": "00000000-0000-0007-0000-000000000020",
+        "kind": {
+          "CodeFence": {
+            "info": "rust,ignore",
+            "style": {
+              "length": 3,
+              "marker": "Backtick"
+            }
+          }
+        },
+        "marks": [],
+        "text": "let x = 2;",
+        "text_ranges": []
+      }
+    ],
+    "omitted_ids": [],
+    "revision": [
+      114,
+      58,
+      27,
+      233,
+      84,
+      118,
+      95,
+      196,
+      12,
+      7,
+      28,
+      1,
+      16,
+      60,
+      4,
+      101
+    ]
+  },
+  "edit_receipt": {
+    "changes": {
+      "affected_parents": [
+        "00000000-0000-0007-0000-00000000000d",
+        "00000000-0000-0007-0000-000000000018"
+      ],
+      "affected_sections": [],
+      "created": [],
+      "deleted": [
+        "00000000-0000-0007-0000-000000000018"
+      ],
+      "moved": [
+        "00000000-0000-0007-0000-000000000019"
+      ],
+      "operation_count": 6,
+      "revision": [
+        114,
+        58,
+        27,
+        233,
+        84,
+        118,
+        95,
+        196,
+        12,
+        7,
+        28,
+        1,
+        16,
+        60,
+        4,
+        101
+      ],
+      "updated": [
+        "00000000-0000-0007-0000-000000000001",
+        "00000000-0000-0007-0000-00000000000e",
+        "00000000-0000-0007-0000-000000000014",
+        "00000000-0000-0007-0000-000000000020"
+      ]
+    },
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "previous_revision": [
+      219,
+      219,
+      139,
+      3,
+      235,
+      251,
+      97,
+      101,
+      127,
+      165,
+      225,
+      173,
+      198,
+      85,
+      55,
+      41
+    ],
+    "revision": [
+      114,
+      58,
+      27,
+      233,
+      84,
+      118,
+      95,
+      196,
+      12,
+      7,
+      28,
+      1,
+      16,
+      60,
+      4,
+      101
+    ]
+  },
+  "fixture_version": 3,
+  "initial_read": {
+    "bytes_used": 2245,
+    "continuation": null,
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "items": [
+      {
+        "content_digest": 15259391096921016042,
+        "id": "00000000-0000-0007-0000-000000000001",
+        "kind": "Paragraph",
+        "marks": [
+          {
+            "attrs": {
+              "delimiter": {
+                "String": "**"
+              }
+            },
+            "kind": "Bold",
+            "range": {
+              "end": {
+                "block_id": "00000000-0000-0007-0000-000000000001",
+                "position": "End"
+              },
+              "start": {
+                "block_id": "00000000-0000-0007-0000-000000000001",
+                "position": {
+                  "Unit": {
+                    "bias": "Before",
+                    "elem_id": {
+                      "counter": 8,
+                      "peer": 7
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "text": "intro bold",
+        "text_ranges": [
+          {
+            "end": {
+              "block_id": "00000000-0000-0007-0000-000000000001",
+              "position": "End"
+            },
+            "start": {
+              "block_id": "00000000-0000-0007-0000-000000000001",
+              "position": "Start"
+            }
+          }
+        ]
+      },
+      {
+        "content_digest": 10575558541601266598,
+        "id": "00000000-0000-0007-0000-00000000000d",
+        "kind": {
+          "List": {
+            "style": {
+              "bullet": "Dash",
+              "delimiter": "Period",
+              "loose": false,
+              "ordered": false,
+              "start": 1
+            }
+          }
+        },
+        "marks": [],
+        "structure": {
+          "ListItems": {
+            "item_ids": [
+              "00000000-0000-0007-0000-00000000000e"
+            ]
+          }
+        },
+        "text": "task",
+        "text_ranges": [
+          {
+            "end": {
+              "block_id": "00000000-0000-0007-0000-00000000000f",
+              "position": "End"
+            },
+            "start": {
+              "block_id": "00000000-0000-0007-0000-00000000000f",
+              "position": "Start"
+            }
+          }
+        ]
+      },
+      {
+        "content_digest": 9735302092251644456,
+        "id": "00000000-0000-0007-0000-000000000014",
+        "kind": "Table",
+        "marks": [],
+        "structure": {
+          "Table": {
+            "columns": [
+              {
+                "alignment": "Left",
+                "id": "00000000-0000-0007-0000-000000000015"
+              },
+              {
+                "alignment": "Left",
+                "id": "00000000-0000-0007-0000-000000000016"
+              }
+            ],
+            "header": [
+              "Name",
+              "Value"
+            ],
+            "rows": [
+              {
+                "cells": [
+                  "one",
+                  "1"
+                ],
+                "id": "00000000-0000-0007-0000-000000000017"
+              }
+            ]
+          }
+        },
+        "text": "Name\tValue\none\t1",
+        "text_ranges": []
+      },
+      {
+        "content_digest": 15955113642153156928,
+        "id": "00000000-0000-0007-0000-000000000018",
+        "kind": "BlockQuote",
+        "marks": [],
+        "structure": {
+          "Children": {
+            "block_ids": [
+              "00000000-0000-0007-0000-000000000019"
+            ]
+          }
+        },
+        "text": "quoted",
+        "text_ranges": [
+          {
+            "end": {
+              "block_id": "00000000-0000-0007-0000-000000000019",
+              "position": "End"
+            },
+            "start": {
+              "block_id": "00000000-0000-0007-0000-000000000019",
+              "position": "Start"
+            }
+          }
+        ]
+      },
+      {
+        "content_digest": 1976825651348037087,
+        "id": "00000000-0000-0007-0000-000000000020",
+        "kind": {
+          "CodeFence": {
+            "info": "rust",
+            "style": {
+              "length": 3,
+              "marker": "Backtick"
+            }
+          }
+        },
+        "marks": [],
+        "text": "let x = 1;",
+        "text_ranges": []
+      }
+    ],
+    "omitted_ids": [],
+    "revision": [
+      219,
+      219,
+      139,
+      3,
+      235,
+      251,
+      97,
+      101,
+      127,
+      165,
+      225,
+      173,
+      198,
+      85,
+      55,
+      41
+    ]
+  },
+  "map": {
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "items": [
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-000000000001",
+        "kind": "Paragraph",
+        "node_digest": 16619238897836059834,
+        "order": 0,
+        "parent": null,
+        "source_bytes": 14,
+        "subtree_digest": null,
+        "text_bytes": 10
+      },
+      {
+        "descendant_count": 2,
+        "direct_child_count": 1,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-00000000000d",
+        "kind": "List",
+        "node_digest": 6301477318456831507,
+        "order": 1,
+        "parent": null,
+        "source_bytes": 10,
+        "subtree_digest": null,
+        "text_bytes": 0
+      },
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-000000000014",
+        "kind": "Table",
+        "node_digest": 3973626709249694130,
+        "order": 2,
+        "parent": null,
+        "source_bytes": 42,
+        "subtree_digest": null,
+        "text_bytes": 13
+      }
+    ],
+    "next_cursor": "0100000000000000000000000000000002dbdb8b03ebfb61657fa5e1adc655372900000000000000000000000000000000000000000000000000070000000000000014030000000000000003000000000000001d3e86d16ad6686ada9411707a4ff7d0",
+    "parent": null,
+    "revision": [
+      219,
+      219,
+      139,
+      3,
+      235,
+      251,
+      97,
+      101,
+      127,
+      165,
+      225,
+      173,
+      198,
+      85,
+      55,
+      41
+    ],
+    "traversal": "DirectChildren"
+  },
+  "map_continuation": {
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "items": [
+      {
+        "descendant_count": 1,
+        "direct_child_count": 1,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-000000000018",
+        "kind": "BlockQuote",
+        "node_digest": 10839892893678551470,
+        "order": 3,
+        "parent": null,
+        "source_bytes": 8,
+        "subtree_digest": null,
+        "text_bytes": 0
+      },
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-000000000020",
+        "kind": "CodeFence",
+        "node_digest": 5354524520763974339,
+        "order": 4,
+        "parent": null,
+        "source_bytes": 22,
+        "subtree_digest": null,
+        "text_bytes": 10
+      }
+    ],
+    "next_cursor": null,
+    "parent": null,
+    "revision": [
+      219,
+      219,
+      139,
+      3,
+      235,
+      251,
+      97,
+      101,
+      127,
+      165,
+      225,
+      173,
+      198,
+      85,
+      55,
+      41
+    ],
+    "traversal": "DirectChildren"
+  },
+  "response_bytes": {
+    "affected_read": 2105,
+    "edit": 695,
+    "initial_read": 2245,
+    "map": 1116,
+    "map_continuation": 685,
+    "restarted_map": 1399,
+    "total": 8245
+  },
+  "restarted_map": {
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "items": [
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-000000000001",
+        "kind": "Paragraph",
+        "node_digest": 14380044399170481740,
+        "order": 0,
+        "parent": null,
+        "source_bytes": 14,
+        "subtree_digest": null,
+        "text_bytes": 11
+      },
+      {
+        "descendant_count": 2,
+        "direct_child_count": 1,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-00000000000d",
+        "kind": "List",
+        "node_digest": 6301477318456831507,
+        "order": 1,
+        "parent": null,
+        "source_bytes": 10,
+        "subtree_digest": null,
+        "text_bytes": 0
+      },
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-000000000014",
+        "kind": "Table",
+        "node_digest": 7523623329317613663,
+        "order": 2,
+        "parent": null,
+        "source_bytes": 42,
+        "subtree_digest": null,
+        "text_bytes": 17
+      },
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-000000000019",
+        "kind": "Paragraph",
+        "node_digest": 15138027688093027612,
+        "order": 3,
+        "parent": null,
+        "source_bytes": 0,
+        "subtree_digest": null,
+        "text_bytes": 6
+      },
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": null,
+        "id": "00000000-0000-0007-0000-000000000020",
+        "kind": "CodeFence",
+        "node_digest": 4096012685070193089,
+        "order": 4,
+        "parent": null,
+        "source_bytes": 22,
+        "subtree_digest": null,
+        "text_bytes": 10
+      }
+    ],
+    "next_cursor": null,
+    "parent": null,
+    "revision": [
+      114,
+      58,
+      27,
+      233,
+      84,
+      118,
+      95,
+      196,
+      12,
+      7,
+      28,
+      1,
+      16,
+      60,
+      4,
+      101
+    ],
+    "traversal": "DirectChildren"
+  },
+  "stale_cursor_error": "descriptor cursor revision mismatch: expected 723a1be954765fc40c071c01103c0465, actual dbdb8b03ebfb61657fa5e1adc6553729"
+}

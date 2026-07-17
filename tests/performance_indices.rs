@@ -95,6 +95,10 @@ fn block_index_follows_list_item_paths_and_survives_document_clone() {
         ListItem {
             id: block_id_from_op(item_id),
             elem_id: item_id,
+            task: None,
+            task_op: item_id,
+            task_observed: StateVector::new(),
+            placement_observed: StateVector::new(),
             children,
         },
         item_id,
@@ -105,8 +109,9 @@ fn block_index_follows_list_item_paths_and_survives_document_clone() {
         list_id,
         Block::new(
             BlockKind::List {
-                ordered: false,
+                style: md_crdt::ListStyle::default(),
                 items,
+                pending_moves: Vec::new(),
             },
             list_id,
         ),

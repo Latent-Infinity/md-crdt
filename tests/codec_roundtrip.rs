@@ -3,12 +3,13 @@
 //! Covers Envelope / DocOp encode-decode, version rejection, and nest depth.
 
 use md_crdt::codec::{
-    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, CodecError, ColumnAlignmentWire, DocOp,
-    Envelope, JsonOpCodec, ListItemSkeleton, MAX_WIRE_NEST_DEPTH, MovedTextUnitWire, OpBody,
-    OpCodec, TextBlockKindWire, WIRE_VERSION, insert_block_paragraph_is_empty,
+    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, CodecError, DocOp, Envelope,
+    JsonOpCodec, ListItemSkeleton, MAX_WIRE_NEST_DEPTH, MovedTextUnitWire, OpBody, OpCodec,
+    TableCellWire, TextBlockKindWire, WIRE_VERSION, insert_block_paragraph_is_empty,
 };
-use md_crdt::core::OpId;
+use md_crdt::core::{OpId, StateVector};
 use md_crdt::doc::BlockId;
+use md_crdt::{CodeFenceStyle, ListStyle, TaskState};
 use uuid::Uuid;
 
 fn op(counter: u64, peer: u64) -> OpId {
@@ -59,6 +60,7 @@ fn insert_block_with_after_and_right_origin_round_trip() {
             block: BlockSkeleton {
                 block_id: block_id(99),
                 kind: BlockKindSkeleton::CodeFence {
+                    style: md_crdt::CodeFenceStyle::default(),
                     info: Some("rust".into()),
                     text: "fn main() {}".into(),
                 },
@@ -181,6 +183,26 @@ fn nest_depth_exceeded_on_decode() {
 fn insert_block_paragraph_is_empty_helper() {
     assert!(insert_block_paragraph_is_empty(&sample_insert_block("")));
     assert!(!insert_block_paragraph_is_empty(&sample_insert_block("x")));
+
+    let mut nested = sample_insert_block("");
+    let OpBody::Doc(DocOp::InsertBlock { block, .. }) = &mut nested.body else {
+        unreachable!();
+    };
+    block.kind = BlockKindSkeleton::BlockQuote {
+        children: vec![BlockSkeletonInsert {
+            after: None,
+            id: op(2, 1),
+            right_origin: None,
+            block: BlockSkeleton {
+                block_id: block_id(2),
+                kind: BlockKindSkeleton::Heading {
+                    level: 2,
+                    text: "nested body".into(),
+                },
+            },
+        }],
+    };
+    assert!(!insert_block_paragraph_is_empty(&nested));
     // Non-paragraph / non-InsertBlock: vacuously true for the predicate (only
     // Paragraph InsertBlock can violate the unit-mode empty rule).
     let del = Envelope {
@@ -239,12 +261,14 @@ fn heading_and_list_kinds_round_trip() {
             block: BlockSkeleton {
                 block_id: block_id(7),
                 kind: BlockKindSkeleton::List {
-                    ordered: false,
+                    style: md_crdt::ListStyle::default(),
                     items: vec![ListItemSkeleton {
                         after: None,
                         id: op(2, 1),
                         right_origin: None,
                         block_id: block_id(8),
+                        task: None,
+                        task_op: op(2, 1),
                         children: vec![BlockSkeletonInsert {
                             after: None,
                             id: op(3, 1),
@@ -277,14 +301,25 @@ fn table_row_ops_round_trip() {
             after: None,
             id: op(2, 1),
             right_origin: None,
-            cells: vec!["a".into(), "b".into()],
+            cells: vec![
+                TableCellWire {
+                    column_id: block_id(10),
+                    value: "a".into(),
+                },
+                TableCellWire {
+                    column_id: block_id(11),
+                    value: "b".into(),
+                },
+            ],
         },
-        DocOp::SetTableRowCells {
+        DocOp::SetTableCell {
             table_elem: op(1, 1),
             table_id: block_id(1),
-            row: op(2, 1),
+            row_id: block_id(2),
+            column_id: block_id(10),
             id: op(3, 1),
-            cells: vec!["updated".into()],
+            value: "updated".into(),
+            observed: Default::default(),
         },
         DocOp::DeleteTableRow {
             table_elem: op(1, 1),
@@ -316,15 +351,89 @@ fn table_block_skeleton_round_trip() {
             right_origin: None,
             block: BlockSkeleton {
                 block_id: block_id(1),
-                kind: BlockKindSkeleton::Table {
-                    columns: vec![ColumnAlignmentWire::Left, ColumnAlignmentWire::Center],
-                    header: vec!["a".into(), "b".into()],
-                },
+                kind: BlockKindSkeleton::Table,
             },
         }),
     };
     let bytes = codec.encode(&envelope).expect("encode");
     assert_eq!(codec.decode(&bytes).expect("decode"), envelope);
+}
+
+#[test]
+fn structured_mutation_ops_round_trip() {
+    let codec = JsonOpCodec;
+    let operations = vec![
+        DocOp::InsertListItem {
+            list_elem: op(1, 1),
+            list_id: block_id(1),
+            after: None,
+            id: op(2, 1),
+            right_origin: None,
+            task: Some(TaskState::Unchecked),
+        },
+        DocOp::DeleteListItemById {
+            list_elem: op(1, 1),
+            list_id: block_id(1),
+            target: op(2, 1),
+            item_id: block_id(2),
+            id: op(3, 1),
+        },
+        DocOp::MoveListItem {
+            from_list_elem: op(1, 1),
+            to_list_elem: op(4, 1),
+            list_id: block_id(4),
+            item_id: block_id(2),
+            target: op(2, 1),
+            id: op(5, 1),
+            after: None,
+            right_origin: None,
+            observed: StateVector::new(),
+        },
+        DocOp::SetListStyle {
+            block_elem: op(1, 1),
+            block_id: block_id(1),
+            id: op(6, 1),
+            style: ListStyle::default(),
+            observed: StateVector::new(),
+        },
+        DocOp::SetListItemTask {
+            item_id: block_id(2),
+            id: op(7, 1),
+            task: Some(TaskState::Checked),
+            observed: StateVector::new(),
+        },
+        DocOp::SetCodeFence {
+            block_elem: op(8, 1),
+            block_id: block_id(8),
+            id: op(9, 1),
+            style: CodeFenceStyle::default(),
+            info: Some("rust".into()),
+            text: "fn main() {}".into(),
+            observed: StateVector::new(),
+        },
+        DocOp::ConvertTextBlock {
+            block_elem: op(10, 1),
+            block_id: block_id(10),
+            id: op(11, 1),
+            kind: TextBlockKindWire::Heading { level: 2 },
+            observed: StateVector::new(),
+        },
+        DocOp::ReplaceRawBlock {
+            block_elem: op(12, 1),
+            block_id: block_id(12),
+            id: op(13, 1),
+            raw: ":::warning".into(),
+            observed: StateVector::new(),
+        },
+    ];
+    for operation in operations {
+        let envelope = Envelope {
+            version: WIRE_VERSION,
+            body: OpBody::Doc(operation),
+        };
+        let bytes = codec.encode(&envelope).expect("encode");
+        assert_eq!(codec.decode(&bytes).expect("decode"), envelope);
+    }
 }
 
 #[test]

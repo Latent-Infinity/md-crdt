@@ -4,13 +4,13 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 | Field | Value |
 | --- | --- |
-| **Plan** | `docs/architecture-evolution.md` (Draft revision 15) |
+| **Plan** | `docs/architecture-evolution.md` (Draft revision 18) |
 | **Last updated** | 2026-07-16 |
 | **Tracking unit** | PR slices under design phases A–Q |
 | **Joint consumer plan** | `../md-mcp/docs/joint-md-crdt-v2-implementation-plan.md` |
 
-**Release compatibility policy:** only V3 session snapshots and current V2 dual-slot storage are
-accepted. Earlier completed entries record what landed historically; the temporary snapshot V1/V2
+**Release compatibility policy:** only V6 session snapshots, wire V4, and current V2 dual-slot storage are
+accepted. Earlier completed entries record what landed historically; the temporary snapshot V1–V5
 and storage V1 readers, upgrade branches, and fixtures are removed. Older vault state must be
 reinitialized and re-ingested from Markdown.
 
@@ -60,15 +60,16 @@ reinitialized and re-ingested from Markdown.
 | **PR-36** Stable anchored edits/scoped preconditions | **done** | Stable start/end/unit targets; scoped semantic/placement digests; contract fixture v2; 100/100 unrelated-churn replay; Criterion gate ≤3.45% midpoint overhead; 98.12% changed-line coverage |
 | **PR-37** Bounded semantic projections | **done** | Owned field-selective DTOs, hard bounds/continuations, exact owned regions, frozen 3,055-byte transcript; 10k one-block gate ≈1,618× latency, 313× output, and 2,231× allocation improvement |
 | **PR-38** Revision-bound hierarchy cursors | **done** | Stateless revision/parent/identity cursor; typed restart failures; node-local digest/count summaries; contract v3; wide/deep ablation gate |
-| **PR-39** Cell-addressable tables | **planned** | Depends on PR-36/38 |
-| **PR-40** Complete structured mutations | **planned** | Depends on PR-36–39 |
+| **PR-39** Cell-addressable tables | **done** | Stable column/header/cell addresses; causal per-cell LWW; wire V2; snapshot V4; workspace/ingest/export integration; ablation gate passed |
+| **PR-40** Complete structured mutations | **done** | Validated `BlockDraft`; focused list/quote/code/conversion/raw operations; wire V4; snapshot V6; contract v5; ablation gate passed |
+| **PR-41** Final convergence and release audit | **done** | Causal structured registers; stable-ID apply after moves; convergent list moves; pending-sequence snapshot persistence; safe rebase clocks; focused workspace guards; escaped table cells and nested-list round trips |
 
 ## Phase B checklist
 
 - [x] In-memory paragraph as `Sequence<TextUnit>` (PR-06a)
 - [x] Parse + serialize round-trip on units
 - [x] insert_text inserts grapheme units (local API)
-- [x] Unit-backed V3 snapshot format landed; temporary legacy readers were removed in PR-35
+- [x] Unit-backed snapshot format landed; temporary legacy readers were removed in PR-35 and the current structured-edit schema is V6
 - [x] Wire InsertText/DeleteText + session commits (PR-06b)
 - [x] Concurrent multi-peer paragraph edits (PR-06b)
 
@@ -78,7 +79,7 @@ reinitialized and re-ingested from Markdown.
 | --- | --- | --- |
 | PR-05 before 06a? | **Skip optional PR-05** | MVP gate is 01–04 + 06a/b + 07 |
 | Unit OpIds on skeleton expand | `parent_elem.counter + 1 + i` same peer | Deterministic across peers; wire still only carries block id + string |
-| Snapshot paragraph body | Current V3 snapshot only; V1/V2 readers removed | The joint pre-1.0 release has no migration obligation; one accepted representation reduces branches and synthetic-id risk |
+| Snapshot paragraph body | Current V6 snapshot only; older readers removed | The joint pre-1.0 release has no migration obligation; one accepted representation reduces branches and synthetic-id risk |
 | Span-aware sync (audit) | `Operation` covers a counter range `[e-span+1, e]`; `Operation.id` = max embedded id (N1); readiness gates on range start vs frontier | Lets one op reserve a contiguous id range (block + G units) without sparse op ids; span 1 = old behavior; unblocks multi-unit InsertText |
 | Unit-mode default | `CollaborativeDocument::new` → `unit_mode = true` | Phase B cutover; string-mode still available via `with_codec(..., false)` |
 | N6-d insert_paragraph | empty `InsertBlock` then `InsertText` (two commits) | Pure N1–N4; no skeleton range-seed |
@@ -258,22 +259,50 @@ repository was modified during this slice.
 - Checkpoints prune only the number of oldest operations needed to satisfy
   `max_retained_ops`, and only when every active caller-supplied lease acknowledges them. A blocked
   checkpoint is non-mutating. Successful checkpoints advance an epoch and per-origin delta floor,
-  persist both in V3 snapshots, and return a full checkpoint through `sync_since` when a peer is
+  persist both in current snapshots, and return a full checkpoint through `sync_since` when a peer is
   below the floor. After rebase, incremental deltas resume normally.
 - Caller-managed acknowledgement leases were selected over wall-clock expiry because the latter
   makes identical checkpoint requests depend on runtime timing. Tombstone GC remains `KeepAll`:
   acknowledgements do not prove that retained structural references are unreachable.
-- The producer fixture at `tests/fixtures/workspace-contract-v3.json` is generated from actual
+- The producer fixture at `tests/fixtures/workspace-contract-v5.json` is generated from actual
   public DTO serialization and covers handles, descriptors, summaries, edit batches, receipts,
   export/recovery, checkpoint requests, and rebase errors. The sibling consumer gate was not run
   because this slice is restricted to `md-crdt`.
-- V3 is the only accepted session snapshot and current V2 dual-slot storage is the only accepted
+- V5 is the only accepted session snapshot and current V2 dual-slot storage is the only accepted
   superblock. Non-current versions and detected legacy storage artifacts return an actionable
   reinitialize/re-ingest error. Synthetic legacy conversion and deprecated rich-mark aliases are
   removed.
 - Criterion control/treatment: encoding 10,000 retained operations was 40.588–41.815 µs versus
   0.841–0.897 µs with 128 retained (about 47× faster); restoring 1,002 operations was
   118.54–122.36 µs versus 51.33–53.11 µs with 64 retained (about 2.3× faster).
+
+## Phase P checklist — complete
+
+- [x] Stable `ColumnId`, distinguished header row, and `(RowId, ColumnId)` cell addresses
+- [x] Column insert/delete/move/alignment and focused cell operations across model, wire, session,
+  workspace, snapshots, ingest, projections, and export
+- [x] Causal per-cell LWW retains fresh-peer and delayed-delivery edits; concurrent same-cell writes
+  have one deterministic winner
+- [x] Row/column deletion wins over concurrent cell edits; column and row moves retain identities
+- [x] Snapshot/reopen, checkpoint/rebase, parsed-ingest identity, and table-local exact-export tests
+- [x] P-A/P-B/P-C/P-D ablation resolved with 10×5, 100×20, and 1,000×50 measurements
+
+## Phase P implementation outcome
+
+- P-B is the single shipped cell representation. P-A remains benchmark-only; P-C's conservative
+  1,000×50 text-unit snapshot lower bound was 29,113,680 bytes versus 9,579,075 bytes for P-B,
+  exceeding the allowed 25% growth by a wide margin. P-D has no demonstrated stable table-creation
+  policy and remains rejected.
+- At 20 columns, P-B applied in 95.36–103.21 ns versus 282.90–288.10 ns for the row-vector control
+  and encoded to 311 versus 376 bytes. At 50 columns it applied in 273.28–355.67 ns versus
+  675.11–685.42 ns and encoded to 313 versus 696 bytes. A one-cell payload stayed within 4 bytes
+  from 5 to 50 columns.
+- The P-B materialized snapshot cost is explicit: 404,818 bytes at 100×20 and 9,579,075 bytes at
+  1,000×50, versus 17,144 and 486,824 bytes for the compact row-vector controls. This is the cost of
+  stable independently convergent cells; the selected P-C budget compares against P-B, not P-A.
+- Wire V2 and snapshot V4 intentionally rejected earlier unpublished formats at Phase P. Phase Q
+  advances the current formats to wire V4 and snapshot V6 without a compatibility reader. The deterministic
+  workspace transcript was regenerated because revision tokens include persisted session state.
 
 ## Nested re-ingest matching — **done** (structure)
 
@@ -478,7 +507,7 @@ All verified with no functional bug; the critical CRDT-safety property (PR-33) h
 
 **PR-32 operation-segment integrity — TRUE (fail-closed).** `encode_op_segment` frames magic(8)+version(2)+length(8)+CRC(4)+payload; decode validates all four (header floor, magic, version, declared-length==actual, CRC over the payload slice), so truncation / bad magic / bad version / length / CRC all return `CorruptOperationSegment`. A corrupt or missing **middle** segment fails the whole read (no silent op drop); ordering is numeric (`parse::<usize>` + numeric sort), not lexicographic; appends are atomic+durable. **TDD gaps closed:** added `operation_segment_bad_magic_version_and_short_header_fail_closed` and `operation_segments_read_in_numeric_order_and_reject_a_middle_gap` (bad magic, bad version, header-floor truncation, ≥10 numeric ordering, and the non-contiguous middle-gap path were all untested). **Noted:** the op-segment machinery is complete + tested but **not yet wired into any recovery path** (no production caller) — forward-prep, unit-proven only.
 
-**PR-34 frozen `md-mcp` contract (producer side) — TRUE.** `workspace_fixture.rs` builds live instances of every public workspace DTO (handle, descriptors, `EditBatch` with a rich `WorkspaceEdit` mix, receipts, `CheckpointRequest`/`PeerLease`/`RebaseRequired`) and asserts byte-equality against the committed current fixture (`fixtures/workspace-contract-v3.json`, superseding the pre-release v1/v2 shapes) — a genuine field-by-field regression guard that fails on any renamed/removed/retyped public field. Sibling `md-mcp` consumption + token/task gate remain correctly out-of-repo (PR-34 "joint gate pending").
+**PR-34 frozen `md-mcp` contract (producer side) — TRUE.** `workspace_fixture.rs` builds live instances of every public workspace DTO (handle, descriptors, `EditBatch` with a rich `WorkspaceEdit` mix, receipts, `CheckpointRequest`/`PeerLease`/`RebaseRequired`) and asserts byte-equality against the committed current fixture (`fixtures/workspace-contract-v5.json`, superseding the pre-release v1–v4 shapes) — a genuine field-by-field regression guard that fails on any renamed/removed/retyped public field. Sibling `md-mcp` consumption + token/task gate remain correctly out-of-repo (PR-34 "joint gate pending").
 
 **PR-35 final compatibility purge — TRUE (fail-closed, complete).** `SNAPSHOT_FORMAT_VERSION = 3`; both snapshot loaders reject any non-V3 with a clear `ReinitializeRequired { found, expected }` (no panic, no silent-empty), and storage returns `ReinitializeRequired` when `LEGACY_SEGMENT_FILE` exists. Grep confirms no leftover dead references (`SuperblockV1`/`ArchivedSuperblockV1`/`SNAPSHOT_FORMAT_VERSION_V1`/`RichMarkSet`/`RichMarkInterval` all removed). Old on-disk state fails closed with a reinitialize-and-re-ingest error rather than corrupting.
 
@@ -508,11 +537,68 @@ All verified with no functional bug; the critical CRDT-safety property (PR-33) h
   checksumming cut allocation 96.4% and page-size-1 scan latency 66.2% from the first correct build.
   One leaf update plus a root read measured 1.5160–1.5225 s. Node-local summaries skip zero
   descriptors by subtree digest because no subtree cache ships.
-- Breaking fixtures are current-only: `workspace-contract-v3.json` and
-  `workspace-projection-transcript-v2.json`; the replaced pre-release fixtures were deleted.
+- Breaking fixtures are current-only: `workspace-contract-v5.json` and
+  `workspace-projection-transcript-v3.json`; the replaced pre-release fixtures were deleted.
+
+## Phase Q checklist — complete
+
+- [x] Validated recursive creation for every non-table structured block kind with atomic
+  depth/item/byte and syntax-limit rejection
+- [x] Focused list-item placement/task/style, quote wrap/unwrap, code, compatible text-kind, and
+  digest-preconditioned raw-block operations across workspace, filesync, session, wire, and snapshot
+- [x] Ordered start/delimiter, bullet, looseness, task, and code-fence marker/info fidelity
+- [x] Exchange, delayed delivery, delete/move race, snapshot/reopen, exact-export locality, and
+  unaffected-identity coverage
+- [x] Q-A/Q-B/Q-C API study and whole-value/text-unit code-body study recorded at required sizes
+- [x] Current-only wire V4, snapshot V6, workspace contract v5, and projection transcript v3
+
+## Phase Q implementation outcome
+
+- Q-B ships as the single structured creation surface. Its 100/1,000-item request was
+  10,760/106,160 bytes versus 14,393/144,892 bytes for Q-A. Q-C raw fragments were
+  5,599/55,999 bytes and faster to parse, but lack validated intent, stable nested identity, and
+  focused preconditions; raw replacement is restricted to an exact-digest opaque block operation.
+- The structured 100/1,000-item move retained 100% of ids and encoded to 372/375 bytes after
+  adding its causal observed frontier. Its
+  snapshot-inclusive latency was 0.314–0.316/3.316–3.359 ms versus the deliberately conservative
+  parser-only lower bound of 0.263–0.268/2.626–2.672 ms; no parse-latency win is claimed.
+- Wrap retained all 100 ids with 3,930 request bytes, 17,735 wire bytes, and 10,497 dirty bytes
+  versus a 75,736-byte raw refresh. Code updates used 1,158/102,534 request bytes and
+  1,037/102,413 dirty bytes versus 17,423/118,799-byte raw refreshes at 1/100 KB.
+- Whole-value code updates measured 1.52–1.62 µs at 1 KB and 45.61–47.35 µs at 100 KB versus
+  1.218–1.236 ms full-document parse controls. The text-unit lower bound costs 24× snapshot bytes
+  and 40× operation bytes at 1 KB, 100 KB, and 1 MB with no modeled task-success improvement, so
+  whole-value code bodies remain selected and no runtime configuration option ships.
+- The 8,245-byte current transcript covers paged map/read, anchored prose edit, list task, table
+  cell, quote unwrap, code update, stale cursor restart, and scoped verification.
+- Scoped table-cell preconditions are cell-addressed; list task state participates in semantic
+  digests/change summaries; and list moves bind source plus destination placement.
 
 ## Gate
 
+- `just check` — **passed** for PR-41 (format, all-target/all-feature warning-denied Clippy, full
+  workspace tests and doctests, 0 failures).
+- `cargo llvm-cov --workspace --all-features --summary-only --quiet` — **passed**; 93.98%
+  repository line coverage, above the 93.87% pre-audit baseline.
+- The Phase P/Q Criterion groups and `cargo package --allow-dirty` — **passed** for the 0.3.0
+  release candidate, including the isolated packaged-crate build.
+- `just check` — **passed** for PR-40 (format, all-target/all-feature warning-denied Clippy, full
+  workspace tests and doctests, 0 failures).
+- `cargo llvm-cov --workspace --all-features --summary-only --quiet` — **passed**; 93.87%
+  repository line coverage, matching the Phase P baseline after adding explicit validation-limit,
+  structured-precondition, and workspace list move/delete coverage.
+- `cargo bench --bench performance structured_workspace_edit -- --sample-size 10
+  --measurement-time 0.1 --warm-up-time 0.1 --noplot` — **passed** for the required 100/1,000-item
+  list, 100-block wrap, 1/100 KB code timing, request/wire/dirty/identity gates, and 1 KB/100 KB/1 MB
+  code-body controls; measurements and tradeoffs are recorded above.
+- `just check` — **passed** for PR-39 (format, all-target/all-feature Clippy with warnings denied,
+  full workspace tests and doctests, 0 failures).
+- `cargo llvm-cov --workspace --all-features --summary-only --quiet` — **passed**; 93.87%
+  repository line coverage, above the recorded 93.07% baseline. Table model, parser, serializer,
+  snapshot, wire, session, filesync, and workspace paths are exercised by the Phase P suites.
+- `cargo bench --bench performance table_cell_edit -- --sample-size 10 --measurement-time 0.1
+  --warm-up-time 0.1 --noplot` — **passed** for P-A/P-B/P-C controls at 10×5, 100×20, and
+  1,000×50; measurements and the selected P-B treatment are recorded above.
 - `just check` — **passed** for PR-38 (format, all-target/all-feature Clippy with warnings denied,
   499 listed workspace tests/doctests, 0 failures).
 - `cargo llvm-cov --workspace --all-features --summary-only --quiet` — **passed**; 94.27%

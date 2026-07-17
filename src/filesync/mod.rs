@@ -468,7 +468,7 @@ pub(crate) fn block_content(kind: &BlockKind) -> String {
         BlockKind::Heading { level, text } => {
             format!("h{}:{}", level, paragraph_visible_string(text))
         }
-        BlockKind::List { ordered, items } => {
+        BlockKind::List { style, items, .. } => {
             let parts: Vec<String> = items
                 .iter_asc()
                 .map(|item| {
@@ -479,9 +479,11 @@ pub(crate) fn block_content(kind: &BlockKind) -> String {
                         .join("\n")
                 })
                 .collect();
-            format!("list:{}:{}", ordered, parts.join("|"))
+            format!("list:{style:?}:{}", parts.join("|"))
         }
-        BlockKind::CodeFence { info, text } => format!("code:{:?}:{}", info, text),
+        BlockKind::CodeFence { style, info, text } => {
+            format!("code:{style:?}:{info:?}:{text}")
+        }
         BlockKind::RawBlock { raw } => format!("raw:{}", raw),
         BlockKind::BlockQuote { children } => {
             let rendered: Vec<String> = children
@@ -497,9 +499,9 @@ pub(crate) fn block_content(kind: &BlockKind) -> String {
 fn table_fingerprint_content(table: &crate::doc::Table) -> String {
     let mut parts = Vec::new();
     parts.push("table".to_string());
-    parts.push(table.header.get().join("|"));
+    parts.push(table.row_cells(table.header_row_id()).join("|"));
     for row in table.rows.iter() {
-        parts.push(row.cells.get().join("|"));
+        parts.push(table.row_cells(row.id).join("|"));
     }
     parts.join("\n")
 }

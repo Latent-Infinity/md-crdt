@@ -47,19 +47,20 @@ fn parser_assigns_stable_block_ids_for_same_input() {
 
 #[test]
 fn table_insert_row_id_matches_op() {
-    use md_crdt::doc::{ColumnAlignment, ColumnDef, Table};
+    use md_crdt::doc::{ColumnAlignment, Table};
     let table_op = op(1, 1);
-    let mut table = Table::new(
-        block_id_from_op(table_op),
-        table_op,
-        vec![ColumnDef {
-            alignment: ColumnAlignment::Left,
-        }],
-        vec!["h".into()],
-        table_op,
-    );
+    let mut table = Table::new(block_id_from_op(table_op), table_op, table_op);
+    let column_op = OpId {
+        counter: 10,
+        peer: 3,
+    };
+    table.insert_column(None, ColumnAlignment::Left, "h".into(), column_op);
     let row_op = op(2, 1);
-    table.insert_row(None, vec!["c".into()], row_op);
+    table.insert_row(
+        None,
+        vec![(block_id_from_op(column_op), "c".into())],
+        row_op,
+    );
     let row = table.rows_in_order().into_iter().next().expect("row");
     assert_eq!(row.id, block_id_from_op(row_op));
     assert_eq!(row.elem_id, row_op);

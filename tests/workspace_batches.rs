@@ -2,8 +2,8 @@
 
 use md_crdt::filesync::{VaultError, VaultSession};
 use md_crdt::{
-    ColumnAlignment, ColumnDef, DocumentEditBatch, EditBatch, MarkKind, WorkspaceEdit,
-    WorkspaceMutation, block_id_from_op,
+    ColumnAlignment, ColumnDef, DocumentEditBatch, EditBatch, MarkKind, TargetPrecondition,
+    TaskState, WorkspaceEdit, WorkspaceMutation, block_id_from_op,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -455,18 +455,63 @@ fn batch_supports_table_metadata_rows_and_reorder() {
         },
     );
     handle = next;
+    let initial_column = match &vault
+        .session_mut("note.md")
+        .unwrap()
+        .document()
+        .find_block_by_id(table_id)
+        .unwrap()
+        .kind
+    {
+        md_crdt::BlockKind::Table { table } => table.columns_in_order()[0].id,
+        _ => unreachable!(),
+    };
+    let added_column = block_id_from_op(vault.session_mut("note.md").unwrap().peek_next_id());
+    let (_, next) = apply_one(
+        &mut vault,
+        "note.md",
+        &handle,
+        WorkspaceEdit::InsertTableColumn {
+            table_id,
+            after: Some(initial_column),
+            alignment: ColumnAlignment::Center,
+            header: "score".into(),
+        },
+    );
+    handle = next;
     for operation in [
+        WorkspaceEdit::SetTableCell {
+            table_id,
+            row_id: row_one,
+            column_id: added_column,
+            value: "10".into(),
+        },
+        WorkspaceEdit::SetTableColumnAlignment {
+            table_id,
+            column_id: added_column,
+            alignment: ColumnAlignment::Right,
+        },
+        WorkspaceEdit::MoveTableColumn {
+            table_id,
+            column_id: added_column,
+            after: None,
+        },
         WorkspaceEdit::SetTableRowCells {
             table_id,
             row_id: row_one,
-            cells: vec!["ONE".into()],
+            cells: vec!["10".into(), "ONE".into()],
         },
         WorkspaceEdit::SetTableMetadata {
             table_id,
-            columns: vec![ColumnDef {
-                alignment: ColumnAlignment::Right,
-            }],
-            header: vec!["NAME".into()],
+            columns: vec![
+                ColumnDef {
+                    alignment: ColumnAlignment::Right,
+                },
+                ColumnDef {
+                    alignment: ColumnAlignment::Left,
+                },
+            ],
+            header: vec!["SCORE".into(), "NAME".into()],
         },
         WorkspaceEdit::MoveTableRow {
             table_id,
@@ -476,6 +521,10 @@ fn batch_supports_table_metadata_rows_and_reorder() {
         WorkspaceEdit::DeleteTableRow {
             table_id,
             row_id: row_one,
+        },
+        WorkspaceEdit::DeleteTableColumn {
+            table_id,
+            column_id: initial_column,
         },
     ] {
         let (receipt, next) = apply_one(&mut vault, "note.md", &handle, operation);
@@ -511,6 +560,227 @@ fn invalid_heading_level_is_rejected_without_mutation() {
         Err(VaultError::Session(message)) if message.contains("heading level")
     ));
     assert_eq!(vault.revision("note.md").unwrap(), handle.revision);
+}
+
+#[test]
+fn table_cell_preconditions_accept_other_cell_changes_and_reject_same_cell_changes() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("note.md"),
+        "| first | second |\n| --- | --- |\n| a | b |\n",
+    )
+    .unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    let initial = vault.open_document("note.md").unwrap();
+    let (table_id, row_id, first_column, second_column) = {
+        let document = vault.session_mut("note.md").unwrap().document();
+        let block = document.blocks_in_order()[0];
+        let md_crdt::BlockKind::Table { table } = &block.kind else {
+            panic!("table expected")
+        };
+        (
+            block.id,
+            table.rows_in_order()[0].id,
+            table.columns_in_order()[0].id,
+            table.columns_in_order()[1].id,
+        )
+    };
+    let first_edit = WorkspaceEdit::SetTableCell {
+        table_id,
+        row_id,
+        column_id: first_column,
+        value: "first changed".into(),
+    };
+    let first_preconditions = vault
+        .preconditions_for_edit("note.md", &first_edit)
+        .unwrap();
+    assert!(matches!(
+        first_preconditions.as_slice(),
+        [TargetPrecondition::TableCell {
+            table_id: actual_table,
+            row_id: actual_row,
+            column_id: actual_column,
+            ..
+        }] if (*actual_table, *actual_row, *actual_column)
+            == (table_id, row_id, first_column)
+    ));
+
+    vault
+        .apply_edit_batch(
+            "note.md",
+            batch(
+                &initial,
+                vec![WorkspaceEdit::SetTableCell {
+                    table_id,
+                    row_id,
+                    column_id: second_column,
+                    value: "second changed".into(),
+                }],
+            ),
+        )
+        .unwrap();
+    vault
+        .apply_edit_batch(
+            "note.md",
+            EditBatch {
+                document_id: initial.document_id,
+                base_revision: initial.revision,
+                operations: vec![WorkspaceMutation::scoped(first_edit, first_preconditions)],
+            },
+        )
+        .expect("an unrelated cell edit must not make the target cell stale");
+
+    let current = vault.open_document("note.md").unwrap();
+    let intended = WorkspaceEdit::SetTableCell {
+        table_id,
+        row_id,
+        column_id: first_column,
+        value: "intended".into(),
+    };
+    let intended_preconditions = vault.preconditions_for_edit("note.md", &intended).unwrap();
+    vault
+        .apply_edit_batch(
+            "note.md",
+            batch(
+                &current,
+                vec![WorkspaceEdit::SetTableCell {
+                    table_id,
+                    row_id,
+                    column_id: first_column,
+                    value: "competing".into(),
+                }],
+            ),
+        )
+        .unwrap();
+    assert!(matches!(
+        vault.apply_edit_batch(
+            "note.md",
+            EditBatch {
+                document_id: current.document_id,
+                base_revision: current.revision,
+                operations: vec![WorkspaceMutation::scoped(intended, intended_preconditions)],
+            },
+        ),
+        Err(VaultError::TargetPrecondition { .. })
+    ));
+}
+
+#[test]
+fn list_task_digest_drives_scoped_conflicts_and_change_summaries() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("note.md"), "- [ ] task\n").unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    let initial = vault.open_document("note.md").unwrap();
+    let list_id = vault
+        .descriptor_page("note.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
+    let item_id = vault
+        .descriptor_page("note.md", Some(list_id), None, 1)
+        .unwrap()
+        .items[0]
+        .id;
+    let intended = WorkspaceEdit::SetListItemTask {
+        item_id,
+        task: Some(TaskState::Checked),
+    };
+    let intended_preconditions = vault.preconditions_for_edit("note.md", &intended).unwrap();
+
+    vault
+        .apply_edit_batch(
+            "note.md",
+            batch(
+                &initial,
+                vec![WorkspaceEdit::SetListItemTask {
+                    item_id,
+                    task: None,
+                }],
+            ),
+        )
+        .unwrap();
+    assert!(matches!(
+        vault.apply_edit_batch(
+            "note.md",
+            EditBatch {
+                document_id: initial.document_id,
+                base_revision: initial.revision,
+                operations: vec![WorkspaceMutation::scoped(intended, intended_preconditions)],
+            },
+        ),
+        Err(VaultError::TargetPrecondition { .. })
+    ));
+
+    let current = vault.open_document("note.md").unwrap();
+    let receipt = vault
+        .apply_edit_batch(
+            "note.md",
+            batch(
+                &current,
+                vec![WorkspaceEdit::SetListItemTask {
+                    item_id,
+                    task: Some(TaskState::Checked),
+                }],
+            ),
+        )
+        .unwrap();
+    assert_eq!(receipt.changes.updated, vec![item_id]);
+}
+
+#[test]
+fn list_item_move_preconditions_bind_source_and_destination_placement() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("note.md"), "- a\n- x\n\n+ b\n").unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    let initial = vault.open_document("note.md").unwrap();
+    let roots = vault
+        .descriptor_page("note.md", None, None, 4)
+        .unwrap()
+        .items;
+    let source_list = roots[0].id;
+    let destination_list = roots[1].id;
+    let source_items = vault
+        .descriptor_page("note.md", Some(source_list), None, 4)
+        .unwrap()
+        .items;
+    let destination_item = vault
+        .descriptor_page("note.md", Some(destination_list), None, 1)
+        .unwrap()
+        .items[0]
+        .id;
+    let moved_item = source_items[0].id;
+    let intended = WorkspaceEdit::MoveListItem {
+        item_id: moved_item,
+        list_id: destination_list,
+        after: Some(destination_item),
+    };
+    let intended_preconditions = vault.preconditions_for_edit("note.md", &intended).unwrap();
+    assert_eq!(intended_preconditions.len(), 3);
+
+    vault
+        .apply_edit_batch(
+            "note.md",
+            batch(
+                &initial,
+                vec![WorkspaceEdit::MoveListItem {
+                    item_id: moved_item,
+                    list_id: source_list,
+                    after: Some(source_items[1].id),
+                }],
+            ),
+        )
+        .unwrap();
+    assert!(matches!(
+        vault.apply_edit_batch(
+            "note.md",
+            EditBatch {
+                document_id: initial.document_id,
+                base_revision: initial.revision,
+                operations: vec![WorkspaceMutation::scoped(intended, intended_preconditions)],
+            },
+        ),
+        Err(VaultError::TargetPrecondition { .. })
+    ));
 }
 
 #[test]

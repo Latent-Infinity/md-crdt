@@ -1,92 +1,64 @@
 use md_crdt::core::OpId;
 use md_crdt::doc::{
-    BlockKind, CellContent, ColumnAlignment, ColumnDef, EquivalenceMode, Parser, Table,
+    BlockKind, CellContent, ColumnAlignment, EquivalenceMode, Parser, Table, block_id_from_op,
 };
-use uuid::Uuid;
 
 fn op(counter: u64) -> OpId {
     OpId { counter, peer: 1 }
 }
 
-#[test]
-fn fr15_table_row_sequence_ordering() {
-    let mut table = Table::new(
-        Uuid::new_v4(),
-        op(1),
-        vec![ColumnDef {
-            alignment: ColumnAlignment::Left,
-        }],
-        vec!["h".to_string()],
-        op(1),
-    );
+fn one_column_table() -> (Table, uuid::Uuid) {
+    let mut table = Table::new(block_id_from_op(op(1)), op(1), op(1));
+    table.insert_column(None, ColumnAlignment::Left, "h".into(), op(2));
+    (table, block_id_from_op(op(2)))
+}
 
-    table.insert_row(None, vec!["row-a".to_string()], op(2));
-    table.insert_row(None, vec!["row-b".to_string()], op(3));
+#[test]
+fn table_row_sequence_ordering() {
+    let (mut table, column_id) = one_column_table();
+
+    table.insert_row(None, vec![(column_id, "row-a".to_string())], op(3));
+    table.insert_row(None, vec![(column_id, "row-b".to_string())], op(4));
 
     let rows = table.rows_in_order();
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].cells.get(), vec!["row-b".to_string()]);
-    assert_eq!(rows[1].cells.get(), vec!["row-a".to_string()]);
+    assert_eq!(table.row_cells(rows[0].id), vec!["row-b".to_string()]);
+    assert_eq!(table.row_cells(rows[1].id), vec!["row-a".to_string()]);
 }
 
 #[test]
-fn fr15_row_level_lww_cells() {
-    let mut table = Table::new(
-        Uuid::new_v4(),
-        op(1),
-        vec![ColumnDef {
-            alignment: ColumnAlignment::Left,
-        }],
-        vec!["h".to_string()],
-        op(1),
-    );
+fn cell_level_lww_updates() {
+    let (mut table, column_id) = one_column_table();
 
-    table.insert_row(None, vec!["one".to_string()], op(2));
-    let row_id = table.rows_in_order()[0].elem_id;
+    table.insert_row(None, vec![(column_id, "one".to_string())], op(3));
+    let row_id = table.rows_in_order()[0].id;
 
-    table.set_row_cells(row_id, vec!["old".to_string()], op(3));
-    table.set_row_cells(row_id, vec!["new".to_string()], op(4));
+    table.set_cell(row_id, column_id, "old".to_string(), op(4));
+    table.set_cell(row_id, column_id, "new".to_string(), op(5));
 
-    let rows = table.rows_in_order();
-    assert_eq!(rows[0].cells.get(), vec!["new".to_string()]);
+    assert_eq!(table.row_cells(row_id), vec!["new".to_string()]);
 }
 
 #[test]
-fn fr15_concurrent_row_insert_delete() {
-    let mut table = Table::new(
-        Uuid::new_v4(),
-        op(1),
-        vec![ColumnDef {
-            alignment: ColumnAlignment::Left,
-        }],
-        vec!["h".to_string()],
-        op(1),
-    );
+fn concurrent_row_insert_delete() {
+    let (mut table, column_id) = one_column_table();
 
-    table.insert_row(None, vec!["row".to_string()], op(2));
+    table.insert_row(None, vec![(column_id, "row".to_string())], op(3));
     let row_id = table.rows_in_order()[0].elem_id;
-    table.remove_row(row_id, op(3));
+    table.remove_row(row_id, op(4));
 
     let rows = table.rows_in_order();
     assert_eq!(rows.len(), 0);
 }
 
 #[test]
-fn fr15_cell_content_is_text() {
-    let mut table = Table::new(
-        Uuid::new_v4(),
-        op(1),
-        vec![ColumnDef {
-            alignment: ColumnAlignment::Left,
-        }],
-        vec!["h".to_string()],
-        op(1),
-    );
+fn cell_content_is_text() {
+    let (mut table, column_id) = one_column_table();
 
     let text: CellContent = "unicode ✓".to_string();
-    table.insert_row(None, vec![text.clone()], op(2));
+    table.insert_row(None, vec![(column_id, text.clone())], op(3));
     let rows = table.rows_in_order();
-    assert_eq!(rows[0].cells.get(), vec![text]);
+    assert_eq!(table.row_cells(rows[0].id), vec![text]);
 }
 
 #[test]
@@ -99,13 +71,15 @@ fn parser_emits_gfm_table_with_alignment_and_rows() {
         panic!("expected a structured table");
     };
 
-    assert_eq!(table.header.get(), vec!["Name", "Score", "Rank"]);
+    assert_eq!(
+        table.row_cells(table.header_row_id()),
+        vec!["Name", "Score", "Rank"]
+    );
     assert_eq!(
         table
-            .columns
-            .get()
+            .columns_in_order()
             .into_iter()
-            .map(|column| column.alignment)
+            .map(|column| column.alignment.get())
             .collect::<Vec<_>>(),
         vec![
             ColumnAlignment::Left,
@@ -117,7 +91,7 @@ fn parser_emits_gfm_table_with_alignment_and_rows() {
         table
             .rows_in_order()
             .into_iter()
-            .map(|row| row.cells.get())
+            .map(|row| table.row_cells(row.id))
             .collect::<Vec<_>>(),
         vec![vec!["Alice", "10", "1"], vec!["Bob", "8", "2"]]
     );
@@ -136,4 +110,38 @@ fn invalid_table_delimiter_stays_a_paragraph() {
         document.blocks_in_order()[0].kind,
         BlockKind::Paragraph { .. }
     ));
+}
+
+#[test]
+fn escaped_pipes_and_backslashes_round_trip_as_cell_content() {
+    let input = "| a\\|b | c\\\\d |\n| --- | --- |\n| x\\|y | z\\\\w |";
+    let document = Parser::parse(input);
+    let BlockKind::Table { table } = &document.blocks_in_order()[0].kind else {
+        panic!("expected a structured table")
+    };
+    assert_eq!(table.row_cells(table.header_row_id()), vec!["a|b", "c\\d"]);
+    let row = table.rows_in_order()[0].id;
+    assert_eq!(table.row_cells(row), vec!["x|y", "z\\w"]);
+
+    let rendered = document.serialize(EquivalenceMode::Structural);
+    assert_eq!(rendered, input);
+    assert_eq!(
+        Parser::parse(&rendered).serialize(EquivalenceMode::Structural),
+        rendered
+    );
+}
+
+#[test]
+fn escaped_pipe_at_end_of_a_table_line_is_cell_content() {
+    let input = "| first | second\\|\n| --- | ---\n| x | y\\|";
+    let document = Parser::parse(input);
+    let BlockKind::Table { table } = &document.blocks_in_order()[0].kind else {
+        panic!("expected a structured table")
+    };
+    assert_eq!(
+        table.row_cells(table.header_row_id()),
+        vec!["first", "second|"]
+    );
+    let row = table.rows_in_order()[0].id;
+    assert_eq!(table.row_cells(row), vec!["x", "y|"]);
 }

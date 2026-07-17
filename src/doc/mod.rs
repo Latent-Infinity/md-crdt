@@ -147,8 +147,73 @@ impl Eq for Document {}
 pub struct Block {
     pub id: BlockId,
     pub elem_id: OpId,
+    /// Winning operation for kind-specific metadata/body replacement.
+    pub kind_op: OpId,
+    /// Causal frontier observed by the winning kind-specific replacement.
+    pub kind_observed: StateVector,
     pub kind: BlockKind,
     pub marks: MarkSet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ListDelimiter {
+    Period,
+    Parenthesis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BulletMarker {
+    Dash,
+    Plus,
+    Asterisk,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TaskState {
+    Unchecked,
+    Checked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ListStyle {
+    pub ordered: bool,
+    pub start: u32,
+    pub delimiter: ListDelimiter,
+    pub bullet: BulletMarker,
+    pub loose: bool,
+}
+
+impl Default for ListStyle {
+    fn default() -> Self {
+        Self {
+            ordered: false,
+            start: 1,
+            delimiter: ListDelimiter::Period,
+            bullet: BulletMarker::Dash,
+            loose: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FenceMarker {
+    Backtick,
+    Tilde,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CodeFenceStyle {
+    pub marker: FenceMarker,
+    pub length: u8,
+}
+
+impl Default for CodeFenceStyle {
+    fn default() -> Self {
+        Self {
+            marker: FenceMarker::Backtick,
+            length: 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,10 +230,12 @@ pub enum BlockKind {
     },
     /// Ordered or unordered list of items (items may nest further lists).
     List {
-        ordered: bool,
+        style: ListStyle,
         items: Sequence<ListItem>,
+        pending_moves: Vec<PendingListItemMove>,
     },
     CodeFence {
+        style: CodeFenceStyle,
         info: Option<String>,
         text: String,
     },
@@ -179,7 +246,7 @@ pub enum BlockKind {
         raw: String,
     },
     Table {
-        table: Table,
+        table: Box<Table>,
     },
 }
 
@@ -188,7 +255,24 @@ pub enum BlockKind {
 pub struct ListItem {
     pub id: BlockId,
     pub elem_id: OpId,
+    pub task: Option<TaskState>,
+    pub task_op: OpId,
+    pub task_observed: StateVector,
+    pub placement_observed: StateVector,
     pub children: Sequence<Block>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingListItemMove {
+    pub from_list_elem: OpId,
+    pub to_list_elem: OpId,
+    pub list_id: BlockId,
+    pub item_id: BlockId,
+    pub target: OpId,
+    pub id: OpId,
+    pub after: Option<OpId>,
+    pub right_origin: Option<OpId>,
+    pub observed: StateVector,
 }
 
 impl BlockKind {
@@ -378,6 +462,7 @@ impl Default for SerializeConfig {
 }
 
 pub type RowId = Uuid;
+pub type ColumnId = Uuid;
 pub type CellContent = String;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -393,13 +478,93 @@ pub struct ColumnDef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableColumn {
+    pub id: ColumnId,
+    pub elem_id: OpId,
+    pub deleted: crate::core::LwwRegister<bool>,
+    pub alignment: crate::core::LwwRegister<ColumnAlignment>,
+    pub alignment_observed: StateVector,
+    pub placement_observed: StateVector,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub struct CellAddress {
+    pub row_id: RowId,
+    pub column_id: ColumnId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableCell {
+    pub value: CellContent,
+    pub op_id: OpId,
+    pub observed: StateVector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingTableMove {
+    pub logical_id: Uuid,
+    pub target: OpId,
+    pub id: OpId,
+    pub after: Option<OpId>,
+    pub right_origin: Option<OpId>,
+    pub observed: StateVector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingColumnAlignment {
+    pub column_id: ColumnId,
+    pub alignment: ColumnAlignment,
+    pub id: OpId,
+    pub observed: StateVector,
+}
+
+impl TableCell {
+    pub fn new(value: CellContent, op_id: OpId, observed: StateVector) -> Self {
+        Self {
+            value,
+            op_id,
+            observed,
+        }
+    }
+
+    pub fn set(&mut self, value: CellContent, op_id: OpId, observed: StateVector) {
+        let incoming_observed_current =
+            observed.get(self.op_id.peer).unwrap_or(0) >= self.op_id.counter;
+        let current_observed_incoming = self.observed.get(op_id.peer).unwrap_or(0) >= op_id.counter;
+        if incoming_observed_current || (!current_observed_incoming && op_id >= self.op_id) {
+            self.value = value;
+            self.op_id = op_id;
+            self.observed = observed;
+        }
+    }
+}
+
+fn causal_write_wins(
+    current_id: OpId,
+    current_observed: &StateVector,
+    incoming_id: OpId,
+    incoming_observed: &StateVector,
+) -> bool {
+    let incoming_observed_current =
+        incoming_observed.get(current_id.peer).unwrap_or(0) >= current_id.counter;
+    let current_observed_incoming =
+        current_observed.get(incoming_id.peer).unwrap_or(0) >= incoming_id.counter;
+    incoming_observed_current || (!current_observed_incoming && incoming_id >= current_id)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Table {
     pub id: BlockId,
     pub elem_id: OpId,
     pub deleted: crate::core::LwwRegister<bool>,
-    pub columns: crate::core::LwwRegister<Vec<ColumnDef>>,
-    pub header: crate::core::LwwRegister<Vec<CellContent>>,
+    pub columns: Sequence<TableColumn>,
     pub rows: Sequence<TableRow>,
+    pub cells: BTreeMap<CellAddress, TableCell>,
+    pub pending_row_moves: Vec<PendingTableMove>,
+    pub pending_column_moves: Vec<PendingTableMove>,
+    pub pending_column_alignments: Vec<PendingColumnAlignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,35 +572,67 @@ pub struct TableRow {
     pub id: RowId,
     pub elem_id: OpId,
     pub deleted: crate::core::LwwRegister<bool>,
-    pub cells: crate::core::LwwRegister<Vec<CellContent>>,
+    pub placement_observed: StateVector,
 }
 
 impl Table {
-    pub fn new(
-        id: BlockId,
-        elem_id: OpId,
-        columns: Vec<ColumnDef>,
-        header: Vec<CellContent>,
-        op_id: OpId,
-    ) -> Self {
+    pub fn new(id: BlockId, elem_id: OpId, op_id: OpId) -> Self {
         Self {
             id,
             elem_id,
             deleted: crate::core::LwwRegister::new(false, op_id),
-            columns: crate::core::LwwRegister::new(columns, op_id),
-            header: crate::core::LwwRegister::new(header, op_id),
+            columns: Sequence::new(),
             rows: Sequence::new(),
+            cells: BTreeMap::new(),
+            pending_row_moves: Vec::new(),
+            pending_column_moves: Vec::new(),
+            pending_column_alignments: Vec::new(),
         }
     }
 
-    pub fn insert_row(&mut self, after: Option<OpId>, cells: Vec<CellContent>, op_id: OpId) {
-        let row = TableRow {
-            id: block_id_from_op(op_id),
+    pub fn header_row_id(&self) -> RowId {
+        self.id
+    }
+
+    pub fn insert_column(
+        &mut self,
+        after: Option<OpId>,
+        alignment: ColumnAlignment,
+        header: CellContent,
+        op_id: OpId,
+    ) {
+        let column_id = block_id_from_op(op_id);
+        let column = TableColumn {
+            id: column_id,
             elem_id: op_id,
             deleted: crate::core::LwwRegister::new(false, op_id),
-            cells: crate::core::LwwRegister::new(cells, op_id),
+            alignment: crate::core::LwwRegister::new(alignment, op_id),
+            alignment_observed: StateVector::new(),
+            placement_observed: StateVector::new(),
+        };
+        self.columns.insert(after, column, op_id);
+        self.set_cell(self.header_row_id(), column_id, header, op_id);
+        self.resolve_pending_column_ops(column_id);
+    }
+
+    pub fn insert_row(
+        &mut self,
+        after: Option<OpId>,
+        cells: Vec<(ColumnId, CellContent)>,
+        op_id: OpId,
+    ) {
+        let row_id = block_id_from_op(op_id);
+        let row = TableRow {
+            id: row_id,
+            elem_id: op_id,
+            deleted: crate::core::LwwRegister::new(false, op_id),
+            placement_observed: StateVector::new(),
         };
         self.rows.insert(after, row, op_id);
+        for (column_id, value) in cells {
+            self.set_cell(row_id, column_id, value, op_id);
+        }
+        self.resolve_pending_row_moves(row_id);
     }
 
     pub fn remove_row(&mut self, target: OpId, op_id: OpId) {
@@ -450,23 +647,97 @@ impl Table {
         self.rows.delete(target, op_id);
     }
 
-    pub fn set_row_cells(&mut self, row_elem_id: OpId, cells: Vec<CellContent>, op_id: OpId) {
-        // Clone only once instead of twice
-        if let Some(existing) = self.rows.get_element(&row_elem_id)
-            && let Some(row) = existing.value.as_ref()
-        {
-            let mut updated = row.clone();
-            updated.cells.set(cells, op_id);
-            self.rows.update_value(row_elem_id, updated);
+    pub fn set_cell(
+        &mut self,
+        row_id: RowId,
+        column_id: ColumnId,
+        value: CellContent,
+        op_id: OpId,
+    ) {
+        self.set_cell_observed(row_id, column_id, value, op_id, StateVector::new());
+    }
+
+    pub fn set_cell_observed(
+        &mut self,
+        row_id: RowId,
+        column_id: ColumnId,
+        value: CellContent,
+        op_id: OpId,
+        observed: StateVector,
+    ) {
+        let address = CellAddress { row_id, column_id };
+        self.cells
+            .entry(address)
+            .and_modify(|cell| cell.set(value.clone(), op_id, observed.clone()))
+            .or_insert_with(|| TableCell::new(value, op_id, observed));
+    }
+
+    pub fn cell_value(&self, row_id: RowId, column_id: ColumnId) -> Option<&str> {
+        self.row_is_live(row_id)
+            .then_some(())
+            .and_then(|_| self.column_by_id(column_id))
+            .and_then(|_| self.cells.get(&CellAddress { row_id, column_id }))
+            .map(|cell| cell.value.as_str())
+    }
+
+    pub fn row_cells(&self, row_id: RowId) -> Vec<CellContent> {
+        self.columns_in_order()
+            .into_iter()
+            .map(|column| {
+                self.cell_value(row_id, column.id)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    pub fn columns_in_order(&self) -> Vec<TableColumn> {
+        self.columns.iter().cloned().collect()
+    }
+
+    pub fn column_by_id(&self, column_id: ColumnId) -> Option<&TableColumn> {
+        self.columns.iter().find(|column| column.id == column_id)
+    }
+
+    pub fn set_column_alignment(
+        &mut self,
+        column_id: ColumnId,
+        alignment: ColumnAlignment,
+        op_id: OpId,
+    ) {
+        self.set_column_alignment_observed(column_id, alignment, op_id, StateVector::new());
+    }
+
+    pub fn set_column_alignment_observed(
+        &mut self,
+        column_id: ColumnId,
+        alignment: ColumnAlignment,
+        op_id: OpId,
+        observed: StateVector,
+    ) {
+        let Some(mut updated) = self.column_by_id(column_id).cloned() else {
+            self.pending_column_alignments.push(PendingColumnAlignment {
+                column_id,
+                alignment,
+                id: op_id,
+                observed,
+            });
+            return;
+        };
+        let current_id = updated.alignment.op_id();
+        let incoming_observed_current =
+            observed.get(current_id.peer).unwrap_or(0) >= current_id.counter;
+        let current_observed_incoming =
+            updated.alignment_observed.get(op_id.peer).unwrap_or(0) >= op_id.counter;
+        if incoming_observed_current || (!current_observed_incoming && op_id >= current_id) {
+            updated.alignment = crate::core::LwwRegister::new(alignment, op_id);
+            updated.alignment_observed = observed;
+            self.columns.update_value(updated.elem_id, updated);
         }
     }
 
-    pub fn set_columns(&mut self, columns: Vec<ColumnDef>, op_id: OpId) {
-        self.columns.set(columns, op_id);
-    }
-
-    pub fn set_header(&mut self, cells: Vec<CellContent>, op_id: OpId) {
-        self.header.set(cells, op_id);
+    fn row_is_live(&self, row_id: RowId) -> bool {
+        row_id == self.header_row_id() || self.row_by_id(row_id).is_some()
     }
 
     pub fn row_by_id(&self, row_id: RowId) -> Option<&TableRow> {
@@ -476,17 +747,28 @@ impl Table {
     pub(crate) fn move_row(
         &mut self,
         row_id: RowId,
+        target: OpId,
         id: OpId,
         after: Option<OpId>,
         right_origin: Option<OpId>,
+        observed: StateVector,
     ) -> bool {
         let Some(mut row) = self.row_by_id(row_id).cloned() else {
-            if self.rows.get_element(&id).is_none() {
+            if self.rows.get_element(&target).is_none() {
+                self.pending_row_moves.push(PendingTableMove {
+                    logical_id: row_id,
+                    target,
+                    id,
+                    after,
+                    right_origin,
+                    observed,
+                });
+            } else if self.rows.get_element(&id).is_none() {
                 let tombstone = TableRow {
                     id: row_id,
                     elem_id: id,
                     deleted: crate::core::LwwRegister::new(true, id),
-                    cells: crate::core::LwwRegister::new(Vec::new(), id),
+                    placement_observed: observed,
                 };
                 self.rows.apply(SequenceOp::Insert {
                     after,
@@ -499,7 +781,14 @@ impl Table {
             return false;
         };
         let already_moved = block_id_from_op(row.elem_id) != row.id;
-        if already_moved && row.elem_id >= id {
+        let incoming_observed_current =
+            observed.get(row.elem_id.peer).unwrap_or(0) >= row.elem_id.counter;
+        let current_observed_incoming =
+            row.placement_observed.get(id.peer).unwrap_or(0) >= id.counter;
+        if already_moved
+            && !incoming_observed_current
+            && (current_observed_incoming || row.elem_id >= id)
+        {
             if self.rows.get_element(&id).is_none() {
                 row.elem_id = id;
                 self.rows.apply(SequenceOp::Insert {
@@ -514,6 +803,7 @@ impl Table {
         }
         self.rows.delete(row.elem_id, id);
         row.elem_id = id;
+        row.placement_observed = observed;
         self.rows.apply(SequenceOp::Insert {
             after,
             id,
@@ -525,6 +815,138 @@ impl Table {
 
     pub fn rows_in_order(&self) -> Vec<TableRow> {
         self.rows.iter().cloned().collect()
+    }
+
+    pub fn remove_column(&mut self, column_id: ColumnId, op_id: OpId) {
+        if let Some(column) = self.column_by_id(column_id).cloned() {
+            self.columns.delete(column.elem_id, op_id);
+        }
+    }
+
+    pub(crate) fn move_column(
+        &mut self,
+        column_id: ColumnId,
+        target: OpId,
+        id: OpId,
+        after: Option<OpId>,
+        right_origin: Option<OpId>,
+        observed: StateVector,
+    ) -> bool {
+        let Some(mut column) = self.column_by_id(column_id).cloned() else {
+            if self.columns.get_element(&target).is_none() {
+                self.pending_column_moves.push(PendingTableMove {
+                    logical_id: column_id,
+                    target,
+                    id,
+                    after,
+                    right_origin,
+                    observed,
+                });
+            } else if self.columns.get_element(&id).is_none() {
+                let tombstone = TableColumn {
+                    id: column_id,
+                    elem_id: id,
+                    deleted: crate::core::LwwRegister::new(true, id),
+                    alignment: crate::core::LwwRegister::new(ColumnAlignment::Left, id),
+                    alignment_observed: StateVector::new(),
+                    placement_observed: observed,
+                };
+                self.columns.apply(SequenceOp::Insert {
+                    after,
+                    id,
+                    value: tombstone,
+                    right_origin,
+                });
+                self.columns.delete(id, id);
+            }
+            return false;
+        };
+        let already_moved = block_id_from_op(column.elem_id) != column.id;
+        let incoming_observed_current =
+            observed.get(column.elem_id.peer).unwrap_or(0) >= column.elem_id.counter;
+        let current_observed_incoming =
+            column.placement_observed.get(id.peer).unwrap_or(0) >= id.counter;
+        if already_moved
+            && !incoming_observed_current
+            && (current_observed_incoming || column.elem_id >= id)
+        {
+            if self.columns.get_element(&id).is_none() {
+                column.elem_id = id;
+                self.columns.apply(SequenceOp::Insert {
+                    after,
+                    id,
+                    value: column,
+                    right_origin,
+                });
+                self.columns.delete(id, id);
+            }
+            return false;
+        }
+        self.columns.delete(column.elem_id, id);
+        column.elem_id = id;
+        column.placement_observed = observed;
+        self.columns.apply(SequenceOp::Insert {
+            after,
+            id,
+            value: column,
+            right_origin,
+        });
+        true
+    }
+
+    pub(crate) fn resolve_pending_row_moves(&mut self, row_id: RowId) {
+        let mut pending = Vec::new();
+        std::mem::swap(&mut pending, &mut self.pending_row_moves);
+        pending.sort_by_key(|movement| movement.id);
+        for movement in pending {
+            if movement.logical_id == row_id {
+                self.move_row(
+                    row_id,
+                    movement.target,
+                    movement.id,
+                    movement.after,
+                    movement.right_origin,
+                    movement.observed,
+                );
+            } else {
+                self.pending_row_moves.push(movement);
+            }
+        }
+    }
+
+    pub(crate) fn resolve_pending_column_ops(&mut self, column_id: ColumnId) {
+        let mut movements = Vec::new();
+        std::mem::swap(&mut movements, &mut self.pending_column_moves);
+        movements.sort_by_key(|movement| movement.id);
+        for movement in movements {
+            if movement.logical_id == column_id {
+                self.move_column(
+                    column_id,
+                    movement.target,
+                    movement.id,
+                    movement.after,
+                    movement.right_origin,
+                    movement.observed,
+                );
+            } else {
+                self.pending_column_moves.push(movement);
+            }
+        }
+        let mut alignments = Vec::new();
+        std::mem::swap(&mut alignments, &mut self.pending_column_alignments);
+        alignments.sort_by_key(|alignment| alignment.id);
+        for alignment in alignments {
+            if alignment.column_id == column_id {
+                self.set_column_alignment_observed(
+                    column_id,
+                    alignment.alignment,
+                    alignment.id,
+                    alignment.observed,
+                );
+            } else {
+                self.pending_column_alignments.push(alignment);
+            }
+        }
     }
 }
 
@@ -759,6 +1181,34 @@ impl Document {
         walk(&self.blocks, elem_id)
     }
 
+    /// Find a list item by stable logical identity anywhere in the tree.
+    pub fn find_list_item_by_id(&self, item_id: BlockId) -> Option<&ListItem> {
+        fn walk(sequence: &Sequence<Block>, item_id: BlockId) -> Option<&ListItem> {
+            for block in sequence.iter() {
+                match &block.kind {
+                    BlockKind::List { items, .. } => {
+                        for item in items.iter() {
+                            if item.id == item_id {
+                                return Some(item);
+                            }
+                            if let Some(found) = walk(&item.children, item_id) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                    BlockKind::BlockQuote { children } => {
+                        if let Some(found) = walk(children, item_id) {
+                            return Some(found);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        walk(&self.blocks, item_id)
+    }
+
     /// Mutate a block by `elem_id` anywhere in the tree. Returns `None` if not found.
     pub fn with_block_mut<R>(
         &mut self,
@@ -927,6 +1377,405 @@ impl Document {
             .and_then(|c| c.compute_right_origin(after))
     }
 
+    /// Visible item sequence for one logical list block.
+    pub fn list_items(&self, list_id: BlockId) -> Option<&Sequence<ListItem>> {
+        let block = self.find_block_by_id(list_id)?;
+        match &block.kind {
+            BlockKind::List { items, .. } => Some(items),
+            _ => None,
+        }
+    }
+
+    /// Logical list block containing an item.
+    pub fn list_containing_item(&self, item_id: BlockId) -> Option<(BlockId, OpId)> {
+        self.list_item_placement(item_id)
+            .map(|(list_id, list_elem, _)| (list_id, list_elem))
+    }
+
+    /// Current list and sequence placement for one logical list item.
+    pub fn list_item_placement(&self, item_id: BlockId) -> Option<(BlockId, OpId, OpId)> {
+        fn walk(sequence: &Sequence<Block>, item_id: BlockId) -> Option<(BlockId, OpId, OpId)> {
+            for block in sequence.iter() {
+                match &block.kind {
+                    BlockKind::List { items, .. } => {
+                        if let Some(placement) = items.iter_all().find_map(|element| {
+                            element
+                                .value
+                                .as_ref()
+                                .filter(|item| item.id == item_id)
+                                .map(|_| element.id)
+                        }) {
+                            return Some((block.id, block.elem_id, placement));
+                        }
+                        for item in items.iter() {
+                            if let Some(found) = walk(&item.children, item_id) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                    BlockKind::BlockQuote { children } => {
+                        if let Some(found) = walk(children, item_id) {
+                            return Some(found);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        walk(&self.blocks, item_id)
+    }
+
+    pub fn compute_list_item_right_origin(
+        &self,
+        list_id: BlockId,
+        after: Option<OpId>,
+    ) -> Option<OpId> {
+        self.list_items(list_id)?.compute_right_origin(after)
+    }
+
+    pub(crate) fn insert_list_item_at(
+        &mut self,
+        list_elem: OpId,
+        after: Option<OpId>,
+        id: OpId,
+        right_origin: Option<OpId>,
+        task: Option<TaskState>,
+    ) -> bool {
+        let item_id = block_id_from_op(id);
+        let inserted = self
+            .with_block_mut(list_elem, |block| {
+                let BlockKind::List { items, .. } = &mut block.kind else {
+                    return false;
+                };
+                items.apply(SequenceOp::Insert {
+                    after,
+                    id,
+                    value: ListItem {
+                        id: item_id,
+                        elem_id: id,
+                        task,
+                        task_op: id,
+                        task_observed: StateVector::new(),
+                        placement_observed: StateVector::new(),
+                        children: Sequence::new(),
+                    },
+                    right_origin,
+                });
+                true
+            })
+            .unwrap_or(false);
+        if inserted {
+            self.resolve_pending_list_item_moves(item_id);
+        }
+        inserted
+    }
+
+    pub(crate) fn delete_list_item_at(
+        &mut self,
+        list_elem: OpId,
+        item_id: BlockId,
+        target: OpId,
+        id: OpId,
+    ) -> bool {
+        let (list_elem, target) = self
+            .list_item_placement(item_id)
+            .map(|(_, current_list, placement)| (current_list, placement))
+            .unwrap_or((list_elem, target));
+        self.with_block_mut(list_elem, |block| {
+            let BlockKind::List { items, .. } = &mut block.kind else {
+                return false;
+            };
+            if let Some(element) = items.get_element(&target)
+                && element
+                    .value
+                    .as_ref()
+                    .is_some_and(|item| item.id != item_id)
+            {
+                return false;
+            }
+            items.apply(SequenceOp::Delete { target, id });
+            true
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn move_list_item_at(&mut self, movement: &PendingListItemMove) -> bool {
+        let Some(item) = self.find_list_item_by_id(movement.item_id).cloned() else {
+            let deleted_target = self
+                .find_block(movement.from_list_elem)
+                .and_then(|block| match &block.kind {
+                    BlockKind::List { items, .. } => items.get_element(&movement.target),
+                    _ => None,
+                })
+                .is_some_and(|element| element.value.is_none());
+            if !deleted_target {
+                return self.with_block_mut(movement.from_list_elem, |block| {
+                    let BlockKind::List { pending_moves, .. } = &mut block.kind else {
+                        return false;
+                    };
+                    if !pending_moves
+                        .iter()
+                        .any(|pending| pending.id == movement.id)
+                    {
+                        pending_moves.push(movement.clone());
+                    }
+                    true
+                }) == Some(true);
+            }
+            return self.with_block_mut(movement.to_list_elem, |block| {
+                let BlockKind::List { items, .. } = &mut block.kind else {
+                    return false;
+                };
+                items.apply(SequenceOp::Insert {
+                    after: movement.after,
+                    id: movement.id,
+                    value: ListItem {
+                        id: movement.item_id,
+                        elem_id: movement.id,
+                        task: None,
+                        task_op: movement.id,
+                        task_observed: StateVector::new(),
+                        placement_observed: movement.observed.clone(),
+                        children: Sequence::new(),
+                    },
+                    right_origin: movement.right_origin,
+                });
+                items.apply(SequenceOp::Delete {
+                    target: movement.id,
+                    id: movement.id,
+                });
+                true
+            }) == Some(true);
+        };
+        let current_placement = self
+            .list_item_placement(movement.item_id)
+            .map_or(movement.target, |(_, _, placement)| placement);
+        let already_moved = block_id_from_op(current_placement) != movement.item_id;
+        if already_moved
+            && !causal_write_wins(
+                current_placement,
+                &item.placement_observed,
+                movement.id,
+                &movement.observed,
+            )
+        {
+            if self
+                .find_block(movement.to_list_elem)
+                .and_then(|block| match &block.kind {
+                    BlockKind::List { items, .. } => items.get_element(&movement.id),
+                    _ => None,
+                })
+                .is_none()
+            {
+                let mut tombstone = item;
+                tombstone.placement_observed = movement.observed.clone();
+                let _ = self.with_block_mut(movement.to_list_elem, |block| {
+                    let BlockKind::List { items, .. } = &mut block.kind else {
+                        return;
+                    };
+                    items.apply(SequenceOp::Insert {
+                        after: movement.after,
+                        id: movement.id,
+                        value: tombstone,
+                        right_origin: movement.right_origin,
+                    });
+                    items.apply(SequenceOp::Delete {
+                        target: movement.id,
+                        id: movement.id,
+                    });
+                });
+            }
+            return false;
+        }
+        let current = current_placement;
+        let current_list_elem = self
+            .list_containing_item(movement.item_id)
+            .map_or(movement.from_list_elem, |(_, elem)| elem);
+        let deleted = self.with_block_mut(current_list_elem, |block| {
+            let BlockKind::List { items, .. } = &mut block.kind else {
+                return false;
+            };
+            if items.get_element(&current).is_none() {
+                return false;
+            }
+            items.apply(SequenceOp::Delete {
+                target: current,
+                id: movement.id,
+            });
+            true
+        });
+        if deleted != Some(true) {
+            return false;
+        }
+        let mut item = item;
+        item.placement_observed = movement.observed.clone();
+        self.with_block_mut(movement.to_list_elem, |block| {
+            let BlockKind::List { items, .. } = &mut block.kind else {
+                return false;
+            };
+            items.apply(SequenceOp::Insert {
+                after: movement.after,
+                id: movement.id,
+                value: item,
+                right_origin: movement.right_origin,
+            });
+            true
+        }) == Some(true)
+    }
+
+    fn resolve_pending_list_item_moves(&mut self, item_id: BlockId) {
+        let Some((_, list_elem)) = self.list_containing_item(item_id) else {
+            return;
+        };
+        let mut pending = self
+            .with_block_mut(list_elem, |block| {
+                let BlockKind::List { pending_moves, .. } = &mut block.kind else {
+                    return Vec::new();
+                };
+                let mut retained = Vec::new();
+                let mut matching = Vec::new();
+                for movement in std::mem::take(pending_moves) {
+                    if movement.item_id == item_id {
+                        matching.push(movement);
+                    } else {
+                        retained.push(movement);
+                    }
+                }
+                *pending_moves = retained;
+                matching
+            })
+            .unwrap_or_default();
+        pending.sort_by_key(|movement| movement.id);
+        for movement in pending {
+            self.move_list_item_at(&movement);
+        }
+    }
+
+    pub(crate) fn set_list_style(
+        &mut self,
+        block_elem: OpId,
+        style: ListStyle,
+        id: OpId,
+        observed: StateVector,
+    ) -> bool {
+        self.with_block_mut(block_elem, |block| {
+            let BlockKind::List { style: current, .. } = &mut block.kind else {
+                return false;
+            };
+            if !causal_write_wins(block.kind_op, &block.kind_observed, id, &observed) {
+                return false;
+            }
+            *current = style;
+            block.kind_op = id;
+            block.kind_observed = observed;
+            true
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn set_list_item_task(
+        &mut self,
+        item_id: BlockId,
+        task: Option<TaskState>,
+        id: OpId,
+        observed: StateVector,
+    ) -> bool {
+        let Some((_, list_elem, placement)) = self.list_item_placement(item_id) else {
+            return false;
+        };
+        self.with_block_mut(list_elem, |block| {
+            let BlockKind::List { items, .. } = &mut block.kind else {
+                return false;
+            };
+            let Some(item) = items.value_mut(placement).filter(|item| item.id == item_id) else {
+                return false;
+            };
+            if !causal_write_wins(item.task_op, &item.task_observed, id, &observed) {
+                return false;
+            }
+            item.task = task;
+            item.task_op = id;
+            item.task_observed = observed;
+            true
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn set_code_fence(
+        &mut self,
+        block_elem: OpId,
+        style: CodeFenceStyle,
+        info: Option<String>,
+        text: String,
+        id: OpId,
+        observed: StateVector,
+    ) -> bool {
+        self.with_block_mut(block_elem, |block| {
+            if !causal_write_wins(block.kind_op, &block.kind_observed, id, &observed)
+                || !matches!(block.kind, BlockKind::CodeFence { .. })
+            {
+                return false;
+            }
+            block.kind = BlockKind::CodeFence { style, info, text };
+            block.kind_op = id;
+            block.kind_observed = observed;
+            true
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn convert_text_block(
+        &mut self,
+        block_elem: OpId,
+        kind: crate::codec::TextBlockKindWire,
+        id: OpId,
+        observed: StateVector,
+    ) -> bool {
+        self.with_block_mut(block_elem, |block| {
+            if !causal_write_wins(block.kind_op, &block.kind_observed, id, &observed) {
+                return false;
+            }
+            let text = match &mut block.kind {
+                BlockKind::Paragraph { text } | BlockKind::Heading { text, .. } => {
+                    std::mem::replace(text, Sequence::new())
+                }
+                _ => return false,
+            };
+            block.kind = match kind {
+                crate::codec::TextBlockKindWire::Paragraph => BlockKind::Paragraph { text },
+                crate::codec::TextBlockKindWire::Heading { level } => {
+                    BlockKind::Heading { level, text }
+                }
+            };
+            block.kind_op = id;
+            block.kind_observed = observed;
+            true
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn replace_raw_block(
+        &mut self,
+        block_elem: OpId,
+        raw: String,
+        id: OpId,
+        observed: StateVector,
+    ) -> bool {
+        self.with_block_mut(block_elem, |block| {
+            if !causal_write_wins(block.kind_op, &block.kind_observed, id, &observed)
+                || !matches!(block.kind, BlockKind::RawBlock { .. })
+            {
+                return false;
+            }
+            block.kind = BlockKind::RawBlock { raw };
+            block.kind_op = id;
+            block.kind_observed = observed;
+            true
+        })
+        .unwrap_or(false)
+    }
+
     /// Current container placement for a logical block (`None` is top-level).
     pub fn block_parent(&self, block_id: BlockId) -> Option<Option<OpId>> {
         self.ensure_block_index();
@@ -983,6 +1832,8 @@ impl Document {
                     Block {
                         id: moved.block_id,
                         elem_id: moved.id,
+                        kind_op: moved.id,
+                        kind_observed: StateVector::new(),
                         kind: BlockKind::RawBlock { raw: String::new() },
                         marks: MarkSet::new(),
                     },
@@ -1441,6 +2292,8 @@ impl Block {
         Self {
             id: block_id_from_op(insert_id),
             elem_id: insert_id,
+            kind_op: insert_id,
+            kind_observed: StateVector::new(),
             kind,
             marks: MarkSet::new(),
         }
@@ -1465,17 +2318,14 @@ mod tests {
             counter: 2,
             peer: 1,
         };
-        let mut table = Table::new(block_id_from_op(created), created, vec![], vec![], created);
-        table.set_columns(
-            vec![ColumnDef {
-                alignment: ColumnAlignment::Center,
-            }],
-            updated,
-        );
-        table.set_header(vec!["title".into()], updated);
+        let mut table = Table::new(block_id_from_op(created), created, created);
+        table.insert_column(None, ColumnAlignment::Center, "title".into(), updated);
 
-        assert_eq!(table.columns.get()[0].alignment, ColumnAlignment::Center);
-        assert_eq!(table.header.get(), vec!["title"]);
+        assert_eq!(
+            table.columns_in_order()[0].alignment.get(),
+            ColumnAlignment::Center
+        );
+        assert_eq!(table.row_cells(table.header_row_id()), vec!["title"]);
     }
 
     #[test]

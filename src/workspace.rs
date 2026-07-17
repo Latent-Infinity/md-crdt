@@ -3,7 +3,7 @@
 use crate::core::mark::{Anchor, AnchorBias, MarkKind, MarkValue};
 use crate::core::{OpId, Sequence};
 use crate::doc::{
-    Block, BlockId, BlockKind, ColumnAlignment, ColumnDef, Document, ListItem, RowId,
+    Block, BlockId, BlockKind, ColumnAlignment, ColumnDef, ColumnId, Document, ListItem, RowId,
     block_text_seq, paragraph_visible_ids,
 };
 use serde::{Deserialize, Serialize};
@@ -487,10 +487,19 @@ pub struct ProjectionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockProjectionKind {
     Paragraph,
-    Heading { level: u8 },
-    List { ordered: bool },
-    ListItem,
-    CodeFence { info: Option<String> },
+    Heading {
+        level: u8,
+    },
+    List {
+        style: crate::doc::ListStyle,
+    },
+    ListItem {
+        task: Option<crate::doc::TaskState>,
+    },
+    CodeFence {
+        style: crate::doc::CodeFenceStyle,
+        info: Option<String>,
+    },
     BlockQuote,
     RawBlock,
     Table,
@@ -503,6 +512,12 @@ pub struct ProjectedTableRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedTableColumn {
+    pub id: ColumnId,
+    pub alignment: ColumnAlignment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockProjectionStructure {
     Children {
         block_ids: Vec<BlockId>,
@@ -511,7 +526,7 @@ pub enum BlockProjectionStructure {
         item_ids: Vec<BlockId>,
     },
     Table {
-        columns: Vec<ColumnDef>,
+        columns: Vec<ProjectedTableColumn>,
         header: Vec<String>,
         rows: Vec<ProjectedTableRow>,
     },
@@ -628,6 +643,12 @@ pub enum TargetPrecondition {
         block_id: BlockId,
         content_digest: u64,
     },
+    TableCell {
+        table_id: BlockId,
+        row_id: RowId,
+        column_id: ColumnId,
+        content_digest: u64,
+    },
     Placement {
         block_id: Option<BlockId>,
         parent: Option<BlockId>,
@@ -636,9 +657,207 @@ pub enum TargetPrecondition {
     },
 }
 
+/// Hard bounds for recursive structured creation payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredEditLimits {
+    pub max_depth: usize,
+    pub max_items: usize,
+    pub max_bytes: usize,
+}
+
+impl Default for StructuredEditLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: 16,
+            max_items: 10_000,
+            max_bytes: 4 * 1024 * 1024,
+        }
+    }
+}
+
+/// One list item in a validated creation payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListItemDraft {
+    pub task: Option<crate::doc::TaskState>,
+    pub children: Vec<BlockDraft>,
+}
+
+/// Recursive, parser-free creation form for supported structured Markdown blocks.
+/// Tables intentionally use their stable cell/column operations instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlockDraft {
+    Paragraph {
+        text: String,
+    },
+    Heading {
+        level: u8,
+        text: String,
+    },
+    List {
+        style: crate::doc::ListStyle,
+        items: Vec<ListItemDraft>,
+    },
+    CodeFence {
+        style: crate::doc::CodeFenceStyle,
+        info: Option<String>,
+        text: String,
+    },
+    BlockQuote {
+        children: Vec<BlockDraft>,
+    },
+    RawBlock {
+        raw: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StructuredEditError {
+    #[error("structured edit exceeds maximum depth {max_depth}")]
+    Depth { max_depth: usize },
+    #[error("structured edit exceeds maximum item count {max_items}")]
+    Items { max_items: usize },
+    #[error("structured edit exceeds maximum content bytes {max_bytes}")]
+    Bytes { max_bytes: usize },
+    #[error("heading level must be in 1..=6")]
+    HeadingLevel,
+    #[error("code fence length must be at least three and exceed marker runs in its body")]
+    CodeFence,
+    #[error(
+        "code fence info must be a single line and cannot contain backticks for backtick fences"
+    )]
+    CodeFenceInfo,
+    #[error("ordered-list start must contain at most nine decimal digits")]
+    OrderedListStart,
+}
+
+const MAX_ORDERED_LIST_START: u32 = 999_999_999;
+
+impl BlockDraft {
+    pub fn validate(&self, limits: StructuredEditLimits) -> Result<(), StructuredEditError> {
+        fn visit(
+            draft: &BlockDraft,
+            depth: usize,
+            limits: StructuredEditLimits,
+            items: &mut usize,
+            bytes: &mut usize,
+        ) -> Result<(), StructuredEditError> {
+            if depth > limits.max_depth {
+                return Err(StructuredEditError::Depth {
+                    max_depth: limits.max_depth,
+                });
+            }
+            *items = items.saturating_add(1);
+            if *items > limits.max_items {
+                return Err(StructuredEditError::Items {
+                    max_items: limits.max_items,
+                });
+            }
+            let content_bytes = match draft {
+                BlockDraft::Paragraph { text } | BlockDraft::RawBlock { raw: text } => text.len(),
+                BlockDraft::Heading { level, text } => {
+                    if !(1..=6).contains(level) {
+                        return Err(StructuredEditError::HeadingLevel);
+                    }
+                    text.len()
+                }
+                BlockDraft::CodeFence { style, info, text } => {
+                    validate_code_fence(*style, info.as_deref(), text)?;
+                    info.as_deref()
+                        .map_or(0, str::len)
+                        .saturating_add(text.len())
+                }
+                BlockDraft::BlockQuote { children } => {
+                    for child in children {
+                        visit(child, depth + 1, limits, items, bytes)?;
+                    }
+                    0
+                }
+                BlockDraft::List {
+                    style,
+                    items: drafts,
+                } => {
+                    validate_list_style(*style)?;
+                    for item in drafts {
+                        *items = items.saturating_add(1);
+                        if *items > limits.max_items {
+                            return Err(StructuredEditError::Items {
+                                max_items: limits.max_items,
+                            });
+                        }
+                        for child in &item.children {
+                            visit(child, depth + 1, limits, items, bytes)?;
+                        }
+                    }
+                    0
+                }
+            };
+            *bytes = bytes.saturating_add(content_bytes);
+            if *bytes > limits.max_bytes {
+                return Err(StructuredEditError::Bytes {
+                    max_bytes: limits.max_bytes,
+                });
+            }
+            Ok(())
+        }
+
+        let mut items = 0;
+        let mut bytes = 0;
+        visit(self, 1, limits, &mut items, &mut bytes)
+    }
+}
+
+pub(crate) fn validate_list_style(style: crate::doc::ListStyle) -> Result<(), StructuredEditError> {
+    if style.ordered && style.start > MAX_ORDERED_LIST_START {
+        return Err(StructuredEditError::OrderedListStart);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_code_fence(
+    style: crate::doc::CodeFenceStyle,
+    info: Option<&str>,
+    text: &str,
+) -> Result<(), StructuredEditError> {
+    let marker = match style.marker {
+        crate::doc::FenceMarker::Backtick => '`',
+        crate::doc::FenceMarker::Tilde => '~',
+    };
+    let longest = text
+        .lines()
+        .map(|line| {
+            line.trim()
+                .chars()
+                .take_while(|character| *character == marker)
+                .count()
+        })
+        .max()
+        .unwrap_or(0);
+    if style.length < 3 || usize::from(style.length) <= longest {
+        return Err(StructuredEditError::CodeFence);
+    }
+    if info.is_some_and(|info| {
+        info.contains(['\r', '\n'])
+            || (style.marker == crate::doc::FenceMarker::Backtick && info.contains('`'))
+    }) {
+        return Err(StructuredEditError::CodeFenceInfo);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextBlockKind {
+    Paragraph,
+    Heading { level: u8 },
+}
+
 /// Stable, identity-targeted edit operations accepted by atomic workspace batches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceEdit {
+    InsertBlock {
+        parent: Option<BlockId>,
+        after: Option<BlockId>,
+        draft: BlockDraft,
+    },
     InsertParagraph {
         parent: Option<BlockId>,
         after: Option<BlockId>,
@@ -700,6 +919,18 @@ pub enum WorkspaceEdit {
         after: Option<RowId>,
         cells: Vec<String>,
     },
+    InsertTableColumn {
+        table_id: BlockId,
+        after: Option<ColumnId>,
+        alignment: ColumnAlignment,
+        header: String,
+    },
+    SetTableCell {
+        table_id: BlockId,
+        row_id: RowId,
+        column_id: ColumnId,
+        value: String,
+    },
     SetTableRowCells {
         table_id: BlockId,
         row_id: RowId,
@@ -708,6 +939,15 @@ pub enum WorkspaceEdit {
     DeleteTableRow {
         table_id: BlockId,
         row_id: RowId,
+    },
+    DeleteTableColumn {
+        table_id: BlockId,
+        column_id: ColumnId,
+    },
+    SetTableColumnAlignment {
+        table_id: BlockId,
+        column_id: ColumnId,
+        alignment: ColumnAlignment,
     },
     SetTableMetadata {
         table_id: BlockId,
@@ -718,6 +958,53 @@ pub enum WorkspaceEdit {
         table_id: BlockId,
         row_id: RowId,
         after: Option<RowId>,
+    },
+    MoveTableColumn {
+        table_id: BlockId,
+        column_id: ColumnId,
+        after: Option<ColumnId>,
+    },
+    InsertListItem {
+        list_id: BlockId,
+        after: Option<BlockId>,
+        item: ListItemDraft,
+    },
+    DeleteListItem {
+        item_id: BlockId,
+    },
+    MoveListItem {
+        item_id: BlockId,
+        list_id: BlockId,
+        after: Option<BlockId>,
+    },
+    SetListStyle {
+        list_id: BlockId,
+        style: crate::doc::ListStyle,
+    },
+    SetListItemTask {
+        item_id: BlockId,
+        task: Option<crate::doc::TaskState>,
+    },
+    WrapBlocks {
+        block_ids: Vec<BlockId>,
+    },
+    UnwrapBlockQuote {
+        block_id: BlockId,
+    },
+    SetCodeFence {
+        block_id: BlockId,
+        style: crate::doc::CodeFenceStyle,
+        info: Option<String>,
+        text: String,
+    },
+    ConvertTextBlock {
+        block_id: BlockId,
+        kind: TextBlockKind,
+    },
+    ReplaceRawBlock {
+        block_id: BlockId,
+        expected_digest: u64,
+        raw: String,
     },
 }
 
@@ -945,7 +1232,8 @@ impl Document {
     ) -> Result<Vec<TargetPrecondition>, WorkspaceTargetError> {
         let mut preconditions = Vec::new();
         match edit {
-            WorkspaceEdit::InsertParagraph { parent, after, .. }
+            WorkspaceEdit::InsertBlock { parent, after, .. }
+            | WorkspaceEdit::InsertParagraph { parent, after, .. }
             | WorkspaceEdit::InsertHeading { parent, after, .. }
             | WorkspaceEdit::InsertTable { parent, after, .. } => {
                 preconditions.push(self.placement_precondition(None, *parent, *after)?);
@@ -991,11 +1279,56 @@ impl Document {
                 preconditions.push(self.current_placement_precondition(*right_id)?);
             }
             WorkspaceEdit::InsertTableRow { table_id, .. }
+            | WorkspaceEdit::InsertTableColumn { table_id, .. }
             | WorkspaceEdit::SetTableRowCells { table_id, .. }
             | WorkspaceEdit::DeleteTableRow { table_id, .. }
+            | WorkspaceEdit::DeleteTableColumn { table_id, .. }
+            | WorkspaceEdit::SetTableColumnAlignment { table_id, .. }
             | WorkspaceEdit::SetTableMetadata { table_id, .. }
-            | WorkspaceEdit::MoveTableRow { table_id, .. } => {
+            | WorkspaceEdit::MoveTableRow { table_id, .. }
+            | WorkspaceEdit::MoveTableColumn { table_id, .. } => {
                 preconditions.push(self.block_precondition(*table_id)?);
+            }
+            WorkspaceEdit::SetTableCell {
+                table_id,
+                row_id,
+                column_id,
+                ..
+            } => {
+                preconditions.push(self.table_cell_precondition(*table_id, *row_id, *column_id)?);
+            }
+            WorkspaceEdit::InsertListItem { list_id, .. }
+            | WorkspaceEdit::SetListStyle { list_id, .. } => {
+                preconditions.push(self.block_precondition(*list_id)?);
+            }
+            WorkspaceEdit::DeleteListItem { item_id }
+            | WorkspaceEdit::SetListItemTask { item_id, .. } => {
+                preconditions.push(self.block_precondition(*item_id)?);
+            }
+            WorkspaceEdit::MoveListItem {
+                item_id,
+                list_id,
+                after,
+            } => {
+                preconditions.push(self.block_precondition(*item_id)?);
+                preconditions.push(self.current_placement_precondition(*item_id)?);
+                preconditions.push(self.placement_precondition(
+                    Some(*item_id),
+                    Some(*list_id),
+                    *after,
+                )?);
+            }
+            WorkspaceEdit::WrapBlocks { block_ids } => {
+                for block_id in block_ids {
+                    preconditions.push(self.block_precondition(*block_id)?);
+                    preconditions.push(self.current_placement_precondition(*block_id)?);
+                }
+            }
+            WorkspaceEdit::UnwrapBlockQuote { block_id }
+            | WorkspaceEdit::SetCodeFence { block_id, .. }
+            | WorkspaceEdit::ConvertTextBlock { block_id, .. }
+            | WorkspaceEdit::ReplaceRawBlock { block_id, .. } => {
+                preconditions.push(self.block_precondition(*block_id)?);
             }
         }
         Ok(preconditions)
@@ -1184,13 +1517,59 @@ impl Document {
         &self,
         block_id: BlockId,
     ) -> Result<TargetPrecondition, WorkspaceTargetError> {
-        let block = self
-            .find_block_by_id(block_id)
-            .ok_or(WorkspaceTargetError::BlockNotFound { block_id })?;
+        let content_digest = if let Some(block) = self.find_block_by_id(block_id) {
+            block_digest(block)
+        } else if let Some(item) = self.find_list_item_by_id(block_id) {
+            list_item_digest(item)
+        } else {
+            return Err(WorkspaceTargetError::BlockNotFound { block_id });
+        };
         Ok(TargetPrecondition::Block {
             block_id,
-            content_digest: block_digest(block),
+            content_digest,
         })
+    }
+
+    fn table_cell_precondition(
+        &self,
+        table_id: BlockId,
+        row_id: RowId,
+        column_id: ColumnId,
+    ) -> Result<TargetPrecondition, WorkspaceTargetError> {
+        let block = self
+            .find_block_by_id(table_id)
+            .ok_or(WorkspaceTargetError::BlockNotFound { block_id: table_id })?;
+        let BlockKind::Table { table } = &block.kind else {
+            return Err(WorkspaceTargetError::PreconditionMismatch);
+        };
+        if table.column_by_id(column_id).is_none()
+            || (row_id != table.header_row_id() && table.row_by_id(row_id).is_none())
+        {
+            return Err(WorkspaceTargetError::PreconditionMismatch);
+        }
+        let mut digest = StableDigest::new();
+        digest.field(b"table-cell");
+        digest.field(
+            table
+                .cell_value(row_id, column_id)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        Ok(TargetPrecondition::TableCell {
+            table_id,
+            row_id,
+            column_id,
+            content_digest: digest.finish(),
+        })
+    }
+
+    pub(crate) fn node_digest_for(&self, block_id: BlockId) -> Result<u64, WorkspaceTargetError> {
+        if let Some(block) = self.find_block_by_id(block_id) {
+            return Ok(block_node_digest(block));
+        }
+        self.find_list_item_by_id(block_id)
+            .map(list_item_node_digest)
+            .ok_or(WorkspaceTargetError::BlockNotFound { block_id })
     }
 
     fn text_precondition(
@@ -1235,6 +1614,7 @@ impl Document {
         if let Some(parent_id) = parent {
             match find_descriptor_children(self.blocks(), parent_id) {
                 Some(DescriptorChildren::Blocks(_)) => {}
+                Some(DescriptorChildren::Items(_)) if block_id.is_some() => {}
                 Some(DescriptorChildren::Items(_) | DescriptorChildren::Empty) => {
                     return Err(WorkspaceTargetError::PreconditionMismatch);
                 }
@@ -1437,14 +1817,15 @@ fn collect_projection_nodes<'a>(
 
 fn projection_kind(node: ProjectionNode<'_>) -> BlockProjectionKind {
     match node {
-        ProjectionNode::ListItem(_) => BlockProjectionKind::ListItem,
+        ProjectionNode::ListItem(item) => BlockProjectionKind::ListItem { task: item.task },
         ProjectionNode::Block(block) => match &block.kind {
             BlockKind::Paragraph { .. } => BlockProjectionKind::Paragraph,
             BlockKind::Heading { level, .. } => BlockProjectionKind::Heading { level: *level },
-            BlockKind::List { ordered, .. } => BlockProjectionKind::List { ordered: *ordered },
-            BlockKind::CodeFence { info, .. } => {
-                BlockProjectionKind::CodeFence { info: info.clone() }
-            }
+            BlockKind::List { style, .. } => BlockProjectionKind::List { style: *style },
+            BlockKind::CodeFence { style, info, .. } => BlockProjectionKind::CodeFence {
+                style: *style,
+                info: info.clone(),
+            },
             BlockKind::BlockQuote { .. } => BlockProjectionKind::BlockQuote,
             BlockKind::RawBlock { .. } => BlockProjectionKind::RawBlock,
             BlockKind::Table { .. } => BlockProjectionKind::Table,
@@ -1468,12 +1849,12 @@ fn projection_visible_text(node: ProjectionNode<'_>) -> String {
             BlockKind::BlockQuote { children } => projection_blocks_text(children),
             BlockKind::RawBlock { raw } => raw.clone(),
             BlockKind::Table { table } => {
-                table.header.get_ref().join("\t")
+                table.row_cells(table.header_row_id()).join("\t")
                     + &table
                         .rows
                         .iter()
                         .filter(|row| !*row.deleted.get_ref())
-                        .map(|row| format!("\n{}", row.cells.get_ref().join("\t")))
+                        .map(|row| format!("\n{}", table.row_cells(row.id).join("\t")))
                         .collect::<String>()
             }
         },
@@ -1501,15 +1882,22 @@ fn projection_structure(node: ProjectionNode<'_>) -> Option<BlockProjectionStruc
                 item_ids: items.iter().map(|item| item.id).collect(),
             }),
             BlockKind::Table { table } => Some(BlockProjectionStructure::Table {
-                columns: table.columns.get_ref().clone(),
-                header: table.header.get_ref().clone(),
+                columns: table
+                    .columns_in_order()
+                    .into_iter()
+                    .map(|column| ProjectedTableColumn {
+                        id: column.id,
+                        alignment: column.alignment.get(),
+                    })
+                    .collect(),
+                header: table.row_cells(table.header_row_id()),
                 rows: table
                     .rows
                     .iter()
                     .filter(|row| !*row.deleted.get_ref())
                     .map(|row| ProjectedTableRow {
                         id: row.id,
-                        cells: row.cells.get_ref().clone(),
+                        cells: table.row_cells(row.id),
                     })
                     .collect(),
             }),
@@ -1828,19 +2216,23 @@ fn block_text_bytes(block: &Block) -> usize {
         }
         BlockKind::CodeFence { text, .. } => text.len(),
         BlockKind::RawBlock { raw } => raw.len(),
-        BlockKind::Table { table } => table
-            .header
-            .get_ref()
-            .iter()
-            .chain(
-                table
-                    .rows
-                    .iter()
-                    .filter(|row| !*row.deleted.get_ref())
-                    .flat_map(|row| row.cells.get_ref().iter()),
-            )
-            .map(String::len)
-            .sum(),
+        BlockKind::Table { table } => {
+            let mut bytes: usize = table
+                .row_cells(table.header_row_id())
+                .iter()
+                .map(String::len)
+                .sum();
+            for row in table.rows.iter().filter(|row| !*row.deleted.get_ref()) {
+                bytes = bytes.saturating_add(
+                    table
+                        .row_cells(row.id)
+                        .iter()
+                        .map(String::len)
+                        .sum::<usize>(),
+                );
+            }
+            bytes
+        }
         BlockKind::List { .. } | BlockKind::BlockQuote { .. } => 0,
     }
 }
@@ -1877,9 +2269,14 @@ fn block_node_digest(block: &Block) -> u64 {
     digest.finish()
 }
 
-fn list_item_node_digest(_item: &ListItem) -> u64 {
+fn list_item_node_digest(item: &ListItem) -> u64 {
     let mut digest = StableDigest::new();
     digest.field(b"list-item");
+    digest.field(&[match item.task {
+        None => 0,
+        Some(crate::doc::TaskState::Unchecked) => 1,
+        Some(crate::doc::TaskState::Checked) => 2,
+    }]);
     digest.finish()
 }
 
@@ -1910,12 +2307,13 @@ fn hash_block_node(digest: &mut StableDigest, block: &Block) {
             digest.field(b"heading");
             digest.field(&[*level]);
         }
-        BlockKind::List { ordered, .. } => {
+        BlockKind::List { style, .. } => {
             digest.field(b"list");
-            digest.field(&[u8::from(*ordered)]);
+            digest.field(&serde_json::to_vec(style).unwrap_or_default());
         }
-        BlockKind::CodeFence { info, text } => {
+        BlockKind::CodeFence { style, info, text } => {
             digest.field(b"code-fence");
+            digest.field(&serde_json::to_vec(style).unwrap_or_default());
             digest.field(info.as_deref().unwrap_or_default().as_bytes());
             digest.field(text.as_bytes());
         }
@@ -1928,15 +2326,16 @@ fn hash_block_node(digest: &mut StableDigest, block: &Block) {
         }
         BlockKind::Table { table } => {
             digest.field(b"table");
-            for column in table.columns.get_ref() {
-                digest.field(alignment_tag(&column.alignment));
+            for column in table.columns.iter() {
+                digest.field(column.id.as_bytes());
+                digest.field(alignment_tag(column.alignment.get_ref()));
             }
-            for cell in table.header.get_ref() {
+            for cell in table.row_cells(table.header_row_id()) {
                 digest.field(cell.as_bytes());
             }
             for row in table.rows.iter().filter(|row| !*row.deleted.get_ref()) {
                 digest.field(b"row");
-                for cell in row.cells.get_ref() {
+                for cell in table.row_cells(row.id) {
                     digest.field(cell.as_bytes());
                 }
             }

@@ -1,0 +1,463 @@
+{
+  "batch_preview": {
+    "changes": {
+      "affected_parents": [],
+      "affected_sections": [
+        "00000000-0000-0000-0000-00000000000a"
+      ],
+      "created": [
+        "00000000-0000-0000-0000-00000000000b"
+      ],
+      "deleted": [],
+      "moved": [
+        "00000000-0000-0000-0000-00000000000a"
+      ],
+      "operation_count": 8,
+      "revision": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        4
+      ],
+      "updated": [
+        "00000000-0000-0000-0000-00000000000c"
+      ]
+    },
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "revision": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      4
+    ],
+    "token": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      5
+    ]
+  },
+  "batch_receipt": {
+    "changes": {
+      "affected_parents": [],
+      "affected_sections": [
+        "00000000-0000-0000-0000-00000000000a"
+      ],
+      "created": [
+        "00000000-0000-0000-0000-00000000000b"
+      ],
+      "deleted": [],
+      "moved": [
+        "00000000-0000-0000-0000-00000000000a"
+      ],
+      "operation_count": 8,
+      "revision": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        4
+      ],
+      "updated": [
+        "00000000-0000-0000-0000-00000000000c"
+      ]
+    },
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "previous_revision": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      3
+    ],
+    "revision": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      4
+    ]
+  },
+  "change_summary": {
+    "affected_parents": [],
+    "affected_sections": [
+      "00000000-0000-0000-0000-00000000000a"
+    ],
+    "created": [
+      "00000000-0000-0000-0000-00000000000b"
+    ],
+    "deleted": [],
+    "moved": [
+      "00000000-0000-0000-0000-00000000000a"
+    ],
+    "operation_count": 8,
+    "revision": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      4
+    ],
+    "updated": [
+      "00000000-0000-0000-0000-00000000000c"
+    ]
+  },
+  "checkpoint_request": {
+    "active_peer_leases": [
+      {
+        "acknowledged": {
+          "peers": {
+            "7": 9
+          }
+        },
+        "peer": 42
+      }
+    ],
+    "max_retained_ops": 128,
+    "tombstones": "KeepAll"
+  },
+  "contract_version": 5,
+  "descriptor_page": {
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "items": [
+      {
+        "descendant_count": 0,
+        "direct_child_count": 0,
+        "heading_level": 1,
+        "id": "00000000-0000-0000-0000-00000000000a",
+        "kind": "Heading",
+        "node_digest": 99,
+        "order": 0,
+        "parent": null,
+        "source_bytes": 8,
+        "subtree_digest": null,
+        "text_bytes": 5
+      }
+    ],
+    "next_cursor": null,
+    "parent": null,
+    "revision": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      3
+    ],
+    "traversal": "DirectChildren"
+  },
+  "document_handle": {
+    "disk_fingerprint": 6,
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "revision": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      3
+    ],
+    "vault_id": "00000000-0000-0000-0000-000000000001"
+  },
+  "edit_batch": {
+    "base_revision": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      3
+    ],
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "operations": [
+      {
+        "edit": {
+          "MoveSection": {
+            "after": null,
+            "heading_id": "00000000-0000-0000-0000-00000000000a"
+          }
+        },
+        "preconditions": [
+          {
+            "Block": {
+              "block_id": "00000000-0000-0000-0000-00000000000a",
+              "content_digest": 77
+            }
+          }
+        ]
+      },
+      {
+        "edit": {
+          "InsertTable": {
+            "after": "00000000-0000-0000-0000-00000000000a",
+            "columns": [
+              {
+                "alignment": "Left"
+              }
+            ],
+            "header": [
+              "Name"
+            ],
+            "parent": null
+          }
+        },
+        "preconditions": []
+      },
+      {
+        "edit": {
+          "SetMark": {
+            "attrs": {
+              "href": {
+                "String": "#target"
+              }
+            },
+            "kind": "Link",
+            "range": {
+              "end": {
+                "block_id": "00000000-0000-0000-0000-00000000000c",
+                "position": "End"
+              },
+              "start": {
+                "block_id": "00000000-0000-0000-0000-00000000000c",
+                "position": "Start"
+              }
+            }
+          }
+        },
+        "preconditions": [
+          {
+            "Text": {
+              "content_digest": 88,
+              "range": {
+                "end": {
+                  "block_id": "00000000-0000-0000-0000-00000000000c",
+                  "position": "End"
+                },
+                "start": {
+                  "block_id": "00000000-0000-0000-0000-00000000000c",
+                  "position": "Start"
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "edit": {
+          "SetFrontmatterField": {
+            "key": "status",
+            "value": "ready"
+          }
+        },
+        "preconditions": []
+      },
+      {
+        "edit": {
+          "SetTableCell": {
+            "column_id": "00000000-0000-0000-0000-00000000000e",
+            "row_id": "00000000-0000-0000-0000-00000000000d",
+            "table_id": "00000000-0000-0000-0000-00000000000b",
+            "value": "Ada"
+          }
+        },
+        "preconditions": [
+          {
+            "TableCell": {
+              "column_id": "00000000-0000-0000-0000-00000000000e",
+              "content_digest": 89,
+              "row_id": "00000000-0000-0000-0000-00000000000d",
+              "table_id": "00000000-0000-0000-0000-00000000000b"
+            }
+          }
+        ]
+      },
+      {
+        "edit": {
+          "MoveTableColumn": {
+            "after": null,
+            "column_id": "00000000-0000-0000-0000-00000000000e",
+            "table_id": "00000000-0000-0000-0000-00000000000b"
+          }
+        },
+        "preconditions": []
+      },
+      {
+        "edit": {
+          "InsertBlock": {
+            "after": "00000000-0000-0000-0000-00000000000b",
+            "draft": {
+              "CodeFence": {
+                "info": "rust",
+                "style": {
+                  "length": 3,
+                  "marker": "Backtick"
+                },
+                "text": "fn main() {}"
+              }
+            },
+            "parent": null
+          }
+        },
+        "preconditions": []
+      },
+      {
+        "edit": {
+          "ConvertTextBlock": {
+            "block_id": "00000000-0000-0000-0000-00000000000c",
+            "kind": {
+              "Heading": {
+                "level": 2
+              }
+            }
+          }
+        },
+        "preconditions": []
+      }
+    ]
+  },
+  "export_request": {
+    "document_id": "00000000-0000-0000-0000-000000000002",
+    "expected_disk_fingerprint": 6,
+    "expected_revision": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      4
+    ],
+    "path": "notes/example.md"
+  },
+  "rebase_required": {
+    "checkpoint_epoch": 2,
+    "delta_floor": {
+      "peers": {
+        "7": 9
+      }
+    }
+  },
+  "recovery_report": {
+    "files_recovered": 2,
+    "transactions_recovered": 1
+  }
+}

@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-16
+
 ### Added
+
+- A validated recursive `BlockDraft` creation API plus focused list-item/style/task, quote
+  wrap/unwrap, code-fence, paragraph/heading conversion, and digest-guarded raw-block mutations
+- Semantic preservation of ordered-list starts and delimiters, bullet markers, loose lists, task
+  state, and code-fence marker length/info across parse, mutation, exchange, snapshot, and export
+- `structured_workspace_edit` API/code-body ablations and list, wrap, and code locality benchmarks
+- A v3 map/read/edit/restart transcript covering prose, list, table, quote, and code workflows
+
+- Stable table column identities, a distinguished header row, and independently addressable
+  `(RowId, ColumnId)` cells with causal LWW semantics
+- Focused table column insert/delete/move/alignment and cell mutations across session, wire,
+  workspace batches, projections, parsed ingest, snapshots, checkpoint/rebase, and exact export
+- `table_cell_edit` P-A/P-B/P-C ablation benchmarks across 10×5, 100×20, and 1,000×50 tables
 
 - Stable `TextPoint`/`TextRange` workspace targets with start, end, and unit-anchor positions plus
   typed deleted, wrong-block, unknown, ambiguous, and invalid-target errors
@@ -26,6 +41,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   benchmarks covering page sizes 1/32/256 and recursive-versus-node digest controls
 
 ### Changed
+
+- Breaking wire V4 and snapshot V6 add structured list placement/metadata, causal
+  observed frontiers, code-fence,
+  text-kind-conversion, and raw-block operations with current-format-only persistence
+- Breaking workspace contract v5 freezes the complete structured mutation surface; the obsolete v4
+  fixture was removed
+- Scoped table-cell edits now bind only the addressed cell, while list-task and list-move
+  preconditions bind task state and both source/destination placement
+
+- Breaking wire V2 replaces whole-row/table-metadata operations with stable column and per-cell
+  operations; breaking snapshot V4 persists column placements and causal cell metadata, with no
+  compatibility reader for earlier unpublished formats
+- Breaking workspace contract v4 freezes focused cell/column edits and stable projected column ids;
+  the obsolete v3 fixture was removed
+- Table workspace projections now return stable column ids, and exact table edits rerender only the
+  table's owned source region
 
 - Breaking workspace contract v2 replaces offset-bearing text edits with stable targets and changes
   `EditBatch` to `base_revision` plus ordered `WorkspaceMutation` values
@@ -274,7 +305,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive CONTRIBUTING.md guide
 - MIT license
 
-[Unreleased]: https://github.com/latenty-infinity/md-crdt/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/latenty-infinity/md-crdt/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/latenty-infinity/md-crdt/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/latenty-infinity/md-crdt/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/latenty-infinity/md-crdt/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/latenty-infinity/md-crdt/releases/tag/v0.1.0

@@ -91,6 +91,49 @@ fn export_preserves_inline_marks_when_editing_a_sibling_list_item() {
 }
 
 #[test]
+fn table_cell_export_dirties_only_the_table_source_region() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("note.md");
+    fs::write(
+        &path,
+        "before  \n\n| name | score |\n| --- | ---: |\n| Ada | 10 |\n\nafter  \n",
+    )
+    .unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    vault.open_document("note.md").unwrap();
+    let (table_id, row_id, column_id) = {
+        let document = vault.session_mut("note.md").unwrap().document();
+        let table_block = document
+            .blocks_in_order()
+            .into_iter()
+            .find(|block| matches!(block.kind, BlockKind::Table { .. }))
+            .unwrap();
+        let BlockKind::Table { table } = &table_block.kind else {
+            unreachable!()
+        };
+        (
+            table_block.id,
+            table.rows_in_order()[0].id,
+            table.columns_in_order()[1].id,
+        )
+    };
+    vault
+        .session_mut("note.md")
+        .unwrap()
+        .set_table_cell(table_id, row_id, column_id, "11".into())
+        .unwrap();
+    let edited = vault.open_document("note.md").unwrap();
+    vault
+        .export_markdown("note.md", &edited.revision, edited.disk_fingerprint)
+        .unwrap();
+
+    let output = fs::read_to_string(path).unwrap();
+    assert!(output.starts_with("before  \n\n"));
+    assert!(output.ends_with("\n\nafter  \n"));
+    assert!(output.contains("| Ada | 11 |"));
+}
+
+#[test]
 fn snapshot_save_does_not_publish_markdown() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("note.md");

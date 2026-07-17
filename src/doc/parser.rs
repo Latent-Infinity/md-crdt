@@ -123,12 +123,12 @@ fn parse_blocks_with_spans(
             continue;
         }
 
-        if let Some(code_info) = trimmed.strip_prefix("```") {
+        if let Some((style, code_info)) = parse_fence_open(trimmed) {
             let info = code_info.trim();
             let mut contents: Vec<&str> = Vec::new();
             let mut end_index = index + 1;
             while end_index < lines.len() {
-                if lines[end_index].trim() == "```" {
+                if is_fence_close(lines[end_index].trim(), style) {
                     break;
                 }
                 contents.push(lines[end_index]);
@@ -137,6 +137,7 @@ fn parse_blocks_with_spans(
             let text = contents.join("\n");
             let block = Block::new(
                 BlockKind::CodeFence {
+                    style,
                     info: if info.is_empty() {
                         None
                     } else {
@@ -209,8 +210,18 @@ fn parse_blocks_with_spans(
             && header.len() == columns.len()
         {
             let elem_id = next_op_id(counter);
-            let mut table =
-                Table::new(block_id_from_op(elem_id), elem_id, columns, header, elem_id);
+            let mut table = Table::new(block_id_from_op(elem_id), elem_id, elem_id);
+            let mut after_column = None;
+            for (column, header) in columns.into_iter().zip(header) {
+                let column_id = next_op_id(counter);
+                table.insert_column(after_column, column.alignment, header, column_id);
+                after_column = Some(column_id);
+            }
+            let column_ids: Vec<_> = table
+                .columns_in_order()
+                .into_iter()
+                .map(|column| column.id)
+                .collect();
             let mut after = None;
             let mut end_index = index + 2;
             while end_index < lines.len() {
@@ -218,11 +229,20 @@ fn parse_blocks_with_spans(
                     break;
                 };
                 let row_id = next_op_id(counter);
-                table.insert_row(after, cells, row_id);
+                table.insert_row(
+                    after,
+                    column_ids.iter().copied().zip(cells).collect(),
+                    row_id,
+                );
                 after = Some(row_id);
                 end_index += 1;
             }
-            let block = Block::new(BlockKind::Table { table }, elem_id);
+            let block = Block::new(
+                BlockKind::Table {
+                    table: Box::new(table),
+                },
+                elem_id,
+            );
             record_span(&mut spans, block.id, index, end_index);
             out.push(block);
             index = end_index;
@@ -277,7 +297,7 @@ fn parse_blocks_with_spans(
             let current = lines[end_index];
             let current_trimmed = current.trim();
             if current_trimmed.is_empty()
-                || current_trimmed.starts_with("```")
+                || parse_fence_open(current_trimmed).is_some()
                 || current_trimmed.starts_with('>')
                 || current_trimmed.starts_with(":::")
                 || parse_atx_heading(current_trimmed).is_some()
@@ -320,11 +340,38 @@ fn parse_table_cells(line: &str) -> Option<Vec<CellContent>> {
         return None;
     }
     let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
-    let inner = inner.strip_suffix('|').unwrap_or(inner);
-    let cells: Vec<_> = inner
-        .split('|')
-        .map(|cell| cell.trim().to_string())
-        .collect();
+    let trailing_backslashes = inner
+        .as_bytes()
+        .iter()
+        .rev()
+        .skip(1)
+        .take_while(|byte| **byte == b'\\')
+        .count();
+    let trailing_pipe_is_delimiter = inner.ends_with('|') && trailing_backslashes % 2 == 0;
+    let inner = if trailing_pipe_is_delimiter {
+        &inner[..inner.len() - 1]
+    } else {
+        inner
+    };
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut characters = inner.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '|' => {
+                cells.push(cell.trim().to_string());
+                cell.clear();
+            }
+            '\\' => match characters.peek().copied() {
+                Some('|' | '\\') => {
+                    cell.push(characters.next().expect("peeked escaped table character"));
+                }
+                _ => cell.push('\\'),
+            },
+            _ => cell.push(character),
+        }
+    }
+    cells.push(cell.trim().to_string());
     (!cells.is_empty()).then_some(cells)
 }
 
@@ -416,19 +463,26 @@ fn is_list_start(trimmed: &str) -> bool {
     unordered_marker(trimmed).is_some() || ordered_marker(trimmed).is_some()
 }
 
-fn unordered_marker(trimmed: &str) -> Option<&str> {
-    for pref in ["- ", "* ", "+ "] {
-        if let Some(rest) = trimmed.strip_prefix(pref) {
-            return Some(rest);
+fn unordered_marker(trimmed: &str) -> Option<(BulletMarker, &str)> {
+    for (marker, symbol) in [
+        (BulletMarker::Dash, '-'),
+        (BulletMarker::Asterisk, '*'),
+        (BulletMarker::Plus, '+'),
+    ] {
+        let Some(rest) = trimmed.strip_prefix(symbol) else {
+            continue;
+        };
+        if rest.is_empty() {
+            return Some((marker, ""));
         }
-    }
-    if matches!(trimmed, "-" | "*" | "+") {
-        return Some("");
+        if let Some(rest) = rest.strip_prefix([' ', '\t']) {
+            return Some((marker, rest.trim_start()));
+        }
     }
     None
 }
 
-fn ordered_marker(trimmed: &str) -> Option<(u32, &str)> {
+fn ordered_marker(trimmed: &str) -> Option<(u32, ListDelimiter, &str)> {
     let mut i = 0usize;
     let bytes = trimmed.as_bytes();
     while i < bytes.len() && bytes[i].is_ascii_digit() {
@@ -439,13 +493,63 @@ fn ordered_marker(trimmed: &str) -> Option<(u32, &str)> {
     }
     let num: u32 = trimmed[..i].parse().ok()?;
     let rest = &trimmed[i..];
-    if let Some(r) = rest.strip_prefix(". ") {
-        return Some((num, r));
-    }
-    if rest == "." {
-        return Some((num, ""));
+    for (delimiter, symbol) in [
+        (ListDelimiter::Period, '.'),
+        (ListDelimiter::Parenthesis, ')'),
+    ] {
+        let Some(tail) = rest.strip_prefix(symbol) else {
+            continue;
+        };
+        if tail.is_empty() {
+            return Some((num, delimiter, ""));
+        }
+        if let Some(body) = tail.strip_prefix([' ', '\t']) {
+            return Some((num, delimiter, body.trim_start()));
+        }
     }
     None
+}
+
+fn parse_fence_open(trimmed: &str) -> Option<(CodeFenceStyle, &str)> {
+    let marker = match trimmed.chars().next()? {
+        '`' => FenceMarker::Backtick,
+        '~' => FenceMarker::Tilde,
+        _ => return None,
+    };
+    let symbol = match marker {
+        FenceMarker::Backtick => '`',
+        FenceMarker::Tilde => '~',
+    };
+    let length = trimmed
+        .chars()
+        .take_while(|character| *character == symbol)
+        .count();
+    if length < 3 || length > u8::MAX as usize {
+        return None;
+    }
+    let rest = &trimmed[length..];
+    if marker == FenceMarker::Backtick && rest.contains('`') {
+        return None;
+    }
+    Some((
+        CodeFenceStyle {
+            marker,
+            length: length as u8,
+        },
+        rest,
+    ))
+}
+
+fn is_fence_close(trimmed: &str, style: CodeFenceStyle) -> bool {
+    let symbol = match style.marker {
+        FenceMarker::Backtick => '`',
+        FenceMarker::Tilde => '~',
+    };
+    let length = trimmed
+        .chars()
+        .take_while(|character| *character == symbol)
+        .count();
+    length >= usize::from(style.length) && trimmed[length..].chars().all(char::is_whitespace)
 }
 
 fn push_list_paragraph(children: &mut Vec<Block>, lines: &mut Vec<&str>, counter: &mut u64) {
@@ -471,7 +575,22 @@ fn parse_list(
     base_indent: usize,
 ) -> (Block, usize) {
     let first_trim = lines[index].trim();
-    let ordered = ordered_marker(first_trim).is_some();
+    let style = if let Some((start, delimiter, _)) = ordered_marker(first_trim) {
+        ListStyle {
+            ordered: true,
+            start,
+            delimiter,
+            ..ListStyle::default()
+        }
+    } else {
+        ListStyle {
+            bullet: unordered_marker(first_trim)
+                .map(|(marker, _)| marker)
+                .unwrap_or(BulletMarker::Dash),
+            ..ListStyle::default()
+        }
+    };
+    let mut style = style;
     let mut items: Vec<ListItem> = Vec::new();
     let mut i = index;
 
@@ -493,17 +612,28 @@ fn parse_list(
             }
             let next_ind = indent_of(lines[j]);
             let next_trim = lines[j].trim();
-            if next_ind >= base_indent && (is_list_start(next_trim) || next_ind > base_indent) {
+            let same_list = if style.ordered {
+                ordered_marker(next_trim)
+                    .is_some_and(|(_, delimiter, _)| delimiter == style.delimiter)
+            } else {
+                unordered_marker(next_trim).is_some_and(|(marker, _)| marker == style.bullet)
+            };
+            if next_ind > base_indent || (next_ind == base_indent && same_list) {
+                style.loose = true;
                 i += 1;
                 continue;
             }
             break;
         }
 
-        let marker_body = if ordered {
-            ordered_marker(trimmed).map(|(_, b)| b)
+        let marker_body = if style.ordered {
+            ordered_marker(trimmed)
+                .filter(|(_, delimiter, _)| *delimiter == style.delimiter)
+                .map(|(_, _, body)| body)
         } else {
             unordered_marker(trimmed)
+                .filter(|(marker, _)| *marker == style.bullet)
+                .map(|(_, body)| body)
         };
         let Some(body) = marker_body else {
             break;
@@ -517,9 +647,14 @@ fn parse_list(
         }
 
         let item_elem = next_op_id(counter);
+        let (task, body) = parse_task_marker(body);
         let mut children = Vec::new();
         // First paragraph of the item
-        let mut para_lines = vec![body];
+        let mut para_lines = if body.is_empty() {
+            Vec::new()
+        } else {
+            vec![body]
+        };
         i += 1;
 
         // Continuation lines for this item
@@ -534,6 +669,7 @@ fn parse_list(
                     j += 1;
                 }
                 if j < lines.len() && indent_of(lines[j]) > base_indent {
+                    style.loose = true;
                     if !is_list_start(lines[j].trim()) {
                         push_list_paragraph(&mut children, &mut para_lines, counter);
                     }
@@ -567,6 +703,10 @@ fn parse_list(
         items.push(ListItem {
             id: block_id_from_op(item_elem),
             elem_id: item_elem,
+            task,
+            task_op: item_elem,
+            task_observed: StateVector::new(),
+            placement_observed: StateVector::new(),
             children: child_seq,
         });
     }
@@ -575,12 +715,28 @@ fn parse_list(
     let items_seq = Sequence::from_ordered(items.into_iter().map(|it| (it.elem_id, it)).collect());
     let block = Block::new(
         BlockKind::List {
-            ordered,
+            style,
             items: items_seq,
+            pending_moves: Vec::new(),
         },
         list_elem,
     );
     (block, i)
+}
+
+fn parse_task_marker(body: &str) -> (Option<TaskState>, &str) {
+    for (prefix, state) in [
+        ("[ ]", TaskState::Unchecked),
+        ("[x]", TaskState::Checked),
+        ("[X]", TaskState::Checked),
+    ] {
+        if let Some(rest) = body.strip_prefix(prefix)
+            && (rest.is_empty() || rest.starts_with([' ', '\t']))
+        {
+            return (Some(state), rest.trim_start());
+        }
+    }
+    (None, body)
 }
 
 pub(super) fn next_op_id(counter: &mut u64) -> OpId {

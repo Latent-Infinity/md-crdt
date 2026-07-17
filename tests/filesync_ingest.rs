@@ -67,8 +67,8 @@ fn ingest_preserves_list_structure_and_text() {
     let doc = vs.session_mut("l.md").unwrap().document();
     let top = &doc.blocks_in_order()[0];
     match &top.kind {
-        BlockKind::List { ordered, items } => {
-            assert!(!ordered);
+        BlockKind::List { style, items, .. } => {
+            assert!(!style.ordered);
             let its: Vec<_> = items.iter().collect();
             assert_eq!(its.len(), 2, "two list items");
             let text = |it: &md_crdt::doc::ListItem| {
@@ -94,7 +94,7 @@ fn ingest_preserves_list_structure_and_text() {
 }
 
 #[test]
-fn table_ingest_preserves_table_row_and_unrelated_prose_ids() {
+fn table_ingest_preserves_column_row_and_unrelated_prose_ids() {
     let dir = tempdir().unwrap();
     fs::write(
         dir.path().join("table.md"),
@@ -104,7 +104,7 @@ fn table_ingest_preserves_table_row_and_unrelated_prose_ids() {
     let mut vault = VaultSession::open(dir.path()).unwrap();
     let first = vault.ingest_all().unwrap();
     assert_eq!(first.files_skipped, 0);
-    let (prose_ids, table_id, row_ids) = {
+    let (prose_ids, table_id, column_ids, row_ids) = {
         let blocks = vault
             .session_mut("table.md")
             .unwrap()
@@ -116,6 +116,11 @@ fn table_ingest_preserves_table_row_and_unrelated_prose_ids() {
         (
             (blocks[0].id, blocks[2].id),
             blocks[1].id,
+            table
+                .columns_in_order()
+                .into_iter()
+                .map(|column| column.id)
+                .collect::<Vec<_>>(),
             table.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
         )
     };
@@ -136,6 +141,14 @@ fn table_ingest_preserves_table_row_and_unrelated_prose_ids() {
     };
     assert_eq!(
         table
+            .columns_in_order()
+            .into_iter()
+            .map(|column| column.id)
+            .collect::<Vec<_>>(),
+        column_ids
+    );
+    assert_eq!(
+        table
             .rows
             .iter()
             .map(|row| row.id)
@@ -148,7 +161,7 @@ fn table_ingest_preserves_table_row_and_unrelated_prose_ids() {
         table
             .rows
             .iter()
-            .map(|row| row.cells.get())
+            .map(|row| table.row_cells(row.id))
             .collect::<Vec<_>>(),
         vec![
             vec![String::from("b"), String::from("22")],

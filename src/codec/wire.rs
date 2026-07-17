@@ -6,13 +6,13 @@
 
 use crate::core::mark::{Anchor, MarkKind, MarkValue};
 use crate::core::{OpId, StateVector};
-use crate::doc::BlockId;
 use crate::doc::Frontmatter;
+use crate::doc::{BlockId, CodeFenceStyle, ColumnId, ListStyle, RowId, TaskState};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Current wire protocol version for [`Envelope`].
-pub const WIRE_VERSION: u16 = 1;
+pub const WIRE_VERSION: u16 = 4;
 
 /// Maximum nested BlockQuote / structure depth accepted on encode and decode.
 ///
@@ -79,6 +79,12 @@ pub enum ColumnAlignmentWire {
     Left,
     Center,
     Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableCellWire {
+    pub column_id: ColumnId,
+    pub value: String,
 }
 
 /// Serializable document operations for the collaborative wire.
@@ -189,15 +195,27 @@ pub enum DocOp {
         after: Option<OpId>,
         id: OpId,
         right_origin: Option<OpId>,
-        cells: Vec<String>,
+        cells: Vec<TableCellWire>,
     },
-    /// Update a row's cells through its LWW register.
-    SetTableRowCells {
+    /// Insert one stable column and its header cell.
+    InsertTableColumn {
         table_elem: OpId,
         table_id: BlockId,
-        row: OpId,
+        after: Option<OpId>,
         id: OpId,
-        cells: Vec<String>,
+        right_origin: Option<OpId>,
+        alignment: ColumnAlignmentWire,
+        header: String,
+    },
+    /// Update one cell through its independent LWW register.
+    SetTableCell {
+        table_elem: OpId,
+        table_id: BlockId,
+        row_id: RowId,
+        column_id: ColumnId,
+        id: OpId,
+        value: String,
+        observed: StateVector,
     },
     /// Tombstone one table row.
     DeleteTableRow {
@@ -214,13 +232,22 @@ pub enum DocOp {
         row_id: BlockId,
         id: OpId,
     },
-    /// Update table header and column alignment atomically.
-    SetTableMetadata {
+    /// Delete one logical column regardless of its winning placement.
+    DeleteTableColumnById {
         table_elem: OpId,
         table_id: BlockId,
+        target: OpId,
+        column_id: ColumnId,
         id: OpId,
-        columns: Vec<ColumnAlignmentWire>,
-        header: Vec<String>,
+    },
+    /// Update one stable column's alignment.
+    SetTableColumnAlignment {
+        table_elem: OpId,
+        table_id: BlockId,
+        column_id: ColumnId,
+        id: OpId,
+        alignment: ColumnAlignmentWire,
+        observed: StateVector,
     },
     /// Move one logical row under a fresh placement id.
     MoveTableRow {
@@ -231,6 +258,80 @@ pub enum DocOp {
         id: OpId,
         after: Option<OpId>,
         right_origin: Option<OpId>,
+        observed: StateVector,
+    },
+    /// Move one logical column under a fresh placement id.
+    MoveTableColumn {
+        table_elem: OpId,
+        table_id: BlockId,
+        column_id: ColumnId,
+        target: OpId,
+        id: OpId,
+        after: Option<OpId>,
+        right_origin: Option<OpId>,
+        observed: StateVector,
+    },
+    InsertListItem {
+        list_elem: OpId,
+        list_id: BlockId,
+        after: Option<OpId>,
+        id: OpId,
+        right_origin: Option<OpId>,
+        task: Option<TaskState>,
+    },
+    DeleteListItemById {
+        list_elem: OpId,
+        list_id: BlockId,
+        target: OpId,
+        item_id: BlockId,
+        id: OpId,
+    },
+    MoveListItem {
+        from_list_elem: OpId,
+        to_list_elem: OpId,
+        list_id: BlockId,
+        item_id: BlockId,
+        target: OpId,
+        id: OpId,
+        after: Option<OpId>,
+        right_origin: Option<OpId>,
+        observed: StateVector,
+    },
+    SetListStyle {
+        block_elem: OpId,
+        block_id: BlockId,
+        id: OpId,
+        style: ListStyle,
+        observed: StateVector,
+    },
+    SetListItemTask {
+        item_id: BlockId,
+        id: OpId,
+        task: Option<TaskState>,
+        observed: StateVector,
+    },
+    SetCodeFence {
+        block_elem: OpId,
+        block_id: BlockId,
+        id: OpId,
+        style: CodeFenceStyle,
+        info: Option<String>,
+        text: String,
+        observed: StateVector,
+    },
+    ConvertTextBlock {
+        block_elem: OpId,
+        block_id: BlockId,
+        id: OpId,
+        kind: TextBlockKindWire,
+        observed: StateVector,
+    },
+    ReplaceRawBlock {
+        block_elem: OpId,
+        block_id: BlockId,
+        id: OpId,
+        raw: String,
+        observed: StateVector,
     },
 }
 
@@ -253,10 +354,11 @@ pub enum BlockKindSkeleton {
         text: String,
     },
     List {
-        ordered: bool,
+        style: ListStyle,
         items: Vec<ListItemSkeleton>,
     },
     CodeFence {
+        style: CodeFenceStyle,
         info: Option<String>,
         text: String,
     },
@@ -266,10 +368,7 @@ pub enum BlockKindSkeleton {
     RawBlock {
         raw: String,
     },
-    Table {
-        columns: Vec<ColumnAlignmentWire>,
-        header: Vec<String>,
-    },
+    Table,
 }
 
 /// Wire form of a list item (children are nested structure inserts).
@@ -279,6 +378,8 @@ pub struct ListItemSkeleton {
     pub id: OpId,
     pub right_origin: Option<OpId>,
     pub block_id: crate::doc::BlockId,
+    pub task: Option<TaskState>,
+    pub task_op: OpId,
     pub children: Vec<BlockSkeletonInsert>,
 }
 
@@ -297,13 +398,26 @@ pub struct BlockSkeletonInsert {
 /// Callers in unit-mode sessions use this to reject; the codec never rejects on
 /// this predicate during decode of historical/string-mode payloads.
 pub fn insert_block_paragraph_is_empty(envelope: &Envelope) -> bool {
-    match &envelope.body {
-        OpBody::Doc(DocOp::InsertBlock { block, .. }) => match &block.kind {
+    fn kind_is_empty(kind: &BlockKindSkeleton) -> bool {
+        match kind {
             BlockKindSkeleton::Paragraph { text } | BlockKindSkeleton::Heading { text, .. } => {
                 text.is_empty()
             }
-            _ => true,
-        },
+            BlockKindSkeleton::BlockQuote { children } => children
+                .iter()
+                .all(|child| kind_is_empty(&child.block.kind)),
+            BlockKindSkeleton::List { items, .. } => items.iter().all(|item| {
+                item.children
+                    .iter()
+                    .all(|child| kind_is_empty(&child.block.kind))
+            }),
+            BlockKindSkeleton::CodeFence { .. }
+            | BlockKindSkeleton::RawBlock { .. }
+            | BlockKindSkeleton::Table => true,
+        }
+    }
+    match &envelope.body {
+        OpBody::Doc(DocOp::InsertBlock { block, .. }) => kind_is_empty(&block.kind),
         OpBody::Doc(
             DocOp::DeleteBlock { .. }
             | DocOp::DeleteBlockById { .. }
@@ -317,11 +431,22 @@ pub fn insert_block_paragraph_is_empty(envelope: &Envelope) -> bool {
             | DocOp::SplitBlock { .. }
             | DocOp::MergeBlocks { .. }
             | DocOp::InsertTableRow { .. }
-            | DocOp::SetTableRowCells { .. }
+            | DocOp::InsertTableColumn { .. }
+            | DocOp::SetTableCell { .. }
             | DocOp::DeleteTableRow { .. }
             | DocOp::DeleteTableRowById { .. }
-            | DocOp::SetTableMetadata { .. }
-            | DocOp::MoveTableRow { .. },
+            | DocOp::DeleteTableColumnById { .. }
+            | DocOp::SetTableColumnAlignment { .. }
+            | DocOp::MoveTableRow { .. }
+            | DocOp::MoveTableColumn { .. }
+            | DocOp::InsertListItem { .. }
+            | DocOp::DeleteListItemById { .. }
+            | DocOp::MoveListItem { .. }
+            | DocOp::SetListStyle { .. }
+            | DocOp::SetListItemTask { .. }
+            | DocOp::SetCodeFence { .. }
+            | DocOp::ConvertTextBlock { .. }
+            | DocOp::ReplaceRawBlock { .. },
         ) => true,
     }
 }
@@ -345,11 +470,22 @@ pub(crate) fn validate_envelope_structure(envelope: &Envelope) -> Result<(), sup
             | DocOp::SplitBlock { .. }
             | DocOp::MergeBlocks { .. }
             | DocOp::InsertTableRow { .. }
-            | DocOp::SetTableRowCells { .. }
+            | DocOp::InsertTableColumn { .. }
+            | DocOp::SetTableCell { .. }
             | DocOp::DeleteTableRow { .. }
             | DocOp::DeleteTableRowById { .. }
-            | DocOp::SetTableMetadata { .. }
-            | DocOp::MoveTableRow { .. },
+            | DocOp::DeleteTableColumnById { .. }
+            | DocOp::SetTableColumnAlignment { .. }
+            | DocOp::MoveTableRow { .. }
+            | DocOp::MoveTableColumn { .. }
+            | DocOp::InsertListItem { .. }
+            | DocOp::DeleteListItemById { .. }
+            | DocOp::MoveListItem { .. }
+            | DocOp::SetListStyle { .. }
+            | DocOp::SetListItemTask { .. }
+            | DocOp::SetCodeFence { .. }
+            | DocOp::ConvertTextBlock { .. }
+            | DocOp::ReplaceRawBlock { .. },
         ) => {}
     }
     Ok(())
@@ -379,7 +515,7 @@ fn check_kind_depth(kind: &BlockKindSkeleton, depth: u32) -> Result<(), super::C
         | BlockKindSkeleton::Heading { .. }
         | BlockKindSkeleton::CodeFence { .. }
         | BlockKindSkeleton::RawBlock { .. }
-        | BlockKindSkeleton::Table { .. } => Ok(()),
+        | BlockKindSkeleton::Table => Ok(()),
     }
 }
 

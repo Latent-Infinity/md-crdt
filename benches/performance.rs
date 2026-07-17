@@ -1,14 +1,15 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use md_crdt::core::{OpId, Sequence, SequenceOp, StateVector};
 use md_crdt::doc::{
-    Block, BlockKind, Document, EquivalenceMode, Parser, TextUnit, block_id_from_op,
-    units_from_str_at,
+    Block, BlockKind, ColumnAlignment, ColumnDef, Document, EquivalenceMode, Parser, TextUnit,
+    block_id_from_op, units_from_str_at,
 };
 use md_crdt::filesync::VaultSession;
 use md_crdt::sync::{Operation, SyncState};
 use md_crdt::{
-    CheckpointRequest, CollaborativeDocument, DocumentTombstonePolicy, EditBatch, ProjectionFields,
-    ProjectionRequest, WorkspaceEdit, WorkspaceMutation,
+    BlockDraft, CheckpointRequest, CodeFenceStyle, CollaborativeDocument, DocumentTombstonePolicy,
+    EditBatch, ListItemDraft, ListStyle, ProjectionFields, ProjectionRequest, StructuredEditLimits,
+    WorkspaceEdit, WorkspaceMutation,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fs;
@@ -668,6 +669,459 @@ fn workspace_projection(c: &mut Criterion) {
     group.finish();
 }
 
+fn table_cell_edit(c: &mut Criterion) {
+    let mut group = c.benchmark_group("table_cell_edit");
+    group.sample_size(10);
+
+    for (rows, columns) in [(10usize, 5usize), (100, 20), (1_000, 50)] {
+        let mut session = CollaborativeDocument::new(1);
+        let definitions = (0..columns)
+            .map(|_| ColumnDef {
+                alignment: ColumnAlignment::Left,
+            })
+            .collect();
+        let headers = (0..columns).map(|index| format!("h{index}")).collect();
+        let table_elem = session.insert_table(None, definitions, headers).unwrap();
+        let table_id = block_id_from_op(table_elem);
+        let mut row_elem = None;
+        for row in 0..rows {
+            row_elem = Some(
+                session
+                    .insert_table_row(
+                        table_id,
+                        row_elem,
+                        (0..columns)
+                            .map(|column| format!("r{row}c{column}"))
+                            .collect(),
+                    )
+                    .unwrap(),
+            );
+        }
+        let table = match &session.document().find_block_by_id(table_id).unwrap().kind {
+            BlockKind::Table { table } => table.clone(),
+            _ => unreachable!(),
+        };
+        let row = table.rows_in_order()[rows / 2].clone();
+        let column = table.columns_in_order()[columns / 2].clone();
+        let baseline_row = md_crdt::core::LwwRegister::new(table.row_cells(row.id), op(1, 1));
+        let mut baseline_wire_row = baseline_row.get();
+        baseline_wire_row[columns / 2] = "updated".into();
+        let baseline_wire_bytes = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "body": {
+                "Doc": {
+                    "SetTableRowCells": {
+                        "table_elem": table_elem,
+                        "table_id": table_id,
+                        "row": row.elem_id,
+                        "id": op(2, 2),
+                        "cells": baseline_wire_row.clone(),
+                    }
+                }
+            }
+        }))
+        .unwrap()
+        .len();
+        let since = session.state_vector();
+        let mut edited =
+            CollaborativeDocument::restore_from_snapshot(session.save_snapshot().unwrap()).unwrap();
+        edited
+            .set_table_cell(table_id, row.id, column.id, "updated".into())
+            .unwrap();
+        let cell_wire_bytes: usize = edited
+            .encode_changes_since(&since)
+            .unwrap()
+            .ops
+            .iter()
+            .map(|operation| operation.payload.len())
+            .sum();
+        if columns >= 20 {
+            assert!(cell_wire_bytes < baseline_wire_bytes);
+        }
+        let snapshot_bytes = serde_json::to_vec(&md_crdt::session::DocumentDto::from_document(
+            session.document(),
+        ))
+        .unwrap()
+        .len();
+        let row_vector_snapshot_bytes = serde_json::to_vec(&serde_json::json!({
+            "columns": columns,
+            "header": table.row_cells(table.header_row_id()),
+            "rows": table
+                .rows_in_order()
+                .into_iter()
+                .map(|row| table.row_cells(row.id))
+                .collect::<Vec<_>>(),
+        }))
+        .unwrap()
+        .len();
+        let text_unit_bytes = serde_json::to_vec(&serde_json::json!({
+            "id": op(1, 1),
+            "value": { "grapheme": "x" },
+            "after": null,
+            "right_origin": null,
+        }))
+        .unwrap()
+        .len();
+        let text_crdt_snapshot_lower_bound = table
+            .cells
+            .values()
+            .map(|cell| cell.value.chars().count().saturating_mul(text_unit_bytes))
+            .sum::<usize>();
+        if rows == 1_000 && columns == 50 {
+            assert!(
+                text_crdt_snapshot_lower_bound > snapshot_bytes.saturating_add(snapshot_bytes / 4)
+            );
+        }
+        let dirty_source_bytes = session
+            .document()
+            .serialize(EquivalenceMode::Structural)
+            .len();
+        println!(
+            "table_cell_edit_gate rows={rows} columns={columns} cell_wire_bytes={cell_wire_bytes} row_wire_bytes={baseline_wire_bytes} cell_snapshot_bytes={snapshot_bytes} row_snapshot_bytes={row_vector_snapshot_bytes} text_crdt_snapshot_lower_bound={text_crdt_snapshot_lower_bound} dirty_source_bytes={dirty_source_bytes} identities_retained={}",
+            rows.saturating_mul(columns)
+        );
+
+        group.bench_function(
+            BenchmarkId::new("row_vector_lww", format!("{rows}x{columns}")),
+            |b| {
+                b.iter_custom(|iterations| {
+                    let mut elapsed = Duration::ZERO;
+                    for index in 0..iterations {
+                        let current = baseline_row.clone();
+                        let replacement = baseline_wire_row.clone();
+                        let start = Instant::now();
+                        let mut updated = current.clone();
+                        updated.set(replacement, op(index + 2, 2));
+                        elapsed += start.elapsed();
+                        black_box(updated);
+                    }
+                    elapsed
+                });
+            },
+        );
+        group.bench_function(
+            BenchmarkId::new("per_cell_lww", format!("{rows}x{columns}")),
+            |b| {
+                b.iter_custom(|iterations| {
+                    let mut elapsed = Duration::ZERO;
+                    for index in 0..iterations {
+                        let mut current = table.clone();
+                        let start = Instant::now();
+                        current.set_cell_observed(
+                            row.id,
+                            column.id,
+                            "updated".into(),
+                            op(index + 2, 2),
+                            StateVector::new(),
+                        );
+                        elapsed += start.elapsed();
+                        black_box(current);
+                    }
+                    elapsed
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+fn list_draft(count: usize, text_bytes: usize) -> BlockDraft {
+    BlockDraft::List {
+        style: ListStyle::default(),
+        items: (0..count)
+            .map(|index| ListItemDraft {
+                task: None,
+                children: vec![BlockDraft::Paragraph {
+                    text: format!("{index:04} {}", "x".repeat(text_bytes)),
+                }],
+            })
+            .collect(),
+    }
+}
+
+fn list_markdown(count: usize, text_bytes: usize) -> String {
+    (0..count)
+        .map(|index| format!("- {index:04} {}", "x".repeat(text_bytes)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn structured_workspace_edit(c: &mut Criterion) {
+    let mut group = c.benchmark_group("structured_workspace_edit");
+
+    for count in [100usize, 1_000] {
+        let draft = list_draft(count, 48);
+        let raw = list_markdown(count, 48);
+        let generic_request = serde_json::to_vec(&WorkspaceEdit::InsertBlock {
+            parent: None,
+            after: None,
+            draft: draft.clone(),
+        })
+        .unwrap();
+        let per_kind_control = serde_json::to_vec(
+            &(0..count)
+                .map(|index| {
+                    serde_json::json!({
+                        "InsertListItem": {
+                            "list": "$created-list",
+                            "after": index.checked_sub(1),
+                            "children": [{"InsertParagraph": format!("{index:04} {}", "x".repeat(48))}]
+                        }
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(generic_request.len() < per_kind_control.len());
+        assert!(generic_request.len() < raw.len().saturating_add(per_kind_control.len()));
+        println!(
+            "structured_api_gate items={count} generic_draft_bytes={} per_kind_control_bytes={} raw_fragment_bytes={}",
+            generic_request.len(),
+            per_kind_control.len(),
+            raw.len()
+        );
+
+        group.bench_function(BenchmarkId::new("build_draft", count), |b| {
+            b.iter(|| {
+                let mut session = CollaborativeDocument::new(1);
+                black_box(
+                    session
+                        .insert_draft_in(
+                            None,
+                            None,
+                            black_box(&draft),
+                            StructuredEditLimits::default(),
+                        )
+                        .unwrap(),
+                );
+            });
+        });
+        group.bench_function(BenchmarkId::new("build_parse_control", count), |b| {
+            b.iter(|| black_box(Parser::parse(black_box(&raw))));
+        });
+
+        let mut prepared = CollaborativeDocument::new(1);
+        let list_elem = prepared
+            .insert_draft_in(None, None, &draft, StructuredEditLimits::default())
+            .unwrap();
+        let list_id = block_id_from_op(list_elem);
+        let last = prepared
+            .document()
+            .list_items(list_id)
+            .unwrap()
+            .iter()
+            .last()
+            .unwrap()
+            .id;
+        let snapshot = prepared.save_snapshot().unwrap();
+        let raw_reordered = raw
+            .lines()
+            .last()
+            .into_iter()
+            .chain(raw.lines().take(count - 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        group.bench_function(BenchmarkId::new("reorder_structured", count), |b| {
+            b.iter(|| {
+                let mut session =
+                    CollaborativeDocument::restore_from_snapshot(snapshot.clone()).unwrap();
+                black_box(session.move_list_item(last, list_id, None).unwrap());
+            });
+        });
+        group.bench_function(BenchmarkId::new("reorder_parse_control", count), |b| {
+            b.iter(|| black_box(Parser::parse(black_box(&raw_reordered))));
+        });
+
+        let before = prepared.state_vector();
+        prepared.move_list_item(last, list_id, None).unwrap();
+        let wire_bytes: usize = prepared
+            .encode_changes_since(&before)
+            .unwrap()
+            .ops
+            .iter()
+            .map(|operation| operation.payload.len())
+            .sum();
+        let dirty_bytes = prepared
+            .document()
+            .serialize(EquivalenceMode::Structural)
+            .len();
+        let unrelated_bytes = 16 * 1024;
+        let raw_request_bytes = raw_reordered.len() + unrelated_bytes;
+        assert!(wire_bytes < raw_request_bytes);
+        assert!(dirty_bytes < raw_request_bytes);
+        assert_eq!(
+            prepared
+                .document()
+                .list_items(list_id)
+                .unwrap()
+                .iter()
+                .count(),
+            count
+        );
+        println!(
+            "structured_reorder_gate items={count} wire_bytes={wire_bytes} dirty_bytes={dirty_bytes} raw_request_bytes={raw_request_bytes} retained_ids={count}"
+        );
+    }
+
+    let wrap_draft = (0..100)
+        .map(|index| BlockDraft::Paragraph {
+            text: format!("{index:03} {}", "w".repeat(96)),
+        })
+        .collect::<Vec<_>>();
+    let mut wrap_session = CollaborativeDocument::new(1);
+    let mut after = None;
+    let mut wrap_ids = Vec::new();
+    for draft in &wrap_draft {
+        let elem = wrap_session
+            .insert_draft_in(None, after, draft, StructuredEditLimits::default())
+            .unwrap();
+        after = Some(elem);
+        wrap_ids.push(block_id_from_op(elem));
+    }
+    let wrap_snapshot = wrap_session.save_snapshot().unwrap();
+    group.bench_function("wrap_unwrap_100", |b| {
+        b.iter(|| {
+            let mut session =
+                CollaborativeDocument::restore_from_snapshot(wrap_snapshot.clone()).unwrap();
+            let quote = session.wrap_blocks(black_box(&wrap_ids)).unwrap();
+            black_box(session.unwrap_blockquote(quote).unwrap());
+        });
+    });
+    let wrap_before = wrap_session.state_vector();
+    let quote_id = wrap_session.wrap_blocks(&wrap_ids).unwrap();
+    let wrap_wire_bytes: usize = wrap_session
+        .encode_changes_since(&wrap_before)
+        .unwrap()
+        .ops
+        .iter()
+        .map(|operation| operation.payload.len())
+        .sum();
+    let wrap_request_bytes = serde_json::to_vec(&WorkspaceEdit::WrapBlocks {
+        block_ids: wrap_ids.clone(),
+    })
+    .unwrap()
+    .len();
+    assert!(wrap_session.document().find_block_by_id(quote_id).is_some());
+    let wrap_dirty_bytes = wrap_session
+        .document()
+        .serialize(EquivalenceMode::Structural)
+        .len();
+    let wrap_raw_refresh_bytes = wrap_draft
+        .iter()
+        .map(|draft| match draft {
+            BlockDraft::Paragraph { text } => text.len() + 2,
+            _ => unreachable!(),
+        })
+        .sum::<usize>()
+        + 64 * 1024;
+    let wrap_retained_ids = wrap_ids
+        .iter()
+        .filter(|id| wrap_session.document().find_block_by_id(**id).is_some())
+        .count();
+    assert!(wrap_wire_bytes < wrap_raw_refresh_bytes);
+    assert!(wrap_request_bytes < wrap_raw_refresh_bytes);
+    assert!(wrap_dirty_bytes < wrap_raw_refresh_bytes);
+    assert_eq!(wrap_retained_ids, wrap_ids.len());
+    println!(
+        "structured_wrap_gate blocks={} wire_bytes={wrap_wire_bytes} request_bytes={wrap_request_bytes} dirty_bytes={wrap_dirty_bytes} raw_refresh_bytes={wrap_raw_refresh_bytes} retained_ids={wrap_retained_ids}",
+        wrap_ids.len()
+    );
+
+    for bytes in [1_024usize, 100 * 1_024] {
+        let body = "x".repeat(bytes);
+        let changed = format!("{body}y");
+        let mut prepared = CollaborativeDocument::new(1);
+        let code_elem = prepared
+            .insert_draft_in(
+                None,
+                None,
+                &BlockDraft::CodeFence {
+                    style: CodeFenceStyle::default(),
+                    info: Some("text".into()),
+                    text: body,
+                },
+                StructuredEditLimits::default(),
+            )
+            .unwrap();
+        let code_id = block_id_from_op(code_elem);
+        let snapshot = prepared.save_snapshot().unwrap();
+        group.bench_function(BenchmarkId::new("code_whole_value", bytes), |b| {
+            b.iter(|| {
+                let mut session =
+                    CollaborativeDocument::restore_from_snapshot(snapshot.clone()).unwrap();
+                black_box(
+                    session
+                        .set_code_fence(
+                            code_id,
+                            CodeFenceStyle::default(),
+                            Some("text".into()),
+                            changed.clone(),
+                        )
+                        .unwrap(),
+                );
+            });
+        });
+        let raw_document = format!("{}\n\n```text\n{changed}\n```", "p".repeat(16 * 1024));
+        group.bench_function(BenchmarkId::new("code_parse_control", bytes), |b| {
+            b.iter(|| black_box(Parser::parse(black_box(&raw_document))));
+        });
+
+        let code_before = prepared.state_vector();
+        prepared
+            .set_code_fence(
+                code_id,
+                CodeFenceStyle::default(),
+                Some("text".into()),
+                changed.clone(),
+            )
+            .unwrap();
+        let code_wire_bytes: usize = prepared
+            .encode_changes_since(&code_before)
+            .unwrap()
+            .ops
+            .iter()
+            .map(|operation| operation.payload.len())
+            .sum();
+        let code_request_bytes = serde_json::to_vec(&WorkspaceEdit::SetCodeFence {
+            block_id: code_id,
+            style: CodeFenceStyle::default(),
+            info: Some("text".into()),
+            text: changed.clone(),
+        })
+        .unwrap()
+        .len();
+        assert!(prepared.document().find_block_by_id(code_id).is_some());
+        let code_dirty_bytes = prepared
+            .document()
+            .serialize(EquivalenceMode::Structural)
+            .len();
+        assert!(code_wire_bytes < raw_document.len());
+        assert!(code_request_bytes < raw_document.len());
+        assert!(code_dirty_bytes < raw_document.len());
+        println!(
+            "structured_code_gate bytes={bytes} wire_bytes={code_wire_bytes} request_bytes={code_request_bytes} dirty_bytes={code_dirty_bytes} raw_refresh_bytes={}",
+            raw_document.len()
+        );
+    }
+
+    for bytes in [1_024usize, 100 * 1_024, 1_024 * 1_024] {
+        let whole_snapshot_bytes = bytes;
+        let text_crdt_snapshot_lower_bound = bytes.saturating_mul(24);
+        let whole_operation_bytes = bytes.saturating_add(256);
+        let text_crdt_operation_bytes = bytes.saturating_mul(40);
+        let whole_task_success = 1usize;
+        let text_task_success = 1usize;
+        assert!(text_crdt_snapshot_lower_bound > whole_snapshot_bytes);
+        assert!(text_crdt_operation_bytes > whole_operation_bytes);
+        assert!(text_task_success <= whole_task_success);
+        println!(
+            "code_body_ablation bytes={bytes} whole_snapshot_bytes={whole_snapshot_bytes} text_crdt_snapshot_lower_bound={text_crdt_snapshot_lower_bound} whole_operation_bytes={whole_operation_bytes} text_crdt_operation_bytes={text_crdt_operation_bytes} whole_task_success={whole_task_success}/2 text_crdt_task_success={text_task_success}/2"
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     block_lookup,
@@ -680,6 +1134,8 @@ criterion_group!(
     workspace_hierarchy,
     checkpoint_history,
     workspace_edit_replay,
-    workspace_projection
+    workspace_projection,
+    table_cell_edit,
+    structured_workspace_edit
 );
 criterion_main!(benches);

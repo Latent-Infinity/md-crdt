@@ -4,7 +4,7 @@
 //! converge to the same state regardless of application order.
 
 use md_crdt::core::mark::MarkSet;
-use md_crdt::core::{OpId, SequenceOp};
+use md_crdt::core::{OpId, SequenceOp, StateVector};
 use md_crdt::doc::{Block, BlockKind, Document, SerializeConfig};
 use uuid::Uuid;
 
@@ -15,6 +15,8 @@ fn para_block(text: &str, peer: u64, counter: u64) -> Block {
     Block {
         id: Uuid::new_v4(),
         elem_id,
+        kind_op: elem_id,
+        kind_observed: StateVector::new(),
         kind: BlockKind::paragraph(text, elem_id),
         marks: MarkSet::new(),
     }
@@ -26,6 +28,8 @@ fn para_block_fixed(text: &str, peer: u64, counter: u64, uuid_seed: u128) -> Blo
     Block {
         id: Uuid::from_u128(uuid_seed),
         elem_id,
+        kind_op: elem_id,
+        kind_observed: StateVector::new(),
         kind: BlockKind::paragraph(text, elem_id),
         marks: MarkSet::new(),
     }

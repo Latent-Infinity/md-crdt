@@ -247,6 +247,30 @@ impl<T: Clone> Sequence<T> {
         }
     }
 
+    /// Pending operations whose cross-peer anchor or target has not arrived yet.
+    ///
+    /// Session snapshots persist these independently from the compacted operation log.
+    pub(crate) fn pending_ops(&self) -> Vec<SequenceOp<T>> {
+        self.pending_inserts
+            .values()
+            .chain(self.pending_deletes.values())
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    /// Rebuild materialized elements and their unresolved cross-peer operations.
+    pub(crate) fn from_elements_and_pending(
+        elements: Vec<Element<T>>,
+        pending: Vec<SequenceOp<T>>,
+    ) -> Self {
+        let mut sequence = Self::from_elements(elements);
+        for operation in pending {
+            sequence.apply(operation);
+        }
+        sequence
+    }
+
     pub fn element_ids(&self) -> Vec<OpId> {
         self.elements.iter().map(|elem| elem.id).collect()
     }

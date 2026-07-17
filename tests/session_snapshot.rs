@@ -1,10 +1,21 @@
 //! Session snapshot save/restore and late-join import.
 
-use md_crdt::doc::{EquivalenceMode, Parser};
+use md_crdt::doc::{EquivalenceMode, Parser, block_id_from_op};
 use md_crdt::session::{
     CollaborativeDocument, DocumentDto, SNAPSHOT_FORMAT_VERSION, SessionSnapshot, SnapshotError,
 };
-use md_crdt::sync::ValidationLimits;
+use md_crdt::sync::{ChangeMessage, ValidationLimits};
+use md_crdt::{
+    BlockDraft, CheckpointRequest, DocumentTombstonePolicy, ListItemDraft, ListStyle,
+    StructuredEditLimits,
+};
+
+fn exchange(source: &CollaborativeDocument, target: &mut CollaborativeDocument) {
+    let message = source.encode_changes_since(&target.state_vector()).unwrap();
+    target
+        .apply_remote(message, &ValidationLimits::default())
+        .unwrap();
+}
 
 #[test]
 fn save_restore_round_trip_preserves_document_and_sv() {
@@ -119,6 +130,28 @@ fn restore_rejects_clock_behind_max_op() {
 }
 
 #[test]
+fn restore_rejects_clock_behind_compacted_frontier() {
+    let mut session = CollaborativeDocument::new(1);
+    let block = session.insert_paragraph(None, "transient").unwrap();
+    session.delete_block(block).unwrap();
+    session
+        .checkpoint_history(&CheckpointRequest {
+            max_retained_ops: 0,
+            active_peer_leases: Vec::new(),
+            tombstones: DocumentTombstonePolicy::KeepAll,
+        })
+        .unwrap();
+    let mut snapshot = session.save_snapshot().unwrap();
+    assert!(snapshot.ops.is_empty());
+    snapshot.next_counter = snapshot.state_vector.get(1).unwrap();
+
+    assert!(matches!(
+        CollaborativeDocument::restore_from_snapshot(snapshot),
+        Err(SnapshotError::ClockBehind { .. })
+    ));
+}
+
+#[test]
 fn import_state_rebinds_to_local_peer() {
     let mut a = CollaborativeDocument::new(1);
     a.insert_paragraph(None, "shared").expect("insert");
@@ -128,9 +161,11 @@ fn import_state_rebinds_to_local_peer() {
         snap.document,
         snap.ops,
         snap.pending,
+        snap.deferred,
         99, // local peer
         true,
-    );
+    )
+    .unwrap();
     assert_eq!(b.peer(), 99);
     // No ops from peer 99 yet → next_counter starts at 1
     assert_eq!(b.peek_next_id().counter, 1);
@@ -151,6 +186,170 @@ fn rebind_peer_after_restore() {
     assert_eq!(b.peer(), 7);
     assert_eq!(b.peek_next_id().peer, 7);
     assert_eq!(b.peek_next_id().counter, 1);
+}
+
+#[test]
+fn snapshot_preserves_list_insert_waiting_for_a_missing_anchor() {
+    let mut author = CollaborativeDocument::new(1);
+    let list_elem = author
+        .insert_draft_in(
+            None,
+            None,
+            &BlockDraft::List {
+                style: ListStyle::default(),
+                items: vec![ListItemDraft {
+                    task: None,
+                    children: Vec::new(),
+                }],
+            },
+            StructuredEditLimits::default(),
+        )
+        .unwrap();
+    let list_id = block_id_from_op(list_elem);
+    let first = author
+        .document()
+        .list_items(list_id)
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap()
+        .elem_id;
+    let mut editor = CollaborativeDocument::new(2);
+    let mut delayed = CollaborativeDocument::new(3);
+    exchange(&author, &mut editor);
+    exchange(&author, &mut delayed);
+
+    let anchor = author.insert_list_item(list_id, Some(first), None).unwrap();
+    exchange(&author, &mut editor);
+    editor
+        .insert_list_item(list_id, Some(anchor), None)
+        .unwrap();
+
+    let editor_delta = editor
+        .encode_changes_since(&delayed.state_vector())
+        .unwrap();
+    delayed
+        .apply_remote(
+            ChangeMessage {
+                since: editor_delta.since,
+                ops: editor_delta
+                    .ops
+                    .into_iter()
+                    .filter(|operation| operation.id.peer == 2)
+                    .collect(),
+            },
+            &ValidationLimits::default(),
+        )
+        .unwrap();
+    delayed
+        .checkpoint_history(&CheckpointRequest {
+            max_retained_ops: 0,
+            active_peer_leases: Vec::new(),
+            tombstones: DocumentTombstonePolicy::KeepAll,
+        })
+        .unwrap();
+    let bytes = delayed.save_snapshot().unwrap().to_bytes().unwrap();
+    let snapshot = SessionSnapshot::from_bytes(&bytes).unwrap();
+    let mut restored = CollaborativeDocument::restore_from_snapshot(snapshot).unwrap();
+    exchange(&author, &mut restored);
+
+    assert_eq!(restored.document(), editor.document());
+    assert_eq!(
+        restored
+            .document()
+            .list_items(list_id)
+            .unwrap()
+            .len_visible(),
+        3
+    );
+}
+
+#[test]
+fn snapshot_preserves_list_delete_waiting_for_a_missing_item() {
+    let mut author = CollaborativeDocument::new(1);
+    let list_elem = author
+        .insert_draft_in(
+            None,
+            None,
+            &BlockDraft::List {
+                style: ListStyle::default(),
+                items: Vec::new(),
+            },
+            StructuredEditLimits::default(),
+        )
+        .unwrap();
+    let list_id = block_id_from_op(list_elem);
+    let mut editor = CollaborativeDocument::new(2);
+    let mut delayed = CollaborativeDocument::new(3);
+    exchange(&author, &mut editor);
+    exchange(&author, &mut delayed);
+
+    let inserted = author.insert_list_item(list_id, None, None).unwrap();
+    let item_id = block_id_from_op(inserted);
+    exchange(&author, &mut editor);
+    editor.delete_list_item(item_id).unwrap();
+
+    let editor_delta = editor
+        .encode_changes_since(&delayed.state_vector())
+        .unwrap();
+    delayed
+        .apply_remote(
+            ChangeMessage {
+                since: editor_delta.since,
+                ops: editor_delta
+                    .ops
+                    .into_iter()
+                    .filter(|operation| operation.id.peer == 2)
+                    .collect(),
+            },
+            &ValidationLimits::default(),
+        )
+        .unwrap();
+    delayed
+        .checkpoint_history(&CheckpointRequest {
+            max_retained_ops: 0,
+            active_peer_leases: Vec::new(),
+            tombstones: DocumentTombstonePolicy::KeepAll,
+        })
+        .unwrap();
+    let bytes = delayed.save_snapshot().unwrap().to_bytes().unwrap();
+    let snapshot = SessionSnapshot::from_bytes(&bytes).unwrap();
+    let mut restored = CollaborativeDocument::restore_from_snapshot(snapshot).unwrap();
+    exchange(&author, &mut restored);
+
+    assert_eq!(restored.document(), editor.document());
+    assert_eq!(
+        restored
+            .document()
+            .list_items(list_id)
+            .unwrap()
+            .len_visible(),
+        0
+    );
+}
+
+#[test]
+fn checkpoint_rebase_advances_past_the_local_peer_frontier() {
+    let mut source = CollaborativeDocument::new(1);
+    source.insert_paragraph(None, "base").unwrap();
+    let mut peer = CollaborativeDocument::new(2);
+    exchange(&source, &mut peer);
+    let transient = peer.insert_paragraph(None, "transient").unwrap();
+    peer.delete_block(transient).unwrap();
+    exchange(&peer, &mut source);
+    source
+        .checkpoint_history(&CheckpointRequest {
+            max_retained_ops: 0,
+            active_peer_leases: Vec::new(),
+            tombstones: DocumentTombstonePolicy::KeepAll,
+        })
+        .unwrap();
+    let snapshot = source.save_snapshot().unwrap();
+    let frontier = snapshot.state_vector.get(2).unwrap();
+
+    let rebased = CollaborativeDocument::rebase_from_snapshot(snapshot, 2).unwrap();
+
+    assert!(rebased.peek_next_id().counter > frontier);
 }
 
 #[test]
@@ -188,7 +387,7 @@ fn non_current_snapshot_versions_require_reinitialize() {
     session.insert_paragraph(None, "current").unwrap();
     let current = session.save_snapshot().unwrap();
 
-    for format_version in [1, 2, 4] {
+    for format_version in [1, 2, SNAPSHOT_FORMAT_VERSION + 1] {
         let mut old = current.clone();
         old.format_version = format_version;
         let error = SessionSnapshot::from_bytes(&old.to_bytes().unwrap()).unwrap_err();

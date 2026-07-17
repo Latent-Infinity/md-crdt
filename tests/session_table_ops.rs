@@ -13,6 +13,36 @@ fn exchange(source: &CollaborativeDocument, target: &mut CollaborativeDocument) 
 }
 
 #[test]
+fn table_cell_newlines_are_rejected_without_burning_the_clock() {
+    let mut session = CollaborativeDocument::new(1);
+    let table_elem = session
+        .insert_table(
+            None,
+            vec![ColumnDef {
+                alignment: ColumnAlignment::Left,
+            }],
+            vec!["header".into()],
+        )
+        .unwrap();
+    let table_id = block_id_from_op(table_elem);
+    let row_elem = session
+        .insert_table_row(table_id, None, vec!["value".into()])
+        .unwrap();
+    let row_id = block_id_from_op(row_elem);
+    let column_id = match &session.document().find_block_by_id(table_id).unwrap().kind {
+        BlockKind::Table { table } => table.columns_in_order()[0].id,
+        _ => unreachable!(),
+    };
+    let next = session.peek_next_id();
+
+    assert!(matches!(
+        session.set_table_cell(table_id, row_id, column_id, "line one\nline two".into()),
+        Err(SessionError::InvalidTableCell)
+    ));
+    assert_eq!(session.peek_next_id(), next);
+}
+
+#[test]
 fn table_rows_insert_update_delete_converge() {
     let mut first = CollaborativeDocument::new(1);
     let table_elem = first
@@ -179,26 +209,28 @@ fn invalid_table_mutations_do_not_advance_clock() {
 fn nonempty_table_block_requires_row_operations() {
     let mut session = CollaborativeDocument::new(1);
     let id = session.peek_next_id();
-    let mut table = Table::new(
-        block_id_from_op(id),
-        id,
-        vec![ColumnDef {
-            alignment: ColumnAlignment::Left,
-        }],
-        vec!["h".into()],
-        id,
-    );
+    let mut table = Table::new(block_id_from_op(id), id, id);
+    let column_op = OpId {
+        counter: 2,
+        peer: 1,
+    };
+    table.insert_column(None, ColumnAlignment::Left, "h".into(), column_op);
     table.insert_row(
         None,
-        vec!["body".into()],
+        vec![(block_id_from_op(column_op), "body".into())],
         OpId {
-            counter: 2,
+            counter: 3,
             peer: 1,
         },
     );
 
     assert!(matches!(
-        session.insert_block(None, BlockKind::Table { table }),
+        session.insert_block(
+            None,
+            BlockKind::Table {
+                table: Box::new(table),
+            }
+        ),
         Err(SessionError::NonEmptyTableOnInsertBlock)
     ));
     assert_eq!(session.peek_next_id(), id);
