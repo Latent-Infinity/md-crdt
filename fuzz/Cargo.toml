@@ -12,7 +12,6 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 md-crdt = { path = ".." }
 postcard = { version = "1", features = ["alloc"] }
-uuid = { version = "1", features = ["v4"] }
 
 [workspace]
 

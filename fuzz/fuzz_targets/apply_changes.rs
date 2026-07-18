@@ -16,7 +16,7 @@ fuzz_target!(|data: &[u8]| {
                 counter,
                 peer: chunk[0] as u64,
             },
-            payload: chunk[2..].to_vec(),
+            payload: chunk[2..].to_vec().into(),
         };
         ops.push(op);
     }

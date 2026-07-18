@@ -10,9 +10,8 @@
 //! all operations with their targets, then apply in different orders.
 
 use libfuzzer_sys::fuzz_target;
-use md_crdt::core::{MarkSet, OpId, SequenceOp};
+use md_crdt::core::{OpId, SequenceOp};
 use md_crdt::doc::{Block, BlockKind, Document, SerializeConfig};
-use uuid::Uuid;
 
 /// Pre-computed operation with fixed targets
 #[derive(Clone)]
@@ -64,16 +63,8 @@ fn parse_ops(data: &[u8]) -> Vec<FixedOp> {
                 Some(all_elem_ids[(position_hint - 1) % all_elem_ids.len()])
             };
 
-            // Create block with deterministic UUID based on elem_id
-            let uuid_seed = ((peer as u128) << 64) | (counter as u128);
-            let block = Block {
-                id: Uuid::from_u128(uuid_seed),
-                elem_id,
-                kind: BlockKind::Paragraph {
-                    text: format!("p{}c{}", peer, counter),
-                },
-                marks: MarkSet::new(),
-            };
+            let text = format!("p{}c{}", peer, counter);
+            let block = Block::new(BlockKind::paragraph(&text, elem_id), elem_id);
 
             all_elem_ids.push(elem_id);
             ops.push(FixedOp::Insert { block, after });
