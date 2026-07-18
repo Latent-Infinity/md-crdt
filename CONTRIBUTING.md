@@ -121,6 +121,32 @@ Fixes #42
 - Address review feedback promptly
 - Squash commits before merging if requested
 
+## Releasing
+
+`.github/workflows/publish.yml` publishes only the `md-crdt` package. The CI, FFI
+placeholder, and naive-oracle workspace packages remain unpublished.
+
+Configure the `md-crdt` crate's crates.io Trusted Publisher once with:
+
+- GitHub repository: `Latent-Infinity/md-crdt`
+- Workflow: `publish.yml`
+- Environment: `crates-io`
+
+Create the matching `crates-io` GitHub environment with a required reviewer and
+restrict deployments to the `main` branch and tags matching `v*`. `main` is required
+for a manual dispatch that publishes a tag created before the workflow existed. The
+environment approval is the final human gate before the workflow receives a
+short-lived crates.io credential.
+
+For each release, update the crate version and changelog, run the full verification
+gate, and push an annotated `v<crate-version>` tag. The tag push runs the publishing
+workflow. The workflow rejects a tag that does not point at the checked-out commit,
+whose commit is not on `main`, or that does not match the `md-crdt` package version.
+
+Because `v0.3.0` predates the publishing workflow, publish it after configuring the
+Trusted Publisher by manually running **Publish to crates.io** with `tag` set to
+`v0.3.0`.
+
 ## Project Structure
 
 ```text

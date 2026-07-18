@@ -9,6 +9,7 @@ description = "Conflict-free replicated data types for collaborative markdown ed
 readme = "README.md"
 keywords = ["crdt", "collaborative", "markdown", "sync", "offline-first"]
 categories = ["data-structures", "text-processing", "algorithms"]
+publish = ["crates-io"]
 
 [workspace]
 members = [
