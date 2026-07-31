@@ -2311,6 +2311,9 @@ fn sync_tree(
                 (BlockKind::Table { .. }, BlockKind::Table { table }) => {
                     ops += sync_table(session, ob.id, table)?;
                 }
+                (BlockKind::List { .. }, BlockKind::List { style, items, .. }) => {
+                    ops += sync_list(session, ob.id, *style, items)?;
+                }
                 (BlockKind::Paragraph { text: old_t }, BlockKind::Paragraph { text: new_t })
                 | (
                     BlockKind::Heading { text: old_t, .. },
@@ -2332,6 +2335,70 @@ fn sync_tree(
         let (elem, n) = insert_one(session, parent, after, nb)?;
         ops += n;
         after = Some(elem);
+    }
+
+    Ok(ops)
+}
+
+fn sync_list(
+    session: &mut CollaborativeDocument,
+    list_id: BlockId,
+    desired_style: crate::doc::ListStyle,
+    desired_items: &Sequence<ListItem>,
+) -> Result<usize, VaultError> {
+    let (current_style, current_items) = session
+        .document()
+        .find_block_by_id(list_id)
+        .and_then(|block| match &block.kind {
+            BlockKind::List { style, items, .. } => {
+                Some((*style, items.iter_asc().cloned().collect::<Vec<_>>()))
+            }
+            _ => None,
+        })
+        .ok_or(VaultError::UnsupportedIngestBlock("missing matched list"))?;
+    let desired_items: Vec<ListItem> = desired_items.iter_asc().cloned().collect();
+    let shared = current_items.len().min(desired_items.len());
+    let mut ops = 0usize;
+
+    if current_style != desired_style {
+        session
+            .set_list_style(list_id, desired_style)
+            .map_err(session_err)?;
+        ops += 1;
+    }
+
+    for index in 0..shared {
+        let current = &current_items[index];
+        let desired = &desired_items[index];
+        if current.task != desired.task {
+            session
+                .set_list_item_task(current.id, desired.task)
+                .map_err(session_err)?;
+            ops += 1;
+        }
+        let old_children: Vec<Block> = current.children.iter_asc().cloned().collect();
+        let new_children: Vec<&Block> = desired.children.iter_asc().collect();
+        ops += sync_tree(session, Some(current.elem_id), &old_children, &new_children)?;
+    }
+
+    for current in current_items.iter().skip(shared) {
+        session.delete_list_item(current.id).map_err(session_err)?;
+        ops += 1;
+    }
+
+    let mut after = current_items.last().map(|item| item.elem_id);
+    for desired in desired_items.iter().skip(shared) {
+        let item_elem = session
+            .insert_list_item(list_id, after, desired.task)
+            .map_err(session_err)?;
+        ops += 1;
+        let mut after_child = None;
+        for child in desired.children.iter_asc() {
+            let (child_elem, child_ops) = insert_one(session, Some(item_elem), after_child, child)?;
+            after_child = Some(child_elem);
+            ops += child_ops;
+        }
+        after = Some(item_elem);
     }
 
     Ok(ops)

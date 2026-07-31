@@ -94,6 +94,45 @@ fn ingest_preserves_list_structure_and_text() {
 }
 
 #[test]
+fn reingest_add_list_item_preserves_list_and_existing_item_id() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("l.md");
+    fs::write(&path, "- alpha\n").unwrap();
+
+    let mut vs = VaultSession::open(dir.path()).unwrap();
+    vs.ingest_all().unwrap();
+    let (list_id, first_item_id) = {
+        let top = &vs.session_mut("l.md").unwrap().document().blocks_in_order()[0];
+        let BlockKind::List { items, .. } = &top.kind else {
+            panic!("expected list");
+        };
+        (top.id, items.iter().next().unwrap().id)
+    };
+
+    fs::write(&path, "- alpha\n- beta\n").unwrap();
+    let report = vs.ingest_all().unwrap();
+    assert_eq!(report.files_changed, 1);
+    assert!(report.ops_emitted > 0);
+
+    let top = &vs.session_mut("l.md").unwrap().document().blocks_in_order()[0];
+    assert_eq!(top.id, list_id);
+    let BlockKind::List { items, .. } = &top.kind else {
+        panic!("expected list");
+    };
+    let items: Vec<_> = items.iter().collect();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].id, first_item_id);
+    let text = |item: &md_crdt::doc::ListItem| {
+        item.children.iter().next().map(|block| match &block.kind {
+            BlockKind::Paragraph { text } => paragraph_visible_string(text),
+            _ => String::new(),
+        })
+    };
+    assert_eq!(text(items[0]).as_deref(), Some("alpha"));
+    assert_eq!(text(items[1]).as_deref(), Some("beta"));
+}
+
+#[test]
 fn table_ingest_preserves_column_row_and_unrelated_prose_ids() {
     let dir = tempdir().unwrap();
     fs::write(
