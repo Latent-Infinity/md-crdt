@@ -226,9 +226,8 @@ fn find_link_target_end(input: &str) -> Option<usize> {
 }
 
 pub(super) fn serialize_text(block: &Block, text: &Sequence<TextUnit>) -> String {
-    let ids = paragraph_visible_ids(text);
     let graphemes: Vec<&str> = text.iter().map(|unit| unit.grapheme.as_str()).collect();
-    let resolved = block.marks.resolved_intervals(&ids);
+    let resolved = block.marks.resolved_intervals_in_sequence(text);
     if resolved.is_empty() {
         return graphemes.concat();
     }

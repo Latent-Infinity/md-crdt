@@ -68,6 +68,7 @@ fn semantic_projection_matches_authoritative_markdown_model() {
     assert_eq!(paragraph.text.as_deref(), Some("alpha bold link"));
     let marks = paragraph.marks.as_ref().unwrap();
     assert_eq!(marks.len(), 2);
+    assert!(marks.iter().all(|mark| mark.interval_id.is_none()));
     assert_eq!(marks[0].kind, MarkKind::Bold);
     assert_eq!(marks[1].kind, MarkKind::Link);
     assert_eq!(
@@ -84,6 +85,21 @@ fn semantic_projection_matches_authoritative_markdown_model() {
         paragraph.text_ranges.as_ref().unwrap()[0].start.position,
         TextPosition::Start
     ));
+
+    let full = vault
+        .project_blocks(
+            "note.md",
+            request(&handle, vec![ids[1]], ProjectionFields::ALL),
+        )
+        .unwrap();
+    assert!(
+        full.items[0]
+            .marks
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|mark| mark.interval_id.is_some())
+    );
 
     let list = &page.items[2];
     assert_eq!(list.text.as_deref(), Some("one\ntwo"));
@@ -138,6 +154,64 @@ fn semantic_projection_matches_authoritative_markdown_model() {
         serde_json::from_slice::<md_crdt::ProjectionPage>(&serde_json::to_vec(&page).unwrap())
             .unwrap();
     assert_eq!(round_trip, page);
+}
+
+#[test]
+fn marked_boundary_replacement_preserves_exact_markdown() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("note.md"), "prefix **47.6%** suffix\n").unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    let handle = vault.open_document("note.md").unwrap();
+    let block_id = vault
+        .descriptor_page("note.md", None, None, 1)
+        .unwrap()
+        .items[0]
+        .id;
+    let delete = WorkspaceEdit::DeleteText {
+        range: vault.text_range("note.md", block_id, 7..11).unwrap(),
+    };
+    let insert = WorkspaceEdit::InsertText {
+        at: vault.text_point("note.md", block_id, 11).unwrap(),
+        text: "46.7".into(),
+    };
+
+    vault
+        .apply_edit_batch(
+            "note.md",
+            EditBatch {
+                document_id: handle.document_id,
+                base_revision: handle.revision,
+                operations: vec![
+                    WorkspaceMutation::strict(delete),
+                    WorkspaceMutation::strict(insert),
+                ],
+            },
+        )
+        .unwrap();
+
+    let current = vault.open_document("note.md").unwrap();
+    let exact = vault
+        .project_blocks(
+            "note.md",
+            request(&current, vec![block_id], ProjectionFields::EXACT),
+        )
+        .unwrap();
+    assert_eq!(
+        exact.items[0].exact.as_ref().unwrap().markdown,
+        "prefix **46.7%** suffix"
+    );
+
+    let semantic = vault
+        .project_blocks(
+            "note.md",
+            request(&current, vec![block_id], ProjectionFields::SEMANTIC),
+        )
+        .unwrap();
+    let mark = &semantic.items[0].marks.as_ref().unwrap()[0];
+    assert_eq!(
+        vault.resolve_text_range("note.md", &mark.range).unwrap(),
+        7..12
+    );
 }
 
 #[test]

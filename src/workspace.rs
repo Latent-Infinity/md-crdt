@@ -1,6 +1,6 @@
 //! Concrete, transport-agnostic workspace contract types.
 
-use crate::core::mark::{Anchor, AnchorBias, MarkKind, MarkValue};
+use crate::core::mark::{Anchor, AnchorBias, MarkIntervalId, MarkKind, MarkValue};
 use crate::core::{OpId, Sequence};
 use crate::doc::{
     Block, BlockId, BlockKind, ColumnAlignment, ColumnDef, ColumnId, Document, ListItem, RowId,
@@ -428,6 +428,8 @@ impl ProjectionFields {
     pub const CONTENT_DIGEST: Self = Self(1 << 4);
     pub const TEXT_POINTS: Self = Self(1 << 5);
     pub const EXACT_MARKDOWN: Self = Self(1 << 6);
+    /// Include stable mark interval identities for mutation workflows.
+    pub const MARK_IDENTITIES: Self = Self(1 << 7);
     pub const ALL: Self = Self(
         Self::KIND.0
             | Self::TEXT.0
@@ -435,7 +437,8 @@ impl ProjectionFields {
             | Self::STRUCTURE.0
             | Self::CONTENT_DIGEST.0
             | Self::TEXT_POINTS.0
-            | Self::EXACT_MARKDOWN.0,
+            | Self::EXACT_MARKDOWN.0
+            | Self::MARK_IDENTITIES.0,
     );
     pub const MINIMAL: Self = Self(Self::KIND.0 | Self::CONTENT_DIGEST.0);
     pub const SEMANTIC: Self = Self(
@@ -534,6 +537,9 @@ pub enum BlockProjectionStructure {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectedMark {
+    /// Stable interval identity, included only when mark identities are requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval_id: Option<MarkIntervalId>,
     pub range: TextRange,
     pub kind: MarkKind,
     pub attrs: BTreeMap<String, MarkValue>,
@@ -1449,7 +1455,11 @@ impl Document {
             .contains(ProjectionFields::MARKS)
             .then(|| {
                 let mut marks = Vec::new();
-                collect_projection_marks(node, &mut marks)?;
+                collect_projection_marks(
+                    node,
+                    fields.contains(ProjectionFields::MARK_IDENTITIES),
+                    &mut marks,
+                )?;
                 Ok(marks)
             })
             .transpose()?;
@@ -1940,21 +1950,26 @@ fn text_range_for_sequence(
 
 fn collect_projection_marks(
     node: ProjectionNode<'_>,
+    include_interval_id: bool,
     output: &mut Vec<ProjectedMark>,
 ) -> Result<(), ProjectionError> {
     match node {
         ProjectionNode::ListItem(item) => {
             for child in item.children.iter() {
-                collect_projection_marks(ProjectionNode::Block(child), output)?;
+                collect_projection_marks(
+                    ProjectionNode::Block(child),
+                    include_interval_id,
+                    output,
+                )?;
             }
         }
         ProjectionNode::Block(block) => {
             if let Some(text) = block_text_seq(&block.kind) {
-                let ids = paragraph_visible_ids(text);
-                for (interval, start, end) in block.marks.resolved_intervals(&ids) {
+                for (interval, start, end) in block.marks.resolved_intervals_in_sequence(text) {
                     let range = text_range_for_sequence(block.id, text, start..end)
                         .map_err(|_| ProjectionError::Serialization)?;
                     output.push(ProjectedMark {
+                        interval_id: include_interval_id.then_some(interval.id),
                         range,
                         kind: interval.kind.clone(),
                         attrs: interval
@@ -1968,12 +1983,20 @@ fn collect_projection_marks(
             match &block.kind {
                 BlockKind::BlockQuote { children } => {
                     for child in children.iter() {
-                        collect_projection_marks(ProjectionNode::Block(child), output)?;
+                        collect_projection_marks(
+                            ProjectionNode::Block(child),
+                            include_interval_id,
+                            output,
+                        )?;
                     }
                 }
                 BlockKind::List { items, .. } => {
                     for item in items.iter() {
-                        collect_projection_marks(ProjectionNode::ListItem(item), output)?;
+                        collect_projection_marks(
+                            ProjectionNode::ListItem(item),
+                            include_interval_id,
+                            output,
+                        )?;
                     }
                 }
                 _ => {}
@@ -2346,8 +2369,7 @@ fn hash_block_node(digest: &mut StableDigest, block: &Block) {
             digest.field(unit.grapheme.as_bytes());
         }
         if block.marks.iter_active_intervals().next().is_some() {
-            let ids = paragraph_visible_ids(text);
-            hash_semantic_marks(digest, block, &ids, 0..ids.len());
+            hash_semantic_marks(digest, block, text, 0..text.len_visible());
         }
     }
 }
@@ -2365,8 +2387,7 @@ fn text_range_digest(document: &Document, range: &TextRange) -> Result<u64, Work
         digest.field(unit.grapheme.as_bytes());
     }
     if block.marks.iter_active_intervals().next().is_some() {
-        let ids = paragraph_visible_ids(text);
-        hash_semantic_marks(&mut digest, block, &ids, resolved);
+        hash_semantic_marks(&mut digest, block, text, resolved);
     }
     Ok(digest.finish())
 }
@@ -2376,11 +2397,11 @@ type SemanticMark = (MarkKind, Vec<(String, MarkValue)>);
 fn hash_semantic_marks(
     digest: &mut StableDigest,
     block: &Block,
-    ids: &[OpId],
+    text: &Sequence<crate::doc::TextUnit>,
     range: Range<usize>,
 ) {
     let mut runs: Vec<(usize, usize, BTreeSet<SemanticMark>)> = Vec::new();
-    for span in block.marks.render_spans(ids, ids.len()) {
+    for span in block.marks.render_spans_in_sequence(text) {
         let start = span.start.max(range.start);
         let end = span.end.min(range.end);
         if start >= end {

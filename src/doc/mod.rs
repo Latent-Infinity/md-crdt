@@ -2158,7 +2158,7 @@ impl Document {
         Ok(ops)
     }
 
-    /// Render mark spans over a paragraph block using visible text-unit order.
+    /// Render mark spans over a paragraph block using tombstone-aware text-unit order.
     pub fn render_paragraph_spans(
         &self,
         block_id: BlockId,
@@ -2169,8 +2169,7 @@ impl Document {
         let Some(text) = block_text_seq(&block.kind) else {
             return Err(EditError::InvalidOffset);
         };
-        let order = paragraph_visible_ids(text);
-        Ok(block.marks.render_spans(&order, order.len()))
+        Ok(block.marks.render_spans_in_sequence(text))
     }
 
     /// Convert a non-empty half-open grapheme range to stable unit anchors.

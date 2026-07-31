@@ -3,7 +3,7 @@
 //! This module provides a CRDT-based mark system for rich text formatting,
 //! supporting operations like bold, italic, links, and custom marks.
 
-use super::{LwwRegister, OpId, StateVector};
+use super::{LwwRegister, OpId, Sequence, StateVector};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 
@@ -221,24 +221,43 @@ impl MarkSet {
     }
 
     pub fn render_spans(&self, element_order: &[OpId], visible_len: usize) -> Vec<Span> {
-        let mut index_map: BTreeMap<OpId, usize> = BTreeMap::new();
-        for (visible_index, id) in element_order.iter().enumerate() {
-            index_map.insert(*id, visible_index);
-        }
+        let offsets = visible_anchor_offsets(element_order);
+        self.render_spans_with_offsets(&offsets, visible_len)
+    }
 
+    /// Active intervals resolved to half-open visible grapheme ranges.
+    pub fn resolved_intervals(&self, element_order: &[OpId]) -> Vec<(&MarkInterval, usize, usize)> {
+        let offsets = visible_anchor_offsets(element_order);
+        self.resolved_intervals_with_offsets(&offsets, element_order.len())
+    }
+
+    /// Render mark spans while preserving anchors that point at tombstoned elements.
+    pub fn render_spans_in_sequence<T: Clone>(&self, sequence: &Sequence<T>) -> Vec<Span> {
+        let (offsets, visible_len) = sequence_anchor_offsets(sequence);
+        self.render_spans_with_offsets(&offsets, visible_len)
+    }
+
+    /// Resolve active intervals while preserving anchors that point at tombstoned elements.
+    pub fn resolved_intervals_in_sequence<T: Clone>(
+        &self,
+        sequence: &Sequence<T>,
+    ) -> Vec<(&MarkInterval, usize, usize)> {
+        let (offsets, visible_len) = sequence_anchor_offsets(sequence);
+        self.resolved_intervals_with_offsets(&offsets, visible_len)
+    }
+
+    fn render_spans_with_offsets(&self, offsets: &AnchorOffsets, visible_len: usize) -> Vec<Span> {
         let mut marks_at: Vec<Vec<MarkIntervalId>> = vec![Vec::new(); visible_len + 1];
         for interval in self.iter_active_intervals() {
-            let start = resolve_anchor(&interval.start, &index_map, visible_len);
-            let end = resolve_anchor(&interval.end, &index_map, visible_len);
+            let start = resolve_anchor(&interval.start, offsets, visible_len);
+            let end = resolve_anchor(&interval.end, offsets, visible_len);
             let (from, to) = if start <= end {
                 (start, end)
             } else {
                 (end, start)
             };
-            for idx in from..to {
-                if idx < marks_at.len() {
-                    marks_at[idx].push(interval.id);
-                }
+            for marks in marks_at.iter_mut().take(to).skip(from) {
+                marks.push(interval.id);
             }
         }
 
@@ -247,11 +266,9 @@ impl MarkSet {
             marks.dedup();
         }
 
-        // Pre-allocate spans - worst case is one span per position
         let mut spans = Vec::with_capacity(visible_len.min(64));
         let mut start = 0usize;
         while start < visible_len {
-            // Use std::mem::take to move instead of clone where possible
             let current = std::mem::take(&mut marks_at[start]);
             let mut end = start + 1;
             while end < visible_len && marks_at[end] == current {
@@ -268,18 +285,15 @@ impl MarkSet {
         spans
     }
 
-    /// Active intervals resolved to half-open visible grapheme ranges.
-    pub fn resolved_intervals(&self, element_order: &[OpId]) -> Vec<(&MarkInterval, usize, usize)> {
-        let index_map: BTreeMap<OpId, usize> = element_order
-            .iter()
-            .enumerate()
-            .map(|(index, id)| (*id, index))
-            .collect();
-        let len = element_order.len();
+    fn resolved_intervals_with_offsets(
+        &self,
+        offsets: &AnchorOffsets,
+        visible_len: usize,
+    ) -> Vec<(&MarkInterval, usize, usize)> {
         self.iter_active_intervals()
             .map(|interval| {
-                let start = resolve_anchor(&interval.start, &index_map, len);
-                let end = resolve_anchor(&interval.end, &index_map, len);
+                let start = resolve_anchor(&interval.start, offsets, visible_len);
+                let end = resolve_anchor(&interval.end, offsets, visible_len);
                 (interval, start.min(end), start.max(end))
             })
             .collect()
@@ -292,11 +306,83 @@ impl Default for MarkSet {
     }
 }
 
-fn resolve_anchor(anchor: &Anchor, index_map: &BTreeMap<OpId, usize>, len: usize) -> usize {
-    let base = index_map.get(&anchor.elem_id).copied().unwrap_or(0);
+type AnchorOffsets = BTreeMap<OpId, (usize, usize)>;
+
+fn visible_anchor_offsets(element_order: &[OpId]) -> AnchorOffsets {
+    element_order
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (*id, (index, index + 1)))
+        .collect()
+}
+
+fn sequence_anchor_offsets<T: Clone>(sequence: &Sequence<T>) -> (AnchorOffsets, usize) {
+    let elements: Vec<_> = sequence.iter_all().collect();
+    let mut visible_offset = 0usize;
+    let mut offsets = BTreeMap::new();
+    let mut insertion_offsets = BTreeMap::new();
+
+    for element in &elements {
+        let before = visible_offset;
+        let insertion_offset = if element.value.is_some() {
+            visible_offset += 1;
+            visible_offset
+        } else {
+            element
+                .after
+                .and_then(|parent| insertion_offsets.get(&parent).copied())
+                .unwrap_or(0)
+        };
+        let anchor_before = if element.value.is_some() {
+            before
+        } else {
+            insertion_offset
+        };
+        let anchor_after = if element.value.is_some() {
+            visible_offset
+        } else {
+            anchor_before
+        };
+        offsets.insert(element.id, (anchor_before, anchor_after));
+        insertion_offsets.insert(element.id, insertion_offset);
+    }
+
+    let mut descendant_offsets = BTreeMap::new();
+    for element in elements.iter().rev() {
+        let candidate = if element.value.is_some() {
+            offsets.get(&element.id).map(|(before, _)| *before)
+        } else {
+            descendant_offsets.get(&element.id).copied()
+        };
+        if let (Some(parent), Some(candidate)) = (element.after, candidate) {
+            descendant_offsets
+                .entry(parent)
+                .and_modify(|offset: &mut usize| *offset = (*offset).min(candidate))
+                .or_insert(candidate);
+        }
+    }
+
+    for element in elements {
+        if element.value.is_none()
+            && let Some(after) = descendant_offsets.get(&element.id)
+            && let Some((_, anchor_after)) = offsets.get_mut(&element.id)
+        {
+            *anchor_after = *after;
+        }
+    }
+
+    (offsets, visible_offset)
+}
+
+fn resolve_anchor(anchor: &Anchor, offsets: &AnchorOffsets, len: usize) -> usize {
+    let fallback_after = usize::from(len > 0);
+    let (before, after) = offsets
+        .get(&anchor.elem_id)
+        .copied()
+        .unwrap_or((0, fallback_after));
     match anchor.bias {
-        AnchorBias::Before => base,
-        AnchorBias::After => (base + 1).min(len),
+        AnchorBias::Before => before.min(len),
+        AnchorBias::After => after.min(len),
     }
 }
 

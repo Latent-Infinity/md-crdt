@@ -2464,10 +2464,9 @@ fn mark_specs(block: &Block) -> Vec<MarkSpec> {
     let Some(text) = crate::doc::block_text_seq(&block.kind) else {
         return Vec::new();
     };
-    let ids = crate::doc::paragraph_visible_ids(text);
     block
         .marks
-        .resolved_intervals(&ids)
+        .resolved_intervals_in_sequence(text)
         .into_iter()
         .map(|(interval, start, end)| {
             (
