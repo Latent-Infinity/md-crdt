@@ -298,6 +298,7 @@ fn lifecycle_and_export_preconditions_reject_ambiguous_requests() {
     let unchanged = vault.export_markdown_transaction(vec![request]).unwrap();
     assert_eq!(unchanged.documents.len(), 1);
     assert!(!unchanged.documents[0].changed);
+    assert_eq!(unchanged.documents[0].bytes_written, 0);
     let transaction_dir = dir.path().join(".mdcrdt/transactions");
     assert!(!transaction_dir.exists() || fs::read_dir(transaction_dir).unwrap().next().is_none());
 

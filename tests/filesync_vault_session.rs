@@ -124,6 +124,53 @@ fn unexported_change_oracle_tracks_local_divergence_from_the_disk_baseline() {
 }
 
 #[test]
+fn restart_rejects_divergent_disk_and_session_without_discarding_either() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("note.md");
+    fs::write(&path, "alpha\n").unwrap();
+    {
+        let mut vault = VaultSession::open(dir.path()).unwrap();
+        vault.open_document("note.md").unwrap();
+        let block_id = vault
+            .session_mut("note.md")
+            .unwrap()
+            .document()
+            .blocks_in_order()[0]
+            .id;
+        vault
+            .session_mut("note.md")
+            .unwrap()
+            .insert_text(block_id, 5, " local")
+            .unwrap();
+        vault.save_state("note.md").unwrap();
+    }
+
+    fs::write(&path, "external\n").unwrap();
+    let mut restarted = VaultSession::open(dir.path()).unwrap();
+    assert!(matches!(
+        restarted.open_document("note.md"),
+        Err(VaultError::StaleDisk { .. })
+    ));
+    assert_eq!(fs::read_to_string(path).unwrap(), "external\n");
+}
+
+#[test]
+fn restart_ingests_an_external_change_when_session_has_no_local_edits() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("note.md");
+    fs::write(&path, "alpha\n").unwrap();
+    VaultSession::open(dir.path())
+        .unwrap()
+        .open_document("note.md")
+        .unwrap();
+
+    fs::write(&path, "external\n").unwrap();
+    let mut restarted = VaultSession::open(dir.path()).unwrap();
+    restarted.open_document("note.md").unwrap();
+    assert_eq!(document_text(&mut restarted, "note.md"), "external");
+}
+
+#[test]
 fn persisted_session_size_stays_bounded_across_both_storage_slots() {
     let dir = tempdir().unwrap();
     let markdown = format!("{}\n", "a".repeat(16 * 1024));

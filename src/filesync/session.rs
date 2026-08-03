@@ -91,21 +91,39 @@ impl VaultSession {
         Ok(id)
     }
 
-    /// Open the concrete workspace document, ingesting disk content for an empty session.
+    /// Open the concrete workspace document without discarding restart-time divergence.
     pub fn open_document(
         &mut self,
         rel_path: impl AsRef<Path>,
     ) -> Result<DocumentHandle, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
         self.document_id(&rel)?;
-        let session_empty = self.session(&rel)?.document().blocks_in_order().is_empty();
-        let needs_ingest = session_empty
-            || self
-                .vault
-                .read_last_flushed(&self.vault.path.join(&rel))?
-                .is_none();
-        if needs_ingest {
-            self.ingest_file_unchecked(&rel)?;
+        self.session(&rel)?;
+        let path = self.vault.path.join(&rel);
+        match self.vault.read_last_flushed(&path)? {
+            None => {
+                self.ingest_file_unchecked(&rel)?;
+            }
+            Some(baseline) => {
+                let disk_markdown = fs::read_to_string(&path)?;
+                let session_markdown = self
+                    .docs
+                    .get(&rel)
+                    .expect("session opened above")
+                    .document()
+                    .serialize(crate::doc::EquivalenceMode::Exact);
+                let disk_changed = hash_string(&disk_markdown) != baseline.content_hash;
+                let session_changed = hash_string(&session_markdown) != baseline.content_hash;
+                if disk_changed && session_changed && disk_markdown != session_markdown {
+                    return Err(VaultError::StaleDisk {
+                        expected: None,
+                        actual: disk_fingerprint(&path)?,
+                    });
+                }
+                if disk_changed && !session_changed {
+                    self.ingest_file_unchecked(&rel)?;
+                }
+            }
         }
         self.document_handle(&rel)
     }
@@ -773,7 +791,11 @@ impl VaultSession {
                 document_id: export.document_id,
                 revision,
                 disk_fingerprint: disk_fingerprint(&path)?,
-                bytes_written: export.markdown.len(),
+                bytes_written: if export.changed {
+                    export.markdown.len()
+                } else {
+                    0
+                },
                 changed: export.changed,
                 changes,
             });
