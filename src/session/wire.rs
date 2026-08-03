@@ -386,16 +386,14 @@ pub(super) fn apply_envelope_to_document(document: &mut Document, envelope: &Env
                 let Some(body) = crate::doc::block_text_seq_mut(&mut block.kind) else {
                     return;
                 };
-                for u in units {
-                    body.apply(SequenceOp::Insert {
-                        after: u.after,
-                        id: u.id,
-                        value: TextUnit {
-                            grapheme: u.grapheme.clone(),
-                        },
-                        right_origin: u.right_origin,
-                    });
-                }
+                body.apply_batch(units.iter().map(|u| SequenceOp::Insert {
+                    after: u.after,
+                    id: u.id,
+                    value: TextUnit {
+                        grapheme: u.grapheme.clone(),
+                    },
+                    right_origin: u.right_origin,
+                }));
             });
         }
         OpBody::Doc(DocOp::DeleteText {

@@ -125,6 +125,27 @@ impl<T: Clone> Sequence<T> {
         self.debug_assert_incremental_order();
     }
 
+    pub(crate) fn apply_batch(&mut self, ops: impl IntoIterator<Item = SequenceOp<T>>) {
+        #[cfg(feature = "sequence_incremental")]
+        for op in ops {
+            self.apply(op);
+        }
+
+        #[cfg(not(feature = "sequence_incremental"))]
+        {
+            let mut inserted = false;
+            for op in ops {
+                if let Some(inserted_id) = self.apply_now_with_rebuild(op, false) {
+                    inserted = true;
+                    inserted |= self.process_pending_inner(inserted_id, false);
+                }
+            }
+            if inserted {
+                self.rebuild_order();
+            }
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.elements.iter().filter_map(|elem| elem.value.as_ref())
     }
@@ -273,16 +294,6 @@ impl<T: Clone> Sequence<T> {
 
     pub fn element_ids(&self) -> Vec<OpId> {
         self.elements.iter().map(|elem| elem.id).collect()
-    }
-
-    fn apply_insert(
-        &mut self,
-        after: Option<OpId>,
-        id: &OpId,
-        value: &T,
-        right_origin: Option<OpId>,
-    ) -> bool {
-        self.apply_insert_internal(after, id, value, right_origin, true)
     }
 
     fn apply_insert_internal(
@@ -460,10 +471,17 @@ impl<T: Clone> Sequence<T> {
         children: &BTreeMap<Option<OpId>, Vec<OpId>>,
         out: &mut Vec<OpId>,
     ) {
-        if let Some(kids) = children.get(&parent) {
-            for id in kids {
-                out.push(*id);
-                Self::walk_children(Some(*id), children, out);
+        let mut stack = children
+            .get(&parent)
+            .into_iter()
+            .flatten()
+            .rev()
+            .copied()
+            .collect::<Vec<_>>();
+        while let Some(id) = stack.pop() {
+            out.push(id);
+            if let Some(kids) = children.get(&Some(id)) {
+                stack.extend(kids.iter().rev().copied());
             }
         }
     }
@@ -476,6 +494,10 @@ impl<T: Clone> Sequence<T> {
     }
 
     fn apply_now(&mut self, op: SequenceOp<T>) -> Option<OpId> {
+        self.apply_now_with_rebuild(op, true)
+    }
+
+    fn apply_now_with_rebuild(&mut self, op: SequenceOp<T>, rebuild: bool) -> Option<OpId> {
         match op {
             SequenceOp::Insert {
                 after,
@@ -483,7 +505,7 @@ impl<T: Clone> Sequence<T> {
                 value,
                 right_origin,
             } => {
-                if self.apply_insert(after, &id, &value, right_origin) {
+                if self.apply_insert_internal(after, &id, &value, right_origin, rebuild) {
                     Some(id)
                 } else {
                     if let Some(anchor) = after {
@@ -515,6 +537,14 @@ impl<T: Clone> Sequence<T> {
     }
 
     fn process_pending(&mut self, inserted_id: OpId) {
+        let inserted =
+            self.process_pending_inner(inserted_id, cfg!(feature = "sequence_incremental"));
+        if inserted && !cfg!(feature = "sequence_incremental") {
+            self.rebuild_order();
+        }
+    }
+
+    fn process_pending_inner(&mut self, inserted_id: OpId, rebuild: bool) -> bool {
         use std::collections::VecDeque;
         let mut queue = VecDeque::new();
         self.enqueue_pending(inserted_id, &mut queue);
@@ -528,13 +558,7 @@ impl<T: Clone> Sequence<T> {
                     value,
                     right_origin,
                 } => {
-                    if self.apply_insert_internal(
-                        after,
-                        &id,
-                        &value,
-                        right_origin,
-                        cfg!(feature = "sequence_incremental"),
-                    ) {
+                    if self.apply_insert_internal(after, &id, &value, right_origin, rebuild) {
                         inserted = true;
                         self.enqueue_pending(id, &mut queue);
                     } else if let Some(anchor) = after {
@@ -560,9 +584,7 @@ impl<T: Clone> Sequence<T> {
             }
         }
 
-        if inserted && !cfg!(feature = "sequence_incremental") {
-            self.rebuild_order();
-        }
+        inserted
     }
 
     fn enqueue_pending(&mut self, id: OpId, queue: &mut std::collections::VecDeque<SequenceOp<T>>) {
@@ -572,6 +594,47 @@ impl<T: Clone> Sequence<T> {
         if let Some(ops) = self.pending_deletes.remove(&id) {
             queue.extend(ops);
         }
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::{OpId, Sequence, SequenceOp};
+
+    fn id(counter: u64) -> OpId {
+        OpId { counter, peer: 1 }
+    }
+
+    fn insert(after: Option<OpId>, counter: u64, value: char) -> SequenceOp<char> {
+        SequenceOp::Insert {
+            after,
+            id: id(counter),
+            value,
+            right_origin: None,
+        }
+    }
+
+    #[test]
+    fn batched_apply_matches_individual_apply_and_promotes_pending_ops() {
+        let pending = insert(Some(id(3)), 4, 'd');
+        let chain = vec![
+            insert(None, 1, 'a'),
+            insert(Some(id(1)), 2, 'b'),
+            insert(Some(id(2)), 3, 'c'),
+        ];
+
+        let mut individual = Sequence::new();
+        individual.apply(pending.clone());
+        for op in chain.clone() {
+            individual.apply(op);
+        }
+
+        let mut batched = Sequence::new();
+        batched.apply(pending);
+        batched.apply_batch(chain);
+
+        assert_eq!(batched, individual);
+        assert_eq!(batched.iter().copied().collect::<String>(), "abcd");
     }
 }
 
