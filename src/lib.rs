@@ -42,6 +42,9 @@ pub mod core;
 // Document model, parser, and serializer
 pub mod doc;
 
+// Read-only Markdown query API (no session, no storage, no file system)
+pub mod read;
+
 // Synchronization protocol
 pub mod sync;
 
@@ -82,6 +85,9 @@ pub use doc::{
 
 // Re-export doc mark operations
 pub use doc::mark_ops;
+
+// Re-export read-only query types
+pub use read::{OutlineEntry, ReadBlock, ReadBlockKind, ReadDocument, ReadLink, SearchHit};
 
 // Re-export sync types
 pub use sync::{
