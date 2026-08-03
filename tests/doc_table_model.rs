@@ -105,11 +105,32 @@ fn parser_emits_gfm_table_with_alignment_and_rows() {
 
 #[test]
 fn invalid_table_delimiter_stays_a_paragraph() {
-    let document = Parser::parse("| A | B |\n| -- | --- |");
+    let document = Parser::parse("| A | B |\n| -x | --- |");
     assert!(matches!(
         document.blocks_in_order()[0].kind,
         BlockKind::Paragraph { .. }
     ));
+}
+
+#[test]
+fn one_and_two_dash_gfm_table_delimiters_are_valid() {
+    let document = Parser::parse("| A | B | C |\n| - | :- | -: |\n| 1 | 2 | 3 |");
+    let BlockKind::Table { table } = &document.blocks_in_order()[0].kind else {
+        panic!("expected a structured table");
+    };
+
+    assert_eq!(
+        table
+            .columns_in_order()
+            .into_iter()
+            .map(|column| column.alignment.get())
+            .collect::<Vec<_>>(),
+        vec![
+            ColumnAlignment::Left,
+            ColumnAlignment::Left,
+            ColumnAlignment::Right,
+        ]
+    );
 }
 
 #[test]

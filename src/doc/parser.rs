@@ -384,7 +384,7 @@ fn parse_table_delimiter(line: &str) -> Option<Vec<ColumnDef>> {
             let left = marker.starts_with(':');
             let right = marker.ends_with(':');
             let dashes = marker.trim_matches(':');
-            if dashes.len() < 3 || !dashes.chars().all(|c| c == '-') {
+            if dashes.is_empty() || !dashes.chars().all(|c| c == '-') {
                 return None;
             }
             Some(ColumnDef {
