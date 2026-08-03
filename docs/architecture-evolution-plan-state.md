@@ -4,13 +4,13 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 
 | Field | Value |
 | --- | --- |
-| **Plan** | `docs/architecture-evolution.md` (Draft revision 18) |
-| **Last updated** | 2026-07-16 |
+| **Plan** | `docs/architecture-evolution.md` (Draft revision 19) |
+| **Last updated** | 2026-08-02 |
 | **Tracking unit** | PR slices under design phases A–Q |
 | **Joint consumer plan** | `../md-mcp/docs/joint-md-crdt-v2-implementation-plan.md` |
 
-**Release compatibility policy:** only V6 session snapshots, wire V4, and current V2 dual-slot storage are
-accepted. Earlier completed entries record what landed historically; the temporary snapshot V1–V5
+**Release compatibility policy:** only V7 session snapshots, wire V4, and current V2 dual-slot storage are
+accepted. Earlier completed entries record what landed historically; the temporary snapshot V1–V6
 and storage V1 readers, upgrade branches, and fixtures are removed. Older vault state must be
 reinitialized and re-ingested from Markdown.
 
@@ -69,7 +69,7 @@ reinitialized and re-ingested from Markdown.
 - [x] In-memory paragraph as `Sequence<TextUnit>` (PR-06a)
 - [x] Parse + serialize round-trip on units
 - [x] insert_text inserts grapheme units (local API)
-- [x] Unit-backed snapshot format landed; temporary legacy readers were removed in PR-35 and the current structured-edit schema is V6
+- [x] Unit-backed snapshot format landed; temporary legacy readers were removed in PR-35 and the current bounded compressed schema is V7
 - [x] Wire InsertText/DeleteText + session commits (PR-06b)
 - [x] Concurrent multi-peer paragraph edits (PR-06b)
 
@@ -79,7 +79,7 @@ reinitialized and re-ingested from Markdown.
 | --- | --- | --- |
 | PR-05 before 06a? | **Skip optional PR-05** | MVP gate is 01–04 + 06a/b + 07 |
 | Unit OpIds on skeleton expand | `parent_elem.counter + 1 + i` same peer | Deterministic across peers; wire still only carries block id + string |
-| Snapshot paragraph body | Current V6 snapshot only; older readers removed | The joint pre-1.0 release has no migration obligation; one accepted representation reduces branches and synthetic-id risk |
+| Snapshot paragraph body | Current V7 snapshot only; older readers removed | The joint pre-1.0 release has no migration obligation; one accepted representation reduces branches and synthetic-id risk |
 | Span-aware sync (audit) | `Operation` covers a counter range `[e-span+1, e]`; `Operation.id` = max embedded id (N1); readiness gates on range start vs frontier | Lets one op reserve a contiguous id range (block + G units) without sparse op ids; span 1 = old behavior; unblocks multi-unit InsertText |
 | Unit-mode default | `CollaborativeDocument::new` → `unit_mode = true` | Phase B cutover; string-mode still available via `with_codec(..., false)` |
 | N6-d insert_paragraph | empty `InsertBlock` then `InsertText` (two commits) | Pure N1–N4; no skeleton range-seed |
@@ -100,7 +100,7 @@ reinitialized and re-ingested from Markdown.
 | Structured serialization | Canonical ATX headings and `-` / `1.` list markers | The runtime model intentionally does not retain source marker style; structural serialization prioritizes stable semantics and idempotence |
 | Table creation wire shape | `InsertBlock` carries header + column alignment only; rows use separate row DocOps | Preserves independent row identity and RGA concurrency without embedding mutable row history in a block skeleton |
 | Table cell granularity | Whole-cell `String` through the existing LWW register | PR-12 calls for row operations; per-cell text CRDT would expand scope beyond the existing model and belongs in a separately designed slice |
-| GFM delimiter recognition | Header count must match delimiter count; delimiter cells require at least three hyphens with optional edge colons | Matches the core GFM table shape while keeping parsing deterministic and dependency-free |
+| GFM delimiter recognition | Header count must match delimiter count; delimiter cells require at least one hyphen with optional edge colons | Matches the GFM table grammar while keeping parsing deterministic and dependency-free |
 | Split/merge wire shape | Atomic operation carries explicit source/destination unit ids and graphemes | Composing DeleteText + InsertBlock + InsertText always renumbers units and breaks mark anchors; persistent unit ownership would exceed this slice |
 | Merge id collisions | Preserve source unit ids unless the left sequence already retains the id (for example after split); allocate fresh contiguous ids only for collisions | Sequence tombstones intentionally prevent resurrection under an existing id; selective fallback preserves all identities that remain valid |
 | Split/merge block kinds | Paragraphs and headings; split retains heading level and merge retains the left kind | These are the existing text-unit block kinds; code/raw/table/list semantics require separately designed operations |
@@ -550,7 +550,7 @@ All verified with no functional bug; the critical CRDT-safety property (PR-33) h
 - [x] Exchange, delayed delivery, delete/move race, snapshot/reopen, exact-export locality, and
   unaffected-identity coverage
 - [x] Q-A/Q-B/Q-C API study and whole-value/text-unit code-body study recorded at required sizes
-- [x] Current-only wire V4, snapshot V6, workspace contract v5, and projection transcript v3
+- [x] Current-only wire V4, snapshot V7, workspace contract v5, and projection transcript v3
 
 ## Phase Q implementation outcome
 
@@ -574,8 +574,30 @@ All verified with no functional bug; the critical CRDT-safety property (PR-33) h
 - Scoped table-cell preconditions are cell-addressed; list task state participates in semantic
   digests/change summaries; and list moves bind source plus destination placement.
 
+## Post-release validation corrections — complete
+
+- Batched `InsertText` integration rebuilds sequence order once per run; iterative causal-tree
+  traversal prevents stack growth on long chains. The default and incremental implementations both
+  passed the 100,000-case differential oracle.
+- Snapshot V7 stores the current JSON DTO in a bounded compressed envelope. Tests cap a 16 KiB
+  paragraph snapshot at 20× source bytes and both durable slots at 40×, while exercising corrupt,
+  oversized, legacy-version, and round-trip recovery paths.
+- `VaultSession::has_unexported_changes` exposes session divergence from the last flushed disk
+  baseline for the companion server's two-direction conflict checks.
+- Vault discovery ignores hidden/build/generated directories, no-op export accounting reports zero
+  bytes, and valid one- and two-dash GFM table delimiters parse structurally.
+- The v3 projection transcript was regenerated because opaque revisions include persisted session
+  state; projected content, identities, and mutation semantics are unchanged.
+
 ## Gate
 
+- `just check` — **passed** for the post-release corrections (format, all-target/all-feature
+  warning-denied Clippy, full workspace tests, and doctests; 0 failures).
+- `just differential-test` — **passed** with 100,000 generated sequence cases in both the default
+  and `sequence_incremental` configurations.
+- `cargo llvm-cov --workspace --all-features --summary-only --quiet` — **passed** with 93.45%
+  repository line coverage; the changed core, session, snapshot, wire, and parser modules remain
+  above 90% line coverage.
 - `just check` — **passed** for PR-41 (format, all-target/all-feature warning-denied Clippy, full
   workspace tests and doctests, 0 failures).
 - `cargo llvm-cov --workspace --all-features --summary-only --quiet` — **passed**; 93.98%

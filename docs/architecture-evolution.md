@@ -5,7 +5,7 @@
 | **Document title** | Architecture Evolution Design for md-crdt |
 | **Author** | Travis Silvers |
 | **Date** | 2026-07-09 |
-| **Status** | Draft (revision 18 — Phases M–Q and release audit complete) |
+| **Status** | Draft (revision 19 — post-release persistence and ingest audit complete) |
 | **Repository** | `/Users/firestrand/Projects/latenty-infinity/md-crdt` |
 | **Current version** | `0.3.0` (pre-1.0; breaking changes allowed with changelog discipline) |
 | **License** | MIT |
@@ -34,10 +34,11 @@
 | **16** | Completed stable column identities and causally ordered cell-addressable table operations, with wire V2 and snapshot V4 | Independent cell edits now commute, row/column deletion wins, delayed causal delivery is retained, and agents can mutate one table cell without sending the row |
 | **17** | Completed validated structured creation and focused list, quote, code, conversion, and raw-block mutations, with wire V3 and snapshot V5 | Agents can perform bounded Markdown-aware edits without reparsing or replacing a whole document; scoped workflows retain identities and reduce request/dirty bytes |
 | **18** | Release audit hardened causal structured registers, stable-ID targeting after moves, list-move convergence, pending-sequence snapshots, rebase clocks, focused workspace guards, and Markdown list/table round trips; wire V4 and snapshot V6 | Closes silent no-op, divergence, stale-target, crash-recovery, false-accept/retry, and reparsing failures found before the 0.3.0 release |
+| **19** | Bounded compressed snapshot V7, batched/iterative text-unit integration, a public unexported-change oracle, valid short GFM table delimiters, and filtered vault discovery | Closes storage amplification, quadratic cold ingest, consumer disk-conflict blind spots, table false negatives, and metadata/build-tree traversal |
 
 **Compatibility policy (supersedes earlier migration notes):** completed sections below retain
 historical implementation details, but they are not release requirements. The joint release accepts
-only the current V6 session snapshot, current wire V4, and current V2 dual-slot storage format. V1–V5
+only the current V7 session snapshot, current wire V4, and current V2 dual-slot storage format. V1–V6
 session-snapshot readers and V1 storage readers/fixtures are removed; older vault state must be
 reinitialized and re-ingested from Markdown.
 
@@ -52,7 +53,7 @@ Each major recommendation was re-checked for **correctness, SOLID/DRY/KISS, and 
 | **A. Session + codec + opaque sync** | **Keep** | Highest leverage; only way layers connect without polluting `sync` with markdown |
 | **B. Phase A includes InsertBlock/DeleteBlock** | **Keep** | Tests already need block RGA; deferring forces fake E2E |
 | **C. N1 max-OpId envelope / N3 encode-before-apply / N4 wire `right_origin`** | **Keep** | Required for causal SV + RGA concurrency; no cheaper correct alternative |
-| **D. JSON ops + rkyv storage dual stack** | **Keep for 0.1** | Debuggability > wire size; compact codec is open extension, not default debt |
+| **D. JSON ops + compact storage dual stack** | **Keep for 0.1** | Debuggability > wire size; compact codec is open extension, not default debt |
 | **E. Deterministic BlockId (`from_u128`)** | **Keep** | v4 destroys identity for vault/tests; tiny change, high value |
 | **F. SessionSnapshot + multi-file VaultSession** | **Keep** | Vault is multi-file today; fingerprint-only state is not collab |
 | **G. Storage generation dual-superblock** | **Keep (post-MVP)** | Matches claimed crash-safety; not needed to prove collab |
@@ -577,7 +578,7 @@ pub enum CodecError {
 
 **Where empty-paragraph is enforced:** at the **session** layer (`check_insert_block_paragraph_empty` / encode helpers), only when the session is in **unit-mode** (after Phase B cutover), inspecting the decoded `Envelope`. The codec stays mode-agnostic and **never** unconditionally rejects non-empty paragraphs on decode (Phase A / historical payloads are valid). A pure predicate (`wire::insert_block_paragraph_is_empty(&Envelope) -> bool`) may live in `codec` for reuse, but the error is `SessionError::NonEmptyParagraphOnInsertBlock` — per-codec `Error` types stay free of this semantic rule so alternate codecs (Decision D) need not know it. See N6 A→B migration table.
 
-**Default wire format (decision):** `JsonOpCodec` is the **default for 0.1** (debug, fuzz corpus readability). Storage snapshots continue to use **rkyv** (already in tree). This is an intentional dual stack: human-inspectable ops vs compact durable snapshots. Expected size: ~50–200+ bytes JSON per keystroke unit envelope; paste of 1k graphemes may be tens of KB JSON—acceptable for 0.1; if profiling shows CPU/size pain, add `PostcardOpCodec` or `BincodeOpCodec` behind feature without changing `Envelope` semantics. JSON remains available for tests/debug even if default later switches.
+**Default wire format (decision):** `JsonOpCodec` is the **default for 0.1** (debug, fuzz corpus readability). Session snapshot V7 uses a bounded zlib envelope around its versioned JSON payload; storage superblocks and fingerprints continue to use **rkyv**. This is an intentional dual stack: human-inspectable ops vs compact durable state. Expected size: ~50–200+ bytes JSON per keystroke unit envelope; paste of 1k graphemes may be tens of KB JSON—acceptable for 0.1; if profiling shows CPU/size pain, add `PostcardOpCodec` or `BincodeOpCodec` behind feature without changing `Envelope` semantics. JSON remains available for tests/debug even if default later switches.
 
 #### EditOp / session API for blocks (Phase A)
 
@@ -1928,7 +1929,7 @@ remain green.
   3.316–3.359 ms at 1,000, including snapshot restore) is recorded honestly against the parser-only
   lower-bound control (0.263–0.268 ms and 2.626–2.672 ms); the selection rests on identity,
   convergence, and bounded request/dirty scope rather than a claimed parse-latency win.
-- Wire V4 and snapshot V6 are current-only. `workspace-contract-v5.json` freezes the producer API,
+- Wire V4 and snapshot V7 are current-only. `workspace-contract-v5.json` freezes the producer API,
   and `workspace-projection-transcript-v3.json` exercises paged map/read, prose/list/table/quote/code
   edits, stale-cursor restart, and scoped verification in 8,245 serialized core response bytes.
 
@@ -2279,7 +2280,7 @@ No panics in `apply_remote` / codec / storage library paths.
 20. **Trust model: trusted peers + local disk; limits are resource safety only.**  
     **Rationale:** Honest security boundary for a local CRDT library.
 
-21. **Unit-mode paragraph skeleton JSON stays `{ text: "" }`; units travel only through InsertText/DeleteText. The release accepts only V6 session snapshots and has no string-body snapshot upgrade path.**
+21. **Unit-mode paragraph skeleton JSON stays `{ text: "" }`; units travel only through InsertText/DeleteText. The release accepts only V7 session snapshots and has no string-body snapshot upgrade path.**
     **Rationale:** One current representation removes dead payload, migration branches, and synthetic identities.
 
 22. **Snapshot bootstrap: `restore_from_snapshot` = same peer crash recovery; `import_state` / `rebind_peer` = late join with local peer id.**  

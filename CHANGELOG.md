@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `VaultSession::has_unexported_changes` exposes the session-versus-disk-baseline oracle needed by
+  consumers to reject conflicting external and collaborative edits before refresh or export.
+
+### Changed
+
+- Breaking snapshot V7 wraps the versioned JSON state in a zlib-compressed envelope with an
+  authenticated declared length and a 512 MiB decompression limit. Non-current raw JSON snapshots
+  still report the actionable reinitialize/re-ingest error.
+- Batched text-unit integration rebuilds sequence order once per inserted run and uses iterative
+  traversal for long causal chains, removing quadratic cold-ingest behavior and stack growth.
+- Vault discovery skips hidden directories, `target`, and `graphify-out` trees.
+
+### Fixed
+
+- Accept valid one- and two-dash GFM table delimiter cells.
+- Report zero `bytes_written` when an export does not rewrite the Markdown file.
+- Bound persisted session storage across both crash-recovery slots instead of amplifying a small
+  Markdown file by hundreds of times.
+
 ## [0.3.0] - 2026-07-16
 
 ### Added
