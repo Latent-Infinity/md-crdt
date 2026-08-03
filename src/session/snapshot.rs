@@ -15,14 +15,22 @@ use thiserror::Error;
 
 /// Snapshot schema version (not wire `Envelope` version).
 ///
-/// v6: unresolved sequence inserts/deletes survive snapshot and checkpoint restore.
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 6;
+/// v7: snapshots use a bounded compressed envelope around the versioned JSON payload.
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 7;
+
+const SNAPSHOT_MAGIC: &[u8; 5] = b"MDSN\x01";
+const SNAPSHOT_HEADER_LEN: usize = SNAPSHOT_MAGIC.len() + size_of::<u64>();
+const MAX_SNAPSHOT_DECOMPRESSED_BYTES: usize = 512 * 1024 * 1024;
 
 /// Errors loading or decoding session snapshots.
 #[derive(Debug, Error)]
 pub enum SnapshotError {
     #[error("serde: {0}")]
     Serde(String),
+    #[error("snapshot encoding is corrupt: {0}")]
+    CorruptEncoding(&'static str),
+    #[error("snapshot expands to {size} bytes, exceeding the {max}-byte safety limit")]
+    SnapshotTooLarge { size: u64, max: usize },
     #[error(
         "snapshot format version {found} is unsupported; expected {expected}; reinitialize and re-ingest from Markdown"
     )]
@@ -211,12 +219,56 @@ impl DocumentDto {
 
 impl SessionSnapshot {
     pub fn to_bytes(&self) -> Result<Vec<u8>, SnapshotError> {
-        serde_json::to_vec(self).map_err(|e| SnapshotError::Serde(e.to_string()))
+        let json = serde_json::to_vec(self).map_err(|e| SnapshotError::Serde(e.to_string()))?;
+        if json.len() > MAX_SNAPSHOT_DECOMPRESSED_BYTES {
+            return Err(SnapshotError::SnapshotTooLarge {
+                size: json.len() as u64,
+                max: MAX_SNAPSHOT_DECOMPRESSED_BYTES,
+            });
+        }
+
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&json, 6);
+        let mut bytes = Vec::with_capacity(SNAPSHOT_HEADER_LEN + compressed.len());
+        bytes.extend_from_slice(SNAPSHOT_MAGIC);
+        bytes.extend_from_slice(&(json.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&compressed);
+        Ok(bytes)
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SnapshotError> {
+        let json;
+        let payload = if bytes.starts_with(SNAPSHOT_MAGIC) {
+            if bytes.len() < SNAPSHOT_HEADER_LEN {
+                return Err(SnapshotError::CorruptEncoding("truncated header"));
+            }
+            let declared_len = u64::from_le_bytes(
+                bytes[SNAPSHOT_MAGIC.len()..SNAPSHOT_HEADER_LEN]
+                    .try_into()
+                    .expect("snapshot header length was checked"),
+            );
+            if declared_len > MAX_SNAPSHOT_DECOMPRESSED_BYTES as u64 {
+                return Err(SnapshotError::SnapshotTooLarge {
+                    size: declared_len,
+                    max: MAX_SNAPSHOT_DECOMPRESSED_BYTES,
+                });
+            }
+            json = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
+                &bytes[SNAPSHOT_HEADER_LEN..],
+                MAX_SNAPSHOT_DECOMPRESSED_BYTES,
+            )
+            .map_err(|_| SnapshotError::CorruptEncoding("invalid compressed payload"))?;
+            if json.len() as u64 != declared_len {
+                return Err(SnapshotError::CorruptEncoding(
+                    "decompressed length does not match header",
+                ));
+            }
+            json.as_slice()
+        } else {
+            bytes
+        };
+
         let snap: Self =
-            serde_json::from_slice(bytes).map_err(|e| SnapshotError::Serde(e.to_string()))?;
+            serde_json::from_slice(payload).map_err(|e| SnapshotError::Serde(e.to_string()))?;
         if snap.format_version != SNAPSHOT_FORMAT_VERSION {
             return Err(SnapshotError::ReinitializeRequired {
                 found: snap.format_version,

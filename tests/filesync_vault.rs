@@ -35,6 +35,23 @@ fn test_vault_open_finds_markdown_files() {
 }
 
 #[test]
+fn vault_files_skip_metadata_build_and_hidden_directories() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("visible.md"), "visible").unwrap();
+    for hidden in [".git", ".mdcrdt", ".serena", "target", "graphify-out"] {
+        let nested = dir.path().join(hidden);
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("ignored.md"), "ignored").unwrap();
+    }
+
+    let vault = Vault::open(dir.path()).unwrap();
+    assert_eq!(
+        vault.files().collect::<Vec<_>>(),
+        vec![dir.path().join("visible.md")]
+    );
+}
+
+#[test]
 fn test_vault_open_errors_for_non_existent_path() {
     let dir = tempdir().unwrap();
     let non_existent_path = dir.path().join("non_existent");

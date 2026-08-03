@@ -110,6 +110,25 @@ impl VaultSession {
         self.document_handle(&rel)
     }
 
+    /// Report whether the open collaborative document differs from its last disk baseline.
+    pub fn has_unexported_changes(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+    ) -> Result<bool, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.ensure_session_open(&rel)?;
+        let baseline = self.vault.read_last_flushed(&self.vault.path.join(&rel))?;
+        let markdown = self
+            .docs
+            .get(&rel)
+            .expect("session opened above")
+            .document()
+            .serialize(crate::doc::EquivalenceMode::Exact);
+        Ok(baseline.map_or(!markdown.is_empty(), |baseline| {
+            hash_string(&markdown) != baseline.content_hash
+        }))
+    }
+
     pub fn revision(&mut self, rel_path: impl AsRef<Path>) -> Result<RevisionToken, VaultError> {
         let rel = normalize_rel(rel_path.as_ref())?;
         self.ensure_session_open(&rel)?;
@@ -516,7 +535,7 @@ impl VaultSession {
             document_id,
             revision,
             disk_fingerprint: disk_fingerprint(&path)?,
-            bytes_written: markdown.len(),
+            bytes_written: if changed { markdown.len() } else { 0 },
             changed,
             changes,
         })

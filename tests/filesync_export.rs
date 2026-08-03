@@ -239,6 +239,7 @@ fn re_export_of_unchanged_document_does_not_rewrite() {
         .export_markdown("note.md", &first.revision, first.disk_fingerprint)
         .unwrap();
     assert!(!second.changed, "unchanged re-export must not rewrite");
+    assert_eq!(second.bytes_written, 0);
     assert_eq!(fs::read_to_string(&path).unwrap(), published);
     assert_eq!(second.revision, first.revision);
 }

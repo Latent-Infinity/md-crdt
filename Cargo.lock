@@ -547,6 +547,7 @@ dependencies = [
  "criterion",
  "dhat",
  "md-crdt-naive-oracle",
+ "miniz_oxide",
  "predicates",
  "proptest",
  "rkyv",

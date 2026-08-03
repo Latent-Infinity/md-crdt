@@ -9,6 +9,7 @@ use md_crdt::{
 };
 use std::fs;
 use tempfile::tempdir;
+use walkdir::WalkDir;
 
 fn document_text(vault: &mut VaultSession, path: &str) -> String {
     vault
@@ -92,6 +93,56 @@ fn peer_id_persists_across_reopen() {
     };
     let vs2 = VaultSession::open(dir.path()).unwrap();
     assert_eq!(vs2.peer(), peer);
+}
+
+#[test]
+fn unexported_change_oracle_tracks_local_divergence_from_the_disk_baseline() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("note.md"), "alpha\n").unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    let opened = vault.open_document("note.md").unwrap();
+    assert!(!vault.has_unexported_changes("note.md").unwrap());
+
+    let block_id = vault
+        .session_mut("note.md")
+        .unwrap()
+        .document()
+        .blocks_in_order()[0]
+        .id;
+    vault
+        .session_mut("note.md")
+        .unwrap()
+        .insert_text(block_id, 5, " local")
+        .unwrap();
+    assert!(vault.has_unexported_changes("note.md").unwrap());
+
+    let revision = vault.revision("note.md").unwrap();
+    vault
+        .export_markdown("note.md", &revision, opened.disk_fingerprint)
+        .unwrap();
+    assert!(!vault.has_unexported_changes("note.md").unwrap());
+}
+
+#[test]
+fn persisted_session_size_stays_bounded_across_both_storage_slots() {
+    let dir = tempdir().unwrap();
+    let markdown = format!("{}\n", "a".repeat(16 * 1024));
+    fs::write(dir.path().join("note.md"), &markdown).unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    vault.open_document("note.md").unwrap();
+    vault.save_state("note.md").unwrap();
+
+    let persisted_bytes = WalkDir::new(dir.path().join(".mdcrdt"))
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.metadata().unwrap().len())
+        .sum::<u64>();
+    assert!(
+        persisted_bytes <= (markdown.len() * 40) as u64,
+        "persisted state was {persisted_bytes} bytes for {} bytes of Markdown",
+        markdown.len()
+    );
 }
 
 #[test]

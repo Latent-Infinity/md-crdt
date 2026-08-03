@@ -271,6 +271,13 @@ impl Vault {
     pub fn files(&self) -> impl Iterator<Item = PathBuf> + '_ {
         WalkDir::new(&self.path)
             .into_iter()
+            .filter_entry(|entry| {
+                entry.depth() == 0
+                    || !entry.file_type().is_dir()
+                    || (!entry.file_name().to_string_lossy().starts_with('.')
+                        && entry.file_name() != "target"
+                        && entry.file_name() != "graphify-out")
+            })
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_file())
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))

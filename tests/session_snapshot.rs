@@ -382,6 +382,65 @@ fn snapshot_bytes_round_trip() {
 }
 
 #[test]
+fn snapshot_bytes_are_bounded_for_a_large_paragraph() {
+    let text = "a".repeat(16 * 1024);
+    let mut session = CollaborativeDocument::new(3);
+    session.insert_paragraph(None, &text).unwrap();
+
+    let bytes = session.save_snapshot().unwrap().to_bytes().unwrap();
+    assert!(
+        bytes.len() <= text.len() * 20,
+        "snapshot was {} bytes for {} bytes of Markdown",
+        bytes.len(),
+        text.len()
+    );
+    let restored = SessionSnapshot::from_bytes(&bytes).unwrap();
+    assert_eq!(
+        restored
+            .document
+            .into_document()
+            .serialize(EquivalenceMode::Structural),
+        text
+    );
+}
+
+#[test]
+fn corrupt_and_oversized_snapshot_envelopes_are_rejected() {
+    let mut session = CollaborativeDocument::new(3);
+    session.insert_paragraph(None, "current").unwrap();
+    let mut corrupt = session.save_snapshot().unwrap().to_bytes().unwrap();
+    corrupt.truncate(corrupt.len() - 1);
+    assert!(matches!(
+        SessionSnapshot::from_bytes(&corrupt),
+        Err(SnapshotError::CorruptEncoding(_))
+    ));
+
+    let mut oversized = b"MDSN\x01".to_vec();
+    oversized.extend_from_slice(&(512_u64 * 1024 * 1024 + 1).to_le_bytes());
+    assert!(matches!(
+        SessionSnapshot::from_bytes(&oversized),
+        Err(SnapshotError::SnapshotTooLarge { .. })
+    ));
+}
+
+#[test]
+fn legacy_json_snapshot_reports_reinitialization_requirement() {
+    let mut session = CollaborativeDocument::new(3);
+    session.insert_paragraph(None, "legacy").unwrap();
+    let mut legacy = session.save_snapshot().unwrap();
+    legacy.format_version = SNAPSHOT_FORMAT_VERSION - 1;
+
+    let error = SessionSnapshot::from_bytes(&serde_json::to_vec(&legacy).unwrap()).unwrap_err();
+    assert!(matches!(
+        error,
+        SnapshotError::ReinitializeRequired {
+            found,
+            expected: SNAPSHOT_FORMAT_VERSION,
+        } if found == SNAPSHOT_FORMAT_VERSION - 1
+    ));
+}
+
+#[test]
 fn non_current_snapshot_versions_require_reinitialize() {
     let mut session = CollaborativeDocument::new(3);
     session.insert_paragraph(None, "current").unwrap();
