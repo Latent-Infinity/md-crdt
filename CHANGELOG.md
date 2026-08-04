@@ -9,11 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ReadDocument` provides side-effect-free, fence-aware outline, heading-section,
+  bounded lexical search, and outbound-link queries without opening a session or
+  writing `.mdcrdt` state.
+- `Vault::export_state`, `VaultSession::export_state`, and persisted export-state
+  markers provide a metadata-only proof/conservative signal for unpublished work;
+  divergent persisted work remains recoverable across reopen.
 - `VaultSession::has_unexported_changes` exposes the session-versus-disk-baseline oracle needed by
   consumers to reject conflicting external and collaborative edits before refresh or export.
+- Added the unpublished, root-excluded `md-crdt-yrs-bench` workspace with exact
+  Yrs/Criterion pins, shared adapter contracts, tiered Criterion scenarios, and
+  provenance-checked multi-run reporting. Extended scenarios cover large paste
+  and multi-peer fan-in; memory RSS, materialization, and illustrative block-map
+  probes remain separately labeled and are never cross-engine ratios.
 
 ### Changed
 
+- Breaking revision and preview tokens now use 64-bit rapidhash digests rendered
+  as fixed-width 11-character base62 strings. Descriptor-cursor checksums and
+  projection-request digests are likewise narrowed to 64 bits, reducing the
+  descriptor cursor wire form from 99 to 83 bytes. `RevisionToken::from_u128`
+  is replaced by `from_u64`.
+- Documented `refresh_markdown`/`ingest_markdown` as disk-authoritative operations:
+  they intentionally discard unexported session work, including when disk bytes
+  are unchanged, so guarding that transition remains the host's responsibility.
 - Breaking snapshot V7 wraps the versioned JSON state in a zlib-compressed envelope with an
   authenticated declared length and a 512 MiB decompression limit. Non-current raw JSON snapshots
   still report the actionable reinitialize/re-ingest error.

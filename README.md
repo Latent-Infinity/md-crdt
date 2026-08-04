@@ -5,17 +5,22 @@
 md-crdt is a Rust library and CLI for offline-first, deterministic collaboration on Markdown. It models Markdown as CRDT-aware blocks and marks, supports frontmatter and tables, and can sync against plain `.md` files without giving up file ownership.
 
 **Highlights**
+
 - Deterministic merge behavior across peers.
 - Markdown-aware parsing and serialization (canonical structural or source-preserving exact).
 - Block- and mark-level operations for precise edits.
 - File sync that ingests and flushes against a local vault.
+- Pure, fence-aware outline, section, search, and link queries through `ReadDocument`.
+- Metadata-only export-state checks for hosts that must preserve unpublished session work.
 
 **Workspace Layout**
+
 - `md-crdt`: Primary library crate (modules: `core`, `doc`, `sync`; features: `storage`, `filesync`) and bundled CLI binary (`src/bin/md-crdt.rs`).
 - `md-crdt-ffi`: Reserved workspace placeholder. It is not published and does not expose a C ABI or supported language bindings; Rust consumers should use `md-crdt` directly.
 - `md-crdt-naive-oracle`: Unpublished reference implementation used for differential testing.
 
 **Library Quickstart**
+
 Parse Markdown, edit a block, serialize back:
 
 ```rust
@@ -32,6 +37,26 @@ doc.insert_text(block_id, 5, " brave", op_id).unwrap();
 let output = doc.serialize(EquivalenceMode::Structural);
 println!("{output}");
 ```
+
+For read-only work, parse without creating a collaborative session or writing `.mdcrdt` state:
+
+```rust
+use md_crdt::ReadDocument;
+
+let markdown = "# Guide\n\nIntro\n\n## Deploy\n\nRun it.\n";
+let document = ReadDocument::parse(markdown);
+let deploy = document
+    .outline()
+    .into_iter()
+    .find(|heading| heading.title == "Deploy")
+    .expect("heading exists");
+
+let section = document.section(deploy.ordinal);
+assert_eq!(section.len(), 2);
+assert_eq!(document.search("run", 10).len(), 1);
+```
+
+`ReadDocument::outline` is fence-aware; `section` addresses a heading by its zero-based top-level block ordinal; `search` returns at most one bounded hit per block; and `links` returns outbound links. Ordinals are valid only for the exact parsed text and must not be persisted or used as `VaultSession` block identities. Parsing currently expands Markdown substantially in memory, so query one document at a time and drop it.
 
 Apply edit operations directly:
 
@@ -129,6 +154,22 @@ fingerprints before publishing any of them, then uses a durable recovery journal
 commit is completed when the vault reopens. `create_markdown`, `rename_markdown`, and
 `delete_markdown` provide the corresponding identity-aware file lifecycle operations.
 
+Before accepting disk as authoritative, inspect the metadata-only state without opening a session:
+
+```rust,no_run
+use md_crdt::{ExportState, filesync::VaultSession};
+
+let mut vault = VaultSession::open("./notes")?;
+if vault.export_state("projects/alpha.md")? == ExportState::Unexported
+    && vault.has_unexported_changes("projects/alpha.md")?
+{
+    // Export, preserve, or ask the user before accepting disk.
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`ExportState::Exported` guarantees that persisted session state is not ahead of Markdown. `Unexported` is deliberately conservative; confirm it with `VaultSession::has_unexported_changes`. Persisted unexported work survives close and reopen; if disk diverges, reopen fails without overwriting either side. By contrast, `VaultSession::refresh_markdown`/`ingest_markdown` explicitly accept the current Markdown file as authoritative and discard unexported session work, even when the file bytes have not changed. A host that must prevent data loss must check first or provide its own guarded refresh workflow.
+
 Exchange one path with another vault using the same host-provided transport boundary:
 
 ```rust,no_run
@@ -186,6 +227,7 @@ cargo run --bin md-crdt -- --vault ./notes sync
 snapshots or send changes over a network.
 
 **Development**
+
 Install `just` (optional but recommended):
 
 ```sh
@@ -193,11 +235,23 @@ cargo install just
 ```
 
 Common commands:
+
 - `just fmt`
 - `just lint`
 - `just test`
 - `just differential-test`
 - `just fuzz-quick`
 
+The unpublished `md-crdt-yrs-bench/` workspace provides controlled competitive measurements against exact-pinned Yrs. It is excluded from the product workspace and default quality gate:
+
+- `just test-compare` runs the shared adapter contracts.
+- `just bench-compare-quick` checks Criterion liveness; never cite its timings.
+- `just bench-compare` runs one full comparison.
+- `just bench-compare-report` runs the required clean-worktree, alternating-order, three-invocation report path with provenance.
+- `just memory-compare` runs the separate per-engine RSS probe; its results are not cross-engine benchmark ratios.
+
+The suite includes the initial public-text and sync workloads plus large-paste and multi-peer fan-in extensions. Serialization/materialization diagnostics, the illustrative Yrs block-map probe, and memory RSS stay explicitly non-competitive. See the [comparison methodology](md-crdt-yrs-bench/README.md), [implementation plan](docs/yrs-bench-compare-plan.md), and [plan state](docs/yrs-bench-compare-plan-state.md). No benchmark result is a universal CRDT ranking: compare only like tiers and named workloads.
+
 **License**
+
 MIT. See `LICENSE`.
