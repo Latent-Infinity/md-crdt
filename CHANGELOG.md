@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Require `rkyv` 0.8.17 or newer and refresh `crossbeam-epoch` to 0.9.20 to incorporate
+  upstream memory-safety fixes.
 - Accept valid one- and two-dash GFM table delimiter cells.
 - Report zero `bytes_written` when an export does not rewrite the Markdown file.
 - Bound persisted session storage across both crash-recovery slots instead of amplifying a small
