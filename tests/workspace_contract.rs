@@ -37,7 +37,7 @@ fn vault_and_document_identity_survive_content_changes_and_reopen() {
 fn workspace_contract_types_are_concrete_and_mcp_agnostic() {
     let vault_id = VaultId::from_u128(1);
     let document_id = DocumentId::from_u128(2);
-    let revision = RevisionToken::from_u128(3);
+    let revision = RevisionToken::from_u64(3);
     let summary = ChangeSummary {
         created: Vec::new(),
         deleted: Vec::new(),
@@ -83,7 +83,9 @@ fn workspace_contract_types_are_concrete_and_mcp_agnostic() {
 
     assert_eq!(vault_id.to_string().len(), 36);
     assert_eq!(document_id.to_string().len(), 36);
-    assert_eq!(revision.to_string().len(), 32);
+    // Opaque and fixed width, rendered in base62 over the complete 64-bit
+    // digest rather than hex over a wider value.
+    assert_eq!(revision.to_string().len(), 11);
     assert_eq!(descriptor.kind, BlockDescriptorKind::Paragraph);
     assert!(batch.operations.is_empty());
     assert_eq!(receipt.document_id, document_id);
@@ -119,7 +121,7 @@ fn opaque_identity_helpers_round_trip_without_exposing_revision_structure() {
         document
     );
 
-    let revision = RevisionToken::from_u128(42);
-    assert_eq!(revision.as_bytes(), &42u128.to_be_bytes());
+    let revision = RevisionToken::from_u64(42);
+    assert_eq!(revision.as_bytes(), &42u64.to_be_bytes());
     assert_eq!(DiskFingerprint(42).to_string(), "000000000000002a");
 }

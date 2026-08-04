@@ -17,7 +17,7 @@ use crate::session::{CollaborativeDocument, SessionError, SnapshotError, SyncRes
 use crate::storage::{Storage, StorageError};
 use crate::sync::{ChangeMessage, ValidationLimits};
 use crate::workspace::{
-    capture_outline, replace_moved_ids, stable_hash_128, summarize_outline_change,
+    capture_outline, replace_moved_ids, stable_hash_64, summarize_outline_change,
 };
 use crate::{
     BatchPreview, BatchReceipt, DeletedDocument, DescriptorCursor, DescriptorPage, DiskFingerprint,
@@ -491,7 +491,12 @@ impl VaultSession {
         })
     }
 
-    /// Refresh one Markdown file after optional workspace and disk precondition checks.
+    /// Accept one Markdown file as authoritative after optional precondition checks.
+    ///
+    /// This deliberately discards unexported session work, even when the file
+    /// bytes are unchanged. Call [`Self::export_state`] and, when conservative
+    /// state needs confirmation, [`Self::has_unexported_changes`] before this
+    /// method when the host must prevent data loss.
     pub fn refresh_markdown(
         &mut self,
         rel_path: impl AsRef<Path>,
@@ -503,6 +508,9 @@ impl VaultSession {
     }
 
     /// Ingest one observed Markdown file through revision and disk preconditions.
+    ///
+    /// Like [`Self::refresh_markdown`], this accepts disk as authoritative and
+    /// may discard unexported session work.
     pub fn ingest_markdown(
         &mut self,
         rel_path: impl AsRef<Path>,
@@ -1429,7 +1437,7 @@ fn is_orphan_transaction_temp(name: &str) -> bool {
 
 fn preview_token(batch: &EditBatch) -> Result<PreviewToken, VaultError> {
     let encoded = serde_json::to_vec(batch).map_err(|_| VaultError::Serialization)?;
-    Ok(PreviewToken::from_u128(stable_hash_128(&encoded)))
+    Ok(PreviewToken::from_u64(stable_hash_64(&encoded)))
 }
 
 fn validate_batch_targets(
@@ -1956,7 +1964,7 @@ fn revision_for(document: &CollaborativeDocument) -> Result<RevisionToken, Vault
         .save_snapshot()
         .and_then(|snapshot| snapshot.to_bytes())
         .map_err(|error| VaultError::Snapshot(error.to_string()))?;
-    Ok(RevisionToken::from_u128(stable_hash_128(&bytes)))
+    Ok(RevisionToken::from_u64(stable_hash_64(&bytes)))
 }
 
 fn summarize_session_transition(

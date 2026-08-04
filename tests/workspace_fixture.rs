@@ -12,15 +12,14 @@ use std::collections::BTreeMap;
 fn contract_fixture() -> Value {
     let vault_id = VaultId::from_u128(1);
     let document_id = DocumentId::from_u128(2);
-    let revision = RevisionToken::from_u128(3);
-    let next_revision = RevisionToken::from_u128(4);
+    let revision = RevisionToken::from_u64(3);
+    let next_revision = RevisionToken::from_u64(4);
     let heading_id = uuid::Uuid::from_u128(10);
     let table_id = uuid::Uuid::from_u128(11);
     let paragraph_id = uuid::Uuid::from_u128(12);
     let row_id = uuid::Uuid::from_u128(13);
     let column_id = uuid::Uuid::from_u128(14);
-    let token: PreviewToken =
-        serde_json::from_value(json!([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5])).unwrap();
+    let token: PreviewToken = serde_json::from_value(json!([0, 0, 0, 0, 0, 0, 0, 5])).unwrap();
     let summary = ChangeSummary {
         created: vec![table_id],
         deleted: Vec::new(),

@@ -124,7 +124,7 @@ fn multi_document_export_prevalidation_writes_nothing_on_one_stale_request() {
         .value
         .unwrap();
     let edited_a = vault.open_document("a.md").unwrap();
-    let stale_b = md_crdt::RevisionToken::from_u128(999);
+    let stale_b = md_crdt::RevisionToken::from_u64(999);
 
     let error = vault
         .export_markdown_transaction(vec![

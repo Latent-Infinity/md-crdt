@@ -61,24 +61,53 @@ persistent_id!(DocumentId);
 /// prior state yields the same token.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct RevisionToken([u8; 16]);
+pub struct RevisionToken([u8; 8]);
 
 impl RevisionToken {
-    pub fn from_u128(value: u128) -> Self {
+    pub fn from_u64(value: u64) -> Self {
         Self(value.to_be_bytes())
     }
 
-    pub fn as_bytes(&self) -> &[u8; 16] {
+    pub fn as_bytes(&self) -> &[u8; 8] {
         &self.0
     }
 }
 
+/// Digits used to render opaque tokens compactly.
+///
+/// Base62 costs about a third fewer tokens than hex for the same value under
+/// common byte-pair encoders, while staying URL- and JSON-safe. Denser
+/// alphabets shorten the string further but tokenize worse per character, so
+/// they save less than their length suggests.
+const TOKEN_DIGITS: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+/// Width that renders every 64-bit value, so tokens stay a fixed size.
+const BASE62_WIDTH: usize = 11;
+
+/// Render 64 bits in base62, most significant digit first, zero padded.
+///
+/// Padding keeps the rendered width constant. Values large enough to occupy the
+/// full width are the norm, so it costs nothing in practice and spares callers a
+/// variable-length identifier.
+fn write_base62(value: u64, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let mut digits = [TOKEN_DIGITS[0]; BASE62_WIDTH];
+    let mut index = BASE62_WIDTH;
+    let mut remaining = value;
+    while remaining > 0 && index > 0 {
+        index -= 1;
+        digits[index] = TOKEN_DIGITS[(remaining % 62) as usize];
+        remaining /= 62;
+    }
+    for digit in digits {
+        write!(formatter, "{}", digit as char)?;
+    }
+    Ok(())
+}
+
 impl fmt::Display for RevisionToken {
+    /// Render the digest in base62.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.0 {
-            write!(formatter, "{byte:02x}")?;
-        }
-        Ok(())
+        write_base62(u64::from_be_bytes(self.0), formatter)
     }
 }
 
@@ -153,12 +182,12 @@ pub struct DescriptorCursor {
     last_id: BlockId,
     next_index: u64,
     next_order: u64,
-    checksum: [u8; 16],
+    checksum: [u8; 8],
 }
 
 impl DescriptorCursor {
     const VERSION: u8 = 1;
-    const WIRE_BYTES: usize = 99;
+    const WIRE_BYTES: usize = 83;
 
     fn new(
         document_id: DocumentId,
@@ -178,31 +207,34 @@ impl DescriptorCursor {
             last_id,
             next_index: u64::try_from(next_index).unwrap_or(u64::MAX),
             next_order: u64::try_from(next_order).unwrap_or(u64::MAX),
-            checksum: [0; 16],
+            checksum: [0; 8],
         };
         cursor.checksum = cursor.expected_checksum();
         cursor
     }
 
-    fn expected_checksum(&self) -> [u8; 16] {
-        let mut digest = StableDigest128::new();
-        digest.bytes(&[self.version]);
-        digest.bytes(self.document_id.as_uuid().as_bytes());
-        digest.bytes(self.revision.as_bytes());
+    fn expected_checksum(&self) -> [u8; 8] {
+        // Gathered into one buffer because the digest hashes a slice rather
+        // than accumulating; the cursor is around a hundred bytes, so this
+        // costs nothing measurable next to the traversal it guards.
+        let mut fields = Vec::with_capacity(96);
+        fields.push(self.version);
+        fields.extend_from_slice(self.document_id.as_uuid().as_bytes());
+        fields.extend_from_slice(self.revision.as_bytes());
         match self.parent {
             Some(parent) => {
-                digest.bytes(&[1]);
-                digest.bytes(parent.as_bytes());
+                fields.push(1);
+                fields.extend_from_slice(parent.as_bytes());
             }
-            None => digest.bytes(&[0]),
+            None => fields.push(0),
         }
-        digest.bytes(&[match self.traversal {
+        fields.push(match self.traversal {
             DescriptorTraversal::DirectChildren => 0,
-        }]);
-        digest.bytes(self.last_id.as_bytes());
-        digest.bytes(&self.next_index.to_le_bytes());
-        digest.bytes(&self.next_order.to_le_bytes());
-        digest.finish().to_be_bytes()
+        });
+        fields.extend_from_slice(self.last_id.as_bytes());
+        fields.extend_from_slice(&self.next_index.to_le_bytes());
+        fields.extend_from_slice(&self.next_order.to_le_bytes());
+        stable_hash_64(&fields).to_be_bytes()
     }
 
     fn validate(
@@ -243,18 +275,18 @@ impl DescriptorCursor {
         let mut bytes = [0; Self::WIRE_BYTES];
         bytes[0] = self.version;
         bytes[1..17].copy_from_slice(self.document_id.as_uuid().as_bytes());
-        bytes[17..33].copy_from_slice(self.revision.as_bytes());
+        bytes[17..25].copy_from_slice(self.revision.as_bytes());
         if let Some(parent) = self.parent {
-            bytes[33] = 1;
-            bytes[34..50].copy_from_slice(parent.as_bytes());
+            bytes[25] = 1;
+            bytes[26..42].copy_from_slice(parent.as_bytes());
         }
-        bytes[50] = match self.traversal {
+        bytes[42] = match self.traversal {
             DescriptorTraversal::DirectChildren => 0,
         };
-        bytes[51..67].copy_from_slice(self.last_id.as_bytes());
-        bytes[67..75].copy_from_slice(&self.next_index.to_le_bytes());
-        bytes[75..83].copy_from_slice(&self.next_order.to_le_bytes());
-        bytes[83..99].copy_from_slice(&self.checksum);
+        bytes[43..59].copy_from_slice(self.last_id.as_bytes());
+        bytes[59..67].copy_from_slice(&self.next_index.to_le_bytes());
+        bytes[67..75].copy_from_slice(&self.next_order.to_le_bytes());
+        bytes[75..83].copy_from_slice(&self.checksum);
         bytes
     }
 
@@ -262,17 +294,17 @@ impl DescriptorCursor {
         if bytes.len() != Self::WIRE_BYTES {
             return None;
         }
-        let parent_bytes = fixed_bytes(bytes, 34..50)?;
+        let parent_bytes = fixed_bytes(bytes, 26..42)?;
         Some(Self {
             version: bytes[0],
             document_id: DocumentId::from_uuid(Uuid::from_bytes(fixed_bytes(bytes, 1..17)?)),
-            revision: RevisionToken(fixed_bytes(bytes, 17..33)?),
-            parent: (bytes[33] == 1).then(|| Uuid::from_bytes(parent_bytes)),
+            revision: RevisionToken(fixed_bytes(bytes, 17..25)?),
+            parent: (bytes[25] == 1).then(|| Uuid::from_bytes(parent_bytes)),
             traversal: DescriptorTraversal::DirectChildren,
-            last_id: Uuid::from_bytes(fixed_bytes(bytes, 51..67)?),
-            next_index: u64::from_le_bytes(fixed_bytes(bytes, 67..75)?),
-            next_order: u64::from_le_bytes(fixed_bytes(bytes, 75..83)?),
-            checksum: fixed_bytes(bytes, 83..99)?,
+            last_id: Uuid::from_bytes(fixed_bytes(bytes, 43..59)?),
+            next_index: u64::from_le_bytes(fixed_bytes(bytes, 59..67)?),
+            next_order: u64::from_le_bytes(fixed_bytes(bytes, 67..75)?),
+            checksum: fixed_bytes(bytes, 75..83)?,
         })
     }
 }
@@ -471,7 +503,7 @@ impl std::ops::BitOr for ProjectionFields {
 /// Stateless continuation bound to one exact projection request shape.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProjectionContinuation {
-    request_digest: [u8; 16],
+    request_digest: [u8; 8],
     offset: u64,
 }
 
@@ -1048,20 +1080,18 @@ pub struct EditBatch {
 /// Opaque binding of an exact revision to an exact batch operation sequence.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct PreviewToken([u8; 16]);
+pub struct PreviewToken([u8; 8]);
 
 impl PreviewToken {
-    pub(crate) fn from_u128(value: u128) -> Self {
+    pub(crate) fn from_u64(value: u64) -> Self {
         Self(value.to_be_bytes())
     }
 }
 
 impl fmt::Display for PreviewToken {
+    /// Render the token in base62, as revisions are rendered.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.0 {
-            write!(formatter, "{byte:02x}")?;
-        }
-        Ok(())
+        write_base62(u64::from_be_bytes(self.0), formatter)
     }
 }
 
@@ -2058,7 +2088,7 @@ fn list_item_digest(item: &ListItem) -> u64 {
     digest.finish()
 }
 
-fn projection_request_digest(request: &ProjectionRequest) -> Result<[u8; 16], ProjectionError> {
+fn projection_request_digest(request: &ProjectionRequest) -> Result<[u8; 8], ProjectionError> {
     let encoded = serde_json::to_vec(&(
         request.document_id,
         &request.base_revision,
@@ -2068,38 +2098,23 @@ fn projection_request_digest(request: &ProjectionRequest) -> Result<[u8; 16], Pr
         request.max_bytes,
     ))
     .map_err(|_| ProjectionError::Serialization)?;
-    Ok(stable_hash_128(&encoded).to_be_bytes())
+    Ok(stable_hash_64(&encoded).to_be_bytes())
 }
 
-struct StableDigest128(u128);
-
-impl StableDigest128 {
-    const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
-    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
-
-    fn new() -> Self {
-        Self(Self::OFFSET)
-    }
-
-    fn bytes(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 = (self.0 ^ u128::from(*byte)).wrapping_mul(Self::PRIME);
-        }
-    }
-
-    fn finish(self) -> u128 {
-        self.0
-    }
-}
-
-pub(crate) fn stable_hash_128(bytes: &[u8]) -> u128 {
-    let mut digest = StableDigest128::new();
-    digest.bytes(bytes);
-    digest.finish()
+/// Digest bytes into a stable 64-bit value.
+///
+/// One complete rapidhash output, so the value carries the avalanche its
+/// designers validated rather than the residue of a wider digest sliced down.
+/// Every token built on this is compared for equality and never parsed back, so
+/// uniform collision distribution is the relevant property; these tokens are
+/// stale-state sentinels, not authentication codes. A birthday collision is on
+/// the order of four billion distinct revisions of one document away.
+pub(crate) fn stable_hash_64(bytes: &[u8]) -> u64 {
+    rapidhash::v3::rapidhash_v3(bytes)
 }
 
 fn projection_continuation(
-    request_digest: [u8; 16],
+    request_digest: [u8; 8],
     offset: usize,
     total: usize,
 ) -> Option<ProjectionContinuation> {
@@ -2744,7 +2759,7 @@ mod projection_tests {
         let id = document.blocks_in_order()[0].id;
         let request = ProjectionRequest {
             document_id: DocumentId::from_u128(1),
-            base_revision: RevisionToken::from_u128(2),
+            base_revision: RevisionToken::from_u64(2),
             block_ids: vec![id],
             fields: ProjectionFields::SEMANTIC,
             max_items: 1,
@@ -2779,7 +2794,7 @@ mod projection_tests {
             document.set_source_state(None);
             let request = ProjectionRequest {
                 document_id: DocumentId::from_u128(1),
-                base_revision: RevisionToken::from_u128(2),
+                base_revision: RevisionToken::from_u64(2),
                 block_ids: vec![selected_id],
                 fields: ProjectionFields::EXACT,
                 max_items: 1,

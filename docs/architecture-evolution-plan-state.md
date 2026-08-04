@@ -147,7 +147,7 @@ reinitialized and re-ingested from Markdown.
 | Semantic mark digest | Sort/deduplicate active semantic marks and exclude the `delimiter` attribute | CRDT interval ids/order and source delimiter choice are presentation/history, not semantic content |
 | Lossless representation ablation | Per-root semantic block source regions with owned leading trivia | Smallest option that preserves unsupported bytes and localizes edits. A piece table still needs semantic ownership mapping; a compact CST duplicates the authoritative CRDT tree and increases synchronization risk. |
 | Workspace identity files | UUID text in `.mdcrdt/vault_id` and path-scoped `.mdcrdt/document_ids/` entries, published durably | Content-independent handles survive edits/reopen; invalid identity bytes fail closed instead of silently replacing identity. |
-| Revision representation | Opaque 128-bit digest of the session snapshot | Detects observable state changes without exposing log or hashing details as API. |
+| Revision representation | Opaque 64-bit rapidhash digest, rendered as 11 fixed-width base62 characters | Detects observable state changes without exposing log or hashing details as API; equality only, never ordering. Preview tokens use the same rendering; cursor checksums and continuation request digests use the same 64-bit entropy. |
 | Markdown publication scope | Durable `export_markdown` for one document; no loop-shaped `export_all_markdown` | A loop can partially publish and imply false atomicity. Cross-document publication waits for PR-31's intent journal and recovery contract. |
 
 ## Phase C checklist

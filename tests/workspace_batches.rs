@@ -74,7 +74,8 @@ fn preview_is_non_mutating_and_apply_returns_the_same_compact_delta() {
     let request = batch(&handle, vec![insert, mark]);
 
     let preview = vault.preview_edit_batch("note.md", &request).unwrap();
-    assert_eq!(preview.token.to_string().len(), 32);
+    // Opaque and fixed width, rendered in base62 like every other token.
+    assert_eq!(preview.token.to_string().len(), 11);
     assert_eq!(vault.revision("note.md").unwrap(), handle.revision);
     assert_eq!(preview.changes.updated, vec![block_id]);
     assert_eq!(preview.changes.operation_count, 2);
