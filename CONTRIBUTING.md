@@ -78,6 +78,18 @@ cargo test --workspace
 cargo bench
 ```
 
+Optional competitive comparison against Yrs (nested workspace; not part of `just check`):
+
+```bash
+just test-compare          # shared harness and adapter contracts
+just bench-compare-quick   # Criterion liveness only — never cite timings
+just bench-compare         # one full suite invocation
+just bench-compare-report  # three clean-worktree runs plus citable provenance
+just memory-compare        # separate RSS probe; never treat as a Criterion ratio
+```
+
+The comparison uses exact dependency pins and a standalone lockfile. Do not add Yrs to the root workspace or root lockfile, compare results across tiers, ratio the diagnostic/memory probes, or cite one-off/quick timings. See [`md-crdt-yrs-bench/README.md`](md-crdt-yrs-bench/README.md) for the frozen scenario and reporting rules.
+
 ### Commit Messages
 
 - Use clear, descriptive commit messages

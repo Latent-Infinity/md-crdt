@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "clean_worktree": true,
+  "git_commit": "0123456789abcdef0123456789abcdef01234567",
+  "root_lockfile_sha256": "aaaabbbbccccddddeeeeffff0000111122223333444455556666777788889999",
+  "compare_lockfile_sha256": "9999888877776666555544443333222211110000ffffeeeeddddccccbbbbaaaa",
+  "yrs_version": "0.27.3",
+  "yrs_checksum": "eeeeffff0000111122223333444455556666777788889999aaaabbbbccccdddd",
+  "md_crdt_version": "0.3.0",
+  "criterion_version": "0.5.1",
+  "md_crdt_features": "default-features=false",
+  "yrs_features": "default-features=false",
+  "yrs_text_root": "text",
+  "yrs_offset_kind": "Bytes",
+  "yrs_skip_gc": false,
+  "md_crdt_peer_ids": [1, 2],
+  "yrs_client_ids": [1, 2],
+  "md_crdt_wire_codec": "md_crdt_serde_json_v1",
+  "yrs_wire_codec": "yrs_lib0_v1",
+  "rustc_verbose": "rustc 1.95.0 (example)\nhost: aarch64-apple-darwin",
+  "host_triple": "aarch64-apple-darwin",
+  "target_triple": "aarch64-apple-darwin",
+  "os": "macos",
+  "cpu_model": "Apple M-series (example fixture)",
+  "power_mode": "unknown",
+  "batch_policy": "LargeInput",
+  "timestamp_utc": "2026-08-04T00:00:00Z",
+  "output_dir": "md-crdt-yrs-bench/report-out/example",
+  "invocations": [
+    {
+      "index": 0,
+      "engine_order": "md_first",
+      "baseline_name": "compare_0_md_first_20260804T000000Z",
+      "command": "cargo bench --manifest-path md-crdt-yrs-bench/Cargo.toml --locked -- --save-baseline compare_0_md_first_20260804T000000Z",
+      "started_utc": "2026-08-04T00:00:01Z",
+      "finished_utc": "2026-08-04T00:10:00Z",
+      "status": "ok"
+    },
+    {
+      "index": 1,
+      "engine_order": "yrs_first",
+      "baseline_name": "compare_1_yrs_first_20260804T000000Z",
+      "command": "cargo bench --manifest-path md-crdt-yrs-bench/Cargo.toml --locked -- --save-baseline compare_1_yrs_first_20260804T000000Z",
+      "started_utc": "2026-08-04T00:10:01Z",
+      "finished_utc": "2026-08-04T00:20:00Z",
+      "status": "ok"
+    },
+    {
+      "index": 2,
+      "engine_order": "md_first",
+      "baseline_name": "compare_2_md_first_20260804T000000Z",
+      "command": "cargo bench --manifest-path md-crdt-yrs-bench/Cargo.toml --locked -- --save-baseline compare_2_md_first_20260804T000000Z",
+      "started_utc": "2026-08-04T00:20:01Z",
+      "finished_utc": "2026-08-04T00:30:00Z",
+      "status": "ok"
+    }
+  ]
+}

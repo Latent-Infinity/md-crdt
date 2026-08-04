@@ -1,0 +1,28 @@
+[package]
+name = "md-crdt-yrs-bench"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/latenty-infinity/md-crdt"
+description = "Controlled md-crdt versus Yrs competitive benchmarks (unpublished)"
+publish = false
+
+[workspace]
+resolver = "2"
+
+[dependencies]
+md-crdt = { version = "0.3.0", path = "..", default-features = false }
+yrs = { version = "=0.27.3", default-features = false }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+
+[dev-dependencies]
+criterion = "=0.5.1"
+
+[[bench]]
+name = "compare"
+harness = false
+
+[profile.bench]
+debug = true

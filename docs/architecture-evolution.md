@@ -72,7 +72,7 @@ Each major recommendation was re-checked for **correctness, SOLID/DRY/KISS, and 
 
 md-crdt is a Rust library + CLI for offline-first, deterministic collaboration on Markdown. It already has strong CRDT building blocks (`Sequence` RGA, `LwwRegister`, `Map`, dual mark systems), a block-level document model with parse/serialize, an opaque-byte sync protocol, dual-superblock storage, and vault fingerprinting. What it lacks is an **integrated collaborative stack**: document edits do not encode onto the wire, in-paragraph text is a plain `String` (not a CRDT), marks are duplicated, vault ingest only hash-compares, and several durability claims are weaker than the API surface implies.
 
-This design proposes a phased architecture evolution that wires existing layers into a correct end-to-end collaborative system, then deepens text/mark fidelity, vault intelligence, structured markdown, performance, storage durability, and developer experience—while obeying **SOLID**, **DRY**, **KISS**, and the project's [Rust Code Standards](.docs/Rust%20Code%20Standards.md) (borrow-first APIs, typed `thiserror` enums, feature gates, profiling-driven perf, no panics in library paths).
+This design proposes a phased architecture evolution that wires existing layers into a correct end-to-end collaborative system, then deepens text/mark fidelity, vault intelligence, structured markdown, performance, storage durability, and developer experience—while obeying **SOLID**, **DRY**, **KISS**, and the project's [contribution guidelines](../CONTRIBUTING.md) (borrow-first APIs, typed `thiserror` enums, feature gates, profiling-driven perf, no panics in library paths).
 
 **MVP definition:** Phases A–C (wire + session + **per-grapheme** text CRDT + unified marks) form a shippable collaborative library vertical slice. Phases D–E add product/vault/structure. Phases F–H polish durability, **run-length text storage if profiled**, and DX. See [Sequencing & MVP](#sequencing--mvp).
 
@@ -159,6 +159,9 @@ Without an integration spine and character-level CRDT, multi-peer collaboration 
 3. Network transport — design stops at codec + session; host supplies transport.
 4. Premature micro-crates or plugin frameworks.
 5. Yjs/Automerge interop (future, not this evolution).
+   Competitive **performance** comparison against Yrs lives in the unpublished nested
+   workspace `md-crdt-yrs-bench/` (root `workspace.exclude`); the product CRDT engine
+   remains in-tree md-crdt. See `docs/yrs-bench-compare-plan.md`.
 6. Zero public API breaks at 0.1.0 — breaks allowed when changelog-documented.
 7. Authenticated or encrypted peer channels (see trust model).
 8. MCP tool schemas, response encoding/pagination policy, search ranking, or token counting; those
@@ -2448,7 +2451,7 @@ Resolved recommendations are Key Decisions 1–45. Remaining questions:
 | Storage | `src/storage/mod.rs` |
 | Vault | `src/filesync/mod.rs` |
 | CLI | `src/bin/md-crdt.rs` (~204 LOC) |
-| Rust standards | `.docs/Rust Code Standards.md` |
+| Rust standards | `CONTRIBUTING.md` and repository `AGENTS.md` |
 | Quality gate | `justfile` → `just check` |
 
 ### Prior art

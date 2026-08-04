@@ -30,6 +30,26 @@ bench:
     cargo bench
     cargo bench --features sequence_incremental
 
+# Competitive md-crdt vs Yrs harness tests (nested workspace; does not use --workspace)
+test-compare:
+    cargo test --manifest-path md-crdt-yrs-bench/Cargo.toml --locked
+
+# Full competitive suite (cite only with multi-run provenance; see md-crdt-yrs-bench/README.md)
+bench-compare:
+    cargo bench --manifest-path md-crdt-yrs-bench/Cargo.toml --locked --bench compare
+
+# Competitive liveness only — Criterion --test; never cite timings from this recipe
+bench-compare-quick:
+    cargo bench --manifest-path md-crdt-yrs-bench/Cargo.toml --locked --bench compare -- --test
+
+# Three full competitive invocations + provenance sidecar (citable path; long-running)
+bench-compare-report:
+    md-crdt-yrs-bench/scripts/run_compare_report.sh
+
+# Separate-process RSS probe (not Criterion; interpret engines independently)
+memory-compare:
+    md-crdt-yrs-bench/scripts/memory_rss.sh
+
 # Fetch external markdown test fixtures (markdown-it, Comrak, GFM spec)
 fuzz-fetch-fixtures:
     python3 scripts/fetch_test_fixtures.py
