@@ -25,6 +25,53 @@ pub struct Vault {
     pub path: PathBuf,
 }
 
+/// Name of the per-document marker recording possible unexported content.
+const UNEXPORTED_MARKER: &str = "unexported";
+
+/// Name of the per-vault sentinel recording that markers are maintained here.
+const UNEXPORTED_SENTINEL: &str = "unexported_tracked";
+
+/// Whether a document's persisted CRDT state may hold content its Markdown
+/// file does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportState {
+    /// The last persist or reconcile produced exactly the Markdown bytes then
+    /// on disk. Any later difference is a write to the file, so the file is the
+    /// newer side and serving it is correct.
+    Exported,
+    /// The state may be ahead of the file. Conservative: a crash between
+    /// marking and persisting reports this over state that never moved, which
+    /// the next open reconciles away.
+    Unexported,
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Reject absolute paths and parent traversal in a vault-relative path.
+pub(crate) fn normalize_rel(path: &Path) -> Result<PathBuf, VaultError> {
+    if path.is_absolute() {
+        return Err(VaultError::InvalidRelativePath(path.to_path_buf()));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(VaultError::InvalidRelativePath(path.to_path_buf()));
+    }
+    if path.as_os_str().is_empty() {
+        return Err(VaultError::InvalidRelativePath(path.to_path_buf()));
+    }
+    Ok(path.to_path_buf())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
     #[error("Path does not exist: {0}")]
@@ -348,6 +395,151 @@ impl Vault {
 
     pub(crate) fn state_root(&self) -> PathBuf {
         self.path.join(".mdcrdt").join("state")
+    }
+
+    pub(crate) fn session_root(&self) -> PathBuf {
+        self.path.join(".mdcrdt").join("sessions")
+    }
+
+    /// Absolute path of the persisted CRDT session snapshot for a vault file.
+    pub(crate) fn session_path_for(&self, file: &Path) -> PathBuf {
+        let relative = file.strip_prefix(&self.path).unwrap_or(file);
+        let mut path = self.session_root().join(relative);
+        path.set_extension("mdcrdt");
+        path
+    }
+
+    /// Absolute path of a document's unexported marker.
+    ///
+    /// The marker lives inside the snapshot directory so that renaming or
+    /// deleting a document carries it along with the state it describes.
+    pub(crate) fn unexported_marker_path(&self, file: &Path) -> PathBuf {
+        self.session_path_for(file).join(UNEXPORTED_MARKER)
+    }
+
+    pub(crate) fn unexported_tracking_path(&self) -> PathBuf {
+        self.path.join(".mdcrdt").join(UNEXPORTED_SENTINEL)
+    }
+
+    /// Record that a document's persisted state may be ahead of its file.
+    ///
+    /// Durable on return, so existence always implies a completed create and a
+    /// crash can never leave a marker that reads as absent.
+    pub(crate) fn mark_unexported(&self, file: &Path) -> Result<(), VaultError> {
+        let marker = self.unexported_marker_path(file);
+        if marker.exists() {
+            return Ok(());
+        }
+        let Some(parent) = marker.parent() else {
+            return Ok(());
+        };
+        fs::create_dir_all(parent)?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker)
+        {
+            Ok(handle) => {
+                handle.sync_all()?;
+                sync_directory(parent)?;
+                Ok(())
+            }
+            // Lost a race; the marker is set either way.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Record that a document's persisted state matches its file.
+    ///
+    /// Sound only once both the Markdown bytes and the baseline agreeing with
+    /// the current state are durable.
+    pub(crate) fn clear_unexported(&self, file: &Path) -> Result<(), VaultError> {
+        let marker = self.unexported_marker_path(file);
+        match fs::remove_file(&marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        if let Some(parent) = marker.parent() {
+            sync_directory(parent)?;
+        }
+        Ok(())
+    }
+
+    /// Report whether a document's persisted state may hold content its
+    /// Markdown file does not.
+    ///
+    /// Answers from file metadata alone: creates nothing, opens no session and
+    /// deserializes nothing, so a hot read path can afford it.
+    /// [`ExportState::Exported`] is a guarantee; [`ExportState::Unexported`] is
+    /// conservative — confirm with [`VaultSession::has_unexported_changes`]
+    /// before acting on it destructively.
+    pub fn export_state(&self, rel_path: impl AsRef<Path>) -> Result<ExportState, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        let session = self.session_path_for(&self.path.join(&rel));
+        // Nothing persisted means nothing can be ahead of the file. This
+        // answers every never-opened document in one stat, tracked or not.
+        if !session.exists() {
+            return Ok(ExportState::Exported);
+        }
+        if session.join(UNEXPORTED_MARKER).exists() {
+            return Ok(ExportState::Unexported);
+        }
+        if self.unexported_tracking_path().exists() {
+            return Ok(ExportState::Exported);
+        }
+        // Written before markers were maintained: absence proves nothing.
+        Ok(ExportState::Unexported)
+    }
+
+    /// Bring a vault written before marker tracking under tracking.
+    ///
+    /// Marks every document that already holds a snapshot, then writes the
+    /// sentinel last, so an interrupted migration simply runs again. Each mark
+    /// is reconciled to the truth for free by that document's next open.
+    pub(crate) fn adopt_unexported_tracking(&self) -> Result<(), VaultError> {
+        let sentinel = self.unexported_tracking_path();
+        if sentinel.exists() {
+            return Ok(());
+        }
+        let sessions = self.session_root();
+        if sessions.exists() {
+            for entry in WalkDir::new(&sessions) {
+                let entry = entry.map_err(io::Error::other)?;
+                if !entry.file_type().is_dir() {
+                    continue;
+                }
+                let directory = entry.path();
+                if !directory.join("superblock_a").exists()
+                    && !directory.join("superblock_b").exists()
+                {
+                    continue;
+                }
+                let marker = directory.join(UNEXPORTED_MARKER);
+                if marker.exists() {
+                    continue;
+                }
+                let handle = fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&marker)?;
+                handle.sync_all()?;
+                sync_directory(directory)?;
+            }
+        }
+        if let Some(parent) = sentinel.parent() {
+            fs::create_dir_all(parent)?;
+            let handle = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&sentinel)?;
+            handle.sync_all()?;
+            sync_directory(parent)?;
+        }
+        Ok(())
     }
 
     /// Absolute path of the fingerprint / content-hash state blob for a vault file.

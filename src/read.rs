@@ -124,6 +124,22 @@ impl ReadDocument {
         }
     }
 
+    /// Borrow the parsed document.
+    ///
+    /// Lets a consumer reuse its own block traversal and addressing instead of
+    /// the ordinals used here. The two address spaces differ: [`Self::outline`]
+    /// and [`Self::section`] number only top-level blocks, via
+    /// [`Document::blocks_in_order`], whereas a consumer that flattens nested
+    /// list items and block-quote children numbers them differently. A
+    /// consumer that already has such a traversal should build on this borrow
+    /// rather than translate ordinals between the two.
+    ///
+    /// Block identities reachable through this borrow carry peer 0 and are not
+    /// session addresses; see the module documentation.
+    pub fn document(&self) -> &Document {
+        &self.document
+    }
+
     /// Headings in document order.
     ///
     /// Fence-aware: a `#` line inside a fenced code block is code, so it never
@@ -689,6 +705,47 @@ mod tests {
         assert!(document.section(0).is_empty());
         assert!(document.search("anything", 10).is_empty());
         assert!(document.links().is_empty());
+    }
+
+    #[test]
+    fn document_accessor_exposes_blocks_that_ordinals_do_not_address() {
+        let markdown = concat!(
+            "# Checklist\n",
+            "\n",
+            "- Deploy\n",
+            "  - Roll canary\n",
+            "  - Promote\n",
+            "\n",
+            "## After\n",
+        );
+        let document = ReadDocument::parse(markdown);
+
+        // Ordinals number top-level blocks only, so the nested list items are
+        // unreachable through them. A consumer that flattens nested blocks
+        // must build on `document()` rather than translate ordinals, or the
+        // two address spaces will silently disagree.
+        let top_level = document.document().blocks_in_order();
+        assert_eq!(
+            top_level.len(),
+            3,
+            "heading, list, heading: the two nested items get no ordinal"
+        );
+
+        let nested_reachable = top_level.iter().any(|block| {
+            matches!(&block.kind, crate::doc::BlockKind::List { items, .. }
+                if items.len_visible() == 1)
+        });
+        assert!(
+            nested_reachable,
+            "the nested items stay reachable through the borrowed document"
+        );
+
+        let outline_ordinals: Vec<usize> = document
+            .outline()
+            .iter()
+            .map(|entry| entry.ordinal)
+            .collect();
+        assert_eq!(outline_ordinals, vec![0, 2]);
     }
 
     #[test]

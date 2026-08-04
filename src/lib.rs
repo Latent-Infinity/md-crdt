@@ -132,8 +132,8 @@ pub use storage::{CompactionReport, Storage, StorageError, TombstoneRetention};
 // Re-export filesync types (feature-gated)
 #[cfg(feature = "filesync")]
 pub use filesync::{
-    AddedBlock, ArchivedBlockFingerprint, BlockFingerprint, BlockMapping, BlockMatch, Fingerprint,
-    IngestOutcome, IngestReport, IngestResult, LastFlushedState, MatchConfig, MatchType,
-    ParsedBlock, Score, Vault, VaultError, VaultSession, fingerprint_document, match_blocks,
-    parsed_blocks_from_doc,
+    AddedBlock, ArchivedBlockFingerprint, BlockFingerprint, BlockMapping, BlockMatch, ExportState,
+    Fingerprint, IngestOutcome, IngestReport, IngestResult, LastFlushedState, MatchConfig,
+    MatchType, ParsedBlock, Score, Vault, VaultError, VaultSession, fingerprint_document,
+    match_blocks, parsed_blocks_from_doc,
 };

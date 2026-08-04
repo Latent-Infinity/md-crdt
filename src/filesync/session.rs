@@ -2,8 +2,9 @@
 
 use super::diff::{delete_indices_high_to_low, graphemes_of, insert_new_indices, lcs_steps};
 use super::{
-    BlockFingerprint, Fingerprint, IngestReport, LastFlushedState, MatchConfig, ParsedBlock, Score,
-    Vault, VaultError, block_content, fingerprint_document, hash_string, match_blocks,
+    BlockFingerprint, ExportState, Fingerprint, IngestReport, LastFlushedState, MatchConfig,
+    ParsedBlock, Score, Vault, VaultError, block_content, fingerprint_document, hash_string,
+    match_blocks, normalize_rel,
 };
 use crate::codec::{DocOp, JsonOpCodec, OpBody, OpCodec};
 use crate::core::mark::{MarkKind, MarkValue};
@@ -53,6 +54,7 @@ impl VaultSession {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, VaultError> {
         let vault = Vault::open(path)?;
         vault.init()?;
+        vault.adopt_unexported_tracking()?;
         recover_pending_transactions(&vault)?;
         let vault_id = load_or_create_identity::<VaultId>(&vault_id_path(&vault))?;
         let peer = load_or_create_peer_id(&vault)?;
@@ -70,6 +72,14 @@ impl VaultSession {
     /// Path of the vault-wide peer id file (`.mdcrdt/peer_id`).
     pub fn peer_id_path(vault: &Vault) -> PathBuf {
         vault.path.join(".mdcrdt").join("peer_id")
+    }
+
+    /// Report whether a document's persisted state may hold content its
+    /// Markdown file does not, without opening or deserializing anything.
+    ///
+    /// See [`Vault::export_state`] for the guarantee each answer carries.
+    pub fn export_state(&self, rel_path: impl AsRef<Path>) -> Result<ExportState, VaultError> {
+        self.vault.export_state(rel_path.as_ref())
     }
 
     pub fn peer(&self) -> PeerId {
@@ -115,6 +125,8 @@ impl VaultSession {
                 let disk_changed = hash_string(&disk_markdown) != baseline.content_hash;
                 let session_changed = hash_string(&session_markdown) != baseline.content_hash;
                 if disk_changed && session_changed && disk_markdown != session_markdown {
+                    // Refusing to reconcile must not read as agreement.
+                    self.vault.mark_unexported(&path)?;
                     return Err(VaultError::StaleDisk {
                         expected: None,
                         actual: disk_fingerprint(&path)?,
@@ -122,6 +134,14 @@ impl VaultSession {
                 }
                 if disk_changed && !session_changed {
                     self.ingest_file_unchecked(&rel)?;
+                } else if session_markdown == disk_markdown {
+                    // Both sides already agree, whichever of them moved. This
+                    // is also where a marker left by an interrupted persist is
+                    // reconciled away, which is what keeps conservative
+                    // marking affordable.
+                    self.vault.clear_unexported(&path)?;
+                } else {
+                    self.vault.mark_unexported(&path)?;
                 }
             }
         }
@@ -539,6 +559,9 @@ impl VaultSession {
         };
         self.vault.write_last_flushed(&path, &state)?;
         self.save_state(&rel)?;
+        // Last: the file and the baseline that agree with this state are both
+        // durable, so the document is provably not ahead of its file.
+        self.vault.clear_unexported(&path)?;
 
         let document_id = self.document_id(&rel)?;
         let revision = self.revision(&rel)?;
@@ -779,6 +802,8 @@ impl VaultSession {
             let path = self.vault.path.join(&export.rel);
             self.vault.write_last_flushed(&path, &state)?;
             self.save_state(&export.rel)?;
+            // Last, per document: its file and baseline are both installed.
+            self.vault.clear_unexported(&path)?;
             let revision = self.revision(&export.rel)?;
             let after = capture_outline(
                 self.docs
@@ -948,6 +973,7 @@ impl VaultSession {
         }
         let content = fs::read_to_string(&abs)?;
         let content_hash = hash_string(&content);
+        let entry_state = self.vault.export_state(&rel)?;
         self.session_mut(&rel)?;
         let before = capture_outline(
             self.docs
@@ -971,6 +997,14 @@ impl VaultSession {
                     .document_mut()
                     .adopt_source_from(&parsed);
                 self.save_state(&rel)?;
+                // This branch applies no operations: the file already hashes to
+                // the baseline and only source formatting was adopted from
+                // bytes identical to it. The document's relation to its file is
+                // therefore unchanged, so restore whatever it was before the
+                // save above marked it.
+                if entry_state == ExportState::Exported {
+                    self.vault.clear_unexported(&abs)?;
+                }
             }
             let changes = summarize_session_transition(
                 self.docs.get(&rel).expect("session remains open"),
@@ -1015,6 +1049,8 @@ impl VaultSession {
             blocks: fingerprint_document(session.document()),
         };
         self.vault.write_last_flushed(&abs, &state)?;
+        // Last: the session was just reconciled to the file's bytes.
+        self.vault.clear_unexported(&abs)?;
         let changes = summarize_session_transition(
             self.docs.get(&rel).expect("session remains open"),
             &before,
@@ -2066,11 +2102,23 @@ fn session_storage_path(vault: &Vault, rel: &Path) -> PathBuf {
     path
 }
 
+/// Persist one session snapshot, first recording that it may be ahead of the file.
+///
+/// This is the only path that writes a session snapshot, so marking here covers
+/// every mutation route — including a caller that mutates through the public
+/// `session_mut` and then calls `save_state`, which no list of named mutation
+/// sites would catch.
+///
+/// The marker is made durable before the snapshot so no crash can publish state
+/// that outruns the file without a signal. A crash between the two leaves a
+/// marker over unchanged state: a conservative report, reconciled away by the
+/// next `open_document`.
 fn write_session_snapshot(
     vault: &Vault,
     rel: &Path,
     doc: &CollaborativeDocument,
 ) -> Result<(), VaultError> {
+    vault.mark_unexported(&vault.path.join(rel))?;
     let storage_path = session_storage_path(vault, rel);
     if let Some(parent) = storage_path.parent() {
         fs::create_dir_all(parent)?;
@@ -2949,22 +2997,6 @@ fn insert_one(
 }
 
 /// Normalize to a vault-relative path without `..` components.
-fn normalize_rel(path: &Path) -> Result<PathBuf, VaultError> {
-    if path.is_absolute() {
-        return Err(VaultError::InvalidRelativePath(path.to_path_buf()));
-    }
-    if path
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(VaultError::InvalidRelativePath(path.to_path_buf()));
-    }
-    if path.as_os_str().is_empty() {
-        return Err(VaultError::InvalidRelativePath(path.to_path_buf()));
-    }
-    Ok(path.to_path_buf())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
