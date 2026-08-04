@@ -61,3 +61,8 @@ fuzz/.tmp*/
 
 # Competitive comparison report output (generated on demand)
 md-crdt-yrs-bench/report-out/
+
+# Local Yrs planning artifacts (implementation/docs remain tracked separately)
+docs/yrs-bench-compare-plan.md
+docs/yrs-bench-compare-plan-state.md
+docs/yrs-inspired-perf-plan.md

@@ -8,8 +8,8 @@ This package is **not** part of the root Cargo workspace. The root manifest list
 it under `workspace.exclude` so `just check`, `cargo test --workspace`, and
 `just bench` never resolve or build Yrs.
 
-Full plan and success criteria:
-[`docs/yrs-bench-compare-plan.md`](../docs/yrs-bench-compare-plan.md).
+The methodology, scenario contract, reporting rules, and success criteria are
+self-contained below.
 
 **Product engine remains in-tree md-crdt.** This crate measures; it does not
 replace the RGA or add Yrs as a runtime dependency of the published library.

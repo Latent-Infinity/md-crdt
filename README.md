@@ -250,7 +250,7 @@ The unpublished `md-crdt-yrs-bench/` workspace provides controlled competitive m
 - `just bench-compare-report` runs the required clean-worktree, alternating-order, three-invocation report path with provenance.
 - `just memory-compare` runs the separate per-engine RSS probe; its results are not cross-engine benchmark ratios.
 
-The suite includes the initial public-text and sync workloads plus large-paste and multi-peer fan-in extensions. Serialization/materialization diagnostics, the illustrative Yrs block-map probe, and memory RSS stay explicitly non-competitive. See the [comparison methodology](md-crdt-yrs-bench/README.md), [implementation plan](docs/yrs-bench-compare-plan.md), and [plan state](docs/yrs-bench-compare-plan-state.md). No benchmark result is a universal CRDT ranking: compare only like tiers and named workloads.
+The suite includes the initial public-text and sync workloads plus large-paste and multi-peer fan-in extensions. Serialization/materialization diagnostics, the illustrative Yrs block-map probe, and memory RSS stay explicitly non-competitive. See the self-contained [comparison methodology](md-crdt-yrs-bench/README.md). No benchmark result is a universal CRDT ranking: compare only like tiers and named workloads.
 
 **License**
 

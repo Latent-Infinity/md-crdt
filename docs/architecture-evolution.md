@@ -161,7 +161,7 @@ Without an integration spine and character-level CRDT, multi-peer collaboration 
 5. Yjs/Automerge interop (future, not this evolution).
    Competitive **performance** comparison against Yrs lives in the unpublished nested
    workspace `md-crdt-yrs-bench/` (root `workspace.exclude`); the product CRDT engine
-   remains in-tree md-crdt. See `docs/yrs-bench-compare-plan.md`.
+   remains in-tree md-crdt. See `md-crdt-yrs-bench/README.md` for the methodology.
 6. Zero public API breaks at 0.1.0 — breaks allowed when changelog-documented.
 7. Authenticated or encrypted peer channels (see trust model).
 8. MCP tool schemas, response encoding/pagination policy, search ranking, or token counting; those
