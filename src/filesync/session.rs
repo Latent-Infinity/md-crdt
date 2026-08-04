@@ -987,8 +987,15 @@ impl VaultSession {
             .expect("session opened above")
             .state_vector();
 
+        // The fast path is only sound when neither side has moved. Matching the
+        // baseline proves the file has not; the marker is what rules out the
+        // session having moved instead. Without that second test an ingest over
+        // an unchanged file would report "nothing to do" while the session still
+        // held content the file lacks, so accepting disk as the source of truth
+        // would quietly fail to discard it.
         if let Some(prev) = self.vault.read_last_flushed(&abs)?
             && prev.content_hash == content_hash
+            && entry_state == ExportState::Exported
         {
             let needs_source = !self.session_mut(&rel)?.document().has_source_state();
             if needs_source {

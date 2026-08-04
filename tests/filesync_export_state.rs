@@ -115,6 +115,34 @@ fn ingesting_an_external_change_clears_the_report() {
 }
 
 #[test]
+fn explicit_refresh_discards_unexported_work_when_the_file_is_unchanged() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("note.md");
+    fs::write(&path, "alpha\n").unwrap();
+
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    vault.open_document("note.md").unwrap();
+    edit_without_exporting(&mut vault, "note.md", "local ");
+    let revision = vault.revision("note.md").unwrap();
+
+    vault
+        .refresh_markdown("note.md", Some(&revision), None)
+        .unwrap();
+
+    assert_eq!(
+        vault.export_state("note.md").unwrap(),
+        ExportState::Exported,
+        "an explicit refresh accepts disk even when its bytes did not change"
+    );
+    let refreshed = vault
+        .session_mut("note.md")
+        .unwrap()
+        .document()
+        .serialize(EquivalenceMode::Structural);
+    assert_eq!(refreshed, "alpha");
+}
+
+#[test]
 fn reopening_clears_a_report_left_over_from_a_crash() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("note.md"), "alpha\n").unwrap();
