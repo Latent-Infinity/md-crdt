@@ -1316,6 +1316,60 @@ fn vault_local_edit(c: &mut Criterion) {
     group.finish();
 }
 
+/// MCP agent loop: open document → outline page → one local edit → selected projection.
+///
+/// Models the common agent path over a vault note without full-document serialize.
+fn mcp_agent_loop(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mcp_agent_loop");
+    group.sample_size(15);
+    group.measurement_time(Duration::from_secs(2));
+
+    for block_count in [100usize, 1_000] {
+        let directory = tempdir().unwrap();
+        let markdown = (0..block_count)
+            .map(|index| format!("## Section {index:04}\n\nitem-{index:05} body text"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        fs::write(directory.path().join("note.md"), markdown).unwrap();
+
+        group.throughput(Throughput::Elements(1));
+        group.bench_function(BenchmarkId::from_parameter(block_count), |b| {
+            b.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for i in 0..iterations {
+                    let mut vault = VaultSession::open(directory.path()).unwrap();
+                    let start = Instant::now();
+                    let handle = vault.open_document("note.md").unwrap();
+                    let page = vault.descriptor_page("note.md", None, None, 32).unwrap();
+                    assert!(!page.items.is_empty(), "seeded note must have descriptors");
+                    let target = page.items[i as usize % page.items.len()].id;
+                    vault
+                        .with_local_edit("note.md", |session| {
+                            session.insert_text(target, 0, "!").unwrap()
+                        })
+                        .unwrap();
+                    let revision = vault.revision("note.md").unwrap();
+                    let current = md_crdt::DocumentHandle { revision, ..handle };
+                    let request =
+                        projection_request(&current, &[target], ProjectionFields::SEMANTIC);
+                    let projection = vault.project_blocks("note.md", request).unwrap();
+                    elapsed += start.elapsed();
+                    // Undo so the next iteration stays one grapheme deep.
+                    vault
+                        .apply_local_edit("note.md", |session| {
+                            session.delete_text(target, 0, 1).unwrap()
+                        })
+                        .unwrap();
+                    vault.flush_document("note.md").unwrap();
+                    black_box((page.items.len(), projection.bytes_used));
+                }
+                elapsed
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     block_lookup,
@@ -1326,6 +1380,7 @@ criterion_group!(
     session_insert_text,
     session_keystroke_batch,
     mcp_selected_block_insert,
+    mcp_agent_loop,
     vault_local_edit,
     document_serialize,
     workspace_hierarchy,

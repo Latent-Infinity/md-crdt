@@ -19,6 +19,17 @@ md-crdt is a Rust library and CLI for offline-first, deterministic collaboration
 - `md-crdt-ffi`: Reserved workspace placeholder. It is not published and does not expose a C ABI or supported language bindings; Rust consumers should use `md-crdt` directly.
 - `md-crdt-naive-oracle`: Unpublished reference implementation used for differential testing.
 
+**Recommended configuration for agents / MCP hosts**
+
+| Knob | Recommendation | Why |
+| --- | --- | --- |
+| Cargo features | Keep defaults (`storage` + `filesync`). Optional: `sequence_incremental` for soak/ablation; `perf_trace` for diagnostics only | Defaults match product vault path |
+| Text inserts | Prefer `insert_text` / `insert_text_batch` with the full known run, not one public call per keystroke | One envelope + chain apply; large win vs M commits |
+| Vault edits | Use `with_local_edit` when each call must be durable; use `apply_local_edit` + `flush_document` to batch N edits into one write | Product latency is dominated by snapshot I/O |
+| History growth | Call `checkpoint_history` with a modest `max_retained_ops` and accurate active-peer leases on long sessions | Shrinks snapshot/op-log RSS; omitted peers must rebase |
+| Wire codec | JSON envelopes default; opt into `md_crdt_bin_v1` only when both peers agree | Binary is compact; not the snapshot format |
+| Text representation | Per-grapheme units (stable OpIds) | Run-length packing is deferred |
+
 **Library Quickstart**
 
 Parse Markdown, edit a block, serialize back:
@@ -211,6 +222,14 @@ older than the retained delta floor, while `sync_since` returns either a compact
 session checkpoint that the lagging peer can install before incremental exchange resumes. Structural
 tombstones are retained because operation acknowledgement alone is not sufficient for causal garbage
 collection.
+
+**Agent / MCP workloads:** prefer `insert_text_batch` (or one multi-grapheme `insert_text`) over
+per-keystroke public calls; flush vault sessions with `apply_local_edit` + batched
+`flush_document` when durability can wait; and call `checkpoint_history` with a modest
+`max_retained_ops` and accurate active-peer leases on long-lived sessions so snapshot and RSS
+growth track content rather than full history. Omitted peers must rebase as described above. Text
+remains one RGA unit per grapheme by design (stable OpIds for marks and anchors); run-length
+packing is not enabled by default.
 
 Persistence accepts only V7 session snapshots and current V2 dual-slot storage. Older or legacy
 state fails with an explicit reinitialize/re-ingest error; re-ingest the authoritative Markdown files
