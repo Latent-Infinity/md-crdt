@@ -97,6 +97,7 @@ fuzz-quick:
     cargo +nightly fuzz run parser -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
     cargo +nightly fuzz run apply_changes -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
     cargo +nightly fuzz run decode_changes -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
+    cargo +nightly fuzz run decode_binary_wire -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
     cargo +nightly fuzz run merge_convergence -- -max_total_time=300 -rss_limit_mb=2048 -max_len=4096
 
 # Moderate fuzz run (1 hour per target, 15 workers)
@@ -104,6 +105,7 @@ fuzz-moderate:
     cargo +nightly fuzz run parser -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
     cargo +nightly fuzz run apply_changes -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
     cargo +nightly fuzz run decode_changes -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
+    cargo +nightly fuzz run decode_binary_wire -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
     cargo +nightly fuzz run merge_convergence -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=4096 -jobs=15 -workers=15
 
 # Run long fuzzing campaign (manual, use with caution)
@@ -112,6 +114,7 @@ fuzz-long-run:
     cargo +nightly fuzz run parser -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
     cargo +nightly fuzz run apply_changes -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
     cargo +nightly fuzz run decode_changes -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
+    cargo +nightly fuzz run decode_binary_wire -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
     cargo +nightly fuzz run merge_convergence -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=4096 -jobs=15 -workers=15
 
 # Generate code coverage report

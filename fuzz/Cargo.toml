@@ -32,6 +32,10 @@ path = "fuzz_targets/decode_changes.rs"
 name = "merge_convergence"
 path = "fuzz_targets/merge_convergence.rs"
 
+[[bin]]
+name = "decode_binary_wire"
+path = "fuzz_targets/decode_binary_wire.rs"
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unused_must_use = "deny"

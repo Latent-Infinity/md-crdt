@@ -5,7 +5,7 @@ use crate::sizes::{
     PEER_B_MARKER, V1_SIZE_MATRIX, append_run_payload, fill_text, keystroke_payload, middle_index,
     paste_payload, peer_a, peer_b, peer_marker,
 };
-use crate::{MD_CRDT_WIRE_CODEC, YRS_TEXT_ROOT, YRS_WIRE_CODEC};
+use crate::{MD_CRDT_BIN_WIRE_CODEC, MD_CRDT_WIRE_CODEC, YRS_TEXT_ROOT, YRS_WIRE_CODEC};
 
 /// Claim tier for a benchmark id. Cross-tier ratios are forbidden.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -16,6 +16,8 @@ pub enum Tier {
     DecodedIntegration,
     /// Declared serialization + decode + apply pipelines.
     WirePipeline,
+    /// md-crdt binary codec pipeline only (Tier C′). Never ratio against Yrs lib0.
+    WirePipelineBinary,
 }
 
 impl Tier {
@@ -26,6 +28,7 @@ impl Tier {
             Self::PublicText => "public_text",
             Self::DecodedIntegration => "decoded_integration",
             Self::WirePipeline => "wire_pipeline",
+            Self::WirePipelineBinary => "wire_pipeline_bin",
         }
     }
 }
@@ -637,6 +640,93 @@ pub fn all_competitive_manifests() -> Vec<ScenarioManifest> {
     out
 }
 
+/// Tier C′ binary-codec wire workloads (md-crdt only; not ratioed with Yrs).
+#[must_use]
+pub fn all_binary_wire_manifests() -> Vec<ScenarioManifest> {
+    use crate::sizes::TEXT_LENS;
+    let mut out = Vec::new();
+    for &n in TEXT_LENS {
+        out.push(wire_encode_full_bin(n));
+        out.push(wire_encode_delta_bin(n, 100));
+        out.push(wire_decode_apply_bin(n, Some(100)));
+    }
+    out
+}
+
+fn wire_encode_full_bin(n: usize) -> ScenarioManifest {
+    ScenarioManifest {
+        tier: Tier::WirePipelineBinary,
+        workload_id: "wire_encode_full",
+        parameter_id: format!("n={n}"),
+        peer_a: peer_a(),
+        peer_b: peer_b(),
+        yrs_text_root: YRS_TEXT_ROOT,
+        base_history: BaseHistory::BulkSeed { n },
+        timed_logical_ops: 1,
+        timed_api_calls: 1,
+        timed_yrs_transactions: 0,
+        edit_payload: None,
+        edit_index: None,
+        batch_policy: BatchPolicy::LargeInput,
+        codec_md_crdt: Some(MD_CRDT_BIN_WIRE_CODEC),
+        codec_yrs: None,
+        expectation: SequentialExpectation::ExactVisible(fill_text(n)),
+    }
+}
+
+fn wire_encode_delta_bin(n: usize, k: usize) -> ScenarioManifest {
+    let mut expected = fill_text(n);
+    expected.push_str(&append_run_payload(k));
+    ScenarioManifest {
+        tier: Tier::WirePipelineBinary,
+        workload_id: "wire_encode_delta",
+        parameter_id: format!("n={n},k={k}"),
+        peer_a: peer_a(),
+        peer_b: peer_b(),
+        yrs_text_root: YRS_TEXT_ROOT,
+        base_history: BaseHistory::BulkSeedPlusLag { n, k },
+        timed_logical_ops: 1,
+        timed_api_calls: 1,
+        timed_yrs_transactions: 0,
+        edit_payload: None,
+        edit_index: None,
+        batch_policy: BatchPolicy::LargeInput,
+        codec_md_crdt: Some(MD_CRDT_BIN_WIRE_CODEC),
+        codec_yrs: None,
+        expectation: SequentialExpectation::ExactVisible(expected),
+    }
+}
+
+fn wire_decode_apply_bin(n: usize, lag: Option<usize>) -> ScenarioManifest {
+    let base = base_for_lag(n, lag);
+    let expected = match lag {
+        None => fill_text(n),
+        Some(k) => {
+            let mut s = fill_text(n);
+            s.push_str(&append_run_payload(k));
+            s
+        }
+    };
+    ScenarioManifest {
+        tier: Tier::WirePipelineBinary,
+        workload_id: "wire_decode_apply",
+        parameter_id: history_param(n, lag),
+        peer_a: peer_a(),
+        peer_b: peer_b(),
+        yrs_text_root: YRS_TEXT_ROOT,
+        base_history: base,
+        timed_logical_ops: 1,
+        timed_api_calls: 1,
+        timed_yrs_transactions: 0,
+        edit_payload: None,
+        edit_index: None,
+        batch_policy: BatchPolicy::LargeInput,
+        codec_md_crdt: Some(MD_CRDT_BIN_WIRE_CODEC),
+        codec_yrs: None,
+        expectation: SequentialExpectation::ExactVisible(expected),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -747,6 +837,10 @@ mod tests {
                 Tier::WirePipeline => {
                     assert_eq!(m.codec_md_crdt, Some(MD_CRDT_WIRE_CODEC));
                     assert_eq!(m.codec_yrs, Some(YRS_WIRE_CODEC));
+                }
+                Tier::WirePipelineBinary => {
+                    assert_eq!(m.codec_md_crdt, Some(MD_CRDT_BIN_WIRE_CODEC));
+                    assert!(m.codec_yrs.is_none());
                 }
                 Tier::DecodedIntegration => {
                     assert!(m.codec_md_crdt.is_none());

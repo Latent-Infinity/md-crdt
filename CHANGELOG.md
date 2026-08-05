@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counters and md-crdt-only sub-probes without affecting competitive ratios.
 - `CollaborativeDocument::insert_text_batch` coalesces known text runs into one
   grapheme-safe `InsertText` envelope without advancing the clock for an empty batch.
+- `md_crdt_bin_v1` adds an opt-in, versioned binary operation-envelope and
+  `ChangeMessage` transport alongside the default JSON codec, with exact golden
+  vectors, malformed-frame bounds, fuzz coverage, and separately labeled Tier C′
+  benchmark cases that are not compared against Yrs lib0.
 
 ### Changed
 

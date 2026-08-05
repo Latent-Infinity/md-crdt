@@ -96,16 +96,19 @@ pub use read::{OutlineEntry, ReadBlock, ReadBlockKind, ReadDocument, ReadLink, S
 
 // Re-export sync types
 pub use sync::{
-    ApplyResult, ChangeMessage, CheckpointError, CheckpointReport, CheckpointRequest,
-    DocumentTombstonePolicy, MalformedKind, Operation, PeerLease, RebaseRequired, SemanticConflict,
-    SyncState, ValidationError, ValidationLimits, validate_changes,
+    ApplyResult, BINARY_CHANGE_FORMAT, BINARY_CHANGE_MAGIC, ChangeMessage, CheckpointError,
+    CheckpointReport, CheckpointRequest, DocumentTombstonePolicy, MD_CRDT_BIN_V1_LABEL,
+    MalformedKind, Operation, PeerLease, RebaseRequired, SemanticConflict, SyncState,
+    ValidationError, ValidationLimits, decode_bin_v1_change_message_to_json_payloads,
+    decode_change_message_bin_v1, encode_change_message_bin_v1,
+    encode_json_change_message_as_bin_v1, validate_changes,
 };
 
 // Re-export codec types
 pub use codec::{
-    BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, CodecError, DocOp, Envelope,
-    JsonOpCodec, MAX_WIRE_NEST_DEPTH, OpBody, OpCodec, TableCellWire, TextUnitWire, WIRE_VERSION,
-    insert_block_paragraph_is_empty,
+    BINARY_ENVELOPE_FORMAT, BINARY_ENVELOPE_MAGIC, BinaryOpCodec, BlockKindSkeleton, BlockSkeleton,
+    BlockSkeletonInsert, CodecError, DocOp, Envelope, JsonOpCodec, MAX_WIRE_NEST_DEPTH, OpBody,
+    OpCodec, TableCellWire, TextUnitWire, WIRE_VERSION, insert_block_paragraph_is_empty,
 };
 
 // Re-export session types

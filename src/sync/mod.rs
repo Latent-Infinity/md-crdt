@@ -3,6 +3,15 @@
 //! This module provides the sync layer for exchanging operations between peers,
 //! including validation, causal ordering, and conflict resolution.
 
+mod binary_wire;
+mod validation;
+
+pub use binary_wire::{
+    BINARY_CHANGE_FORMAT, BINARY_CHANGE_MAGIC, MD_CRDT_BIN_V1_LABEL,
+    decode_bin_v1_change_message_to_json_payloads, decode_change_message_bin_v1,
+    encode_change_message_bin_v1, encode_json_change_message_as_bin_v1,
+};
+
 use crate::core::{OpId, StateVector};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -75,8 +84,6 @@ pub struct RebaseRequired {
     pub checkpoint_epoch: u64,
     pub delta_floor: StateVector,
 }
-
-mod validation;
 
 pub use validation::{MalformedKind, ValidationError, ValidationLimits, validate_changes};
 
@@ -277,10 +284,12 @@ impl SyncState {
                 delta_floor: self.delta_floor.clone(),
             });
         }
-        let mut ops = Vec::new();
+        // Upper-bound capacity: at most one op per applied log entry.
+        let mut ops = Vec::with_capacity(self.ops.len());
         for (op_id, payload) in &self.ops {
             let seen = since.get(op_id.peer).unwrap_or(0);
             if op_id.counter > seen {
+                // `payload` is `Arc<[u8]>` — clone is refcount only.
                 ops.push(Operation {
                     id: *op_id,
                     payload: payload.clone(),

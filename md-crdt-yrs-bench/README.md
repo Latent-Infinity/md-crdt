@@ -79,6 +79,7 @@ scenario, not a tuning knob.
 | **A – public text** (layer-inclusive) | `text_insert_middle`, `text_append_run`, `text_append_keystrokes`, `text_delete_middle` |
 | **B – decoded integration** | `integrate_decoded_update` (`history=full` / `history=delta`) |
 | **C – wire pipeline** | `wire_encode_full`, `wire_encode_delta`, `wire_decode_apply`, `two_peer_round_trip`, `multi_peer_fan_in` (stretch) |
+| **C′ – binary wire (md-crdt only)** | same encode/decode names under `wire_pipeline_bin` with `md_crdt_bin_v1` |
 | **A stretch** | `text_paste_middle` (single-call paste of R bytes) |
 
 Stretch sizes: paste R ∈ {256, 1024, 4096}; fan-in peers ∈ {4, 8} at N=1000.
@@ -88,12 +89,16 @@ Stretch sizes: paste R ∈ {256, 1024, 4096}; fan-in peers ∈ {4, 8} at N=1000.
 The memory recipe builds once, then records each engine's live document RSS in a separate probe
 process; Cargo and compiler memory are outside the measurement.
 
-**Codecs (Tier C only):**
+**Never ratio Tier C′ against Yrs lib0** — different declared codecs; C′ measures md-crdt JSON vs
+md-crdt binary (or absolute binary cost), not algorithm truth vs Yjs.
 
-| Engine | Codec label | Meaning |
+**Codecs:**
+
+| Engine / path | Codec label | Meaning |
 | --- | --- | --- |
-| md-crdt | `md_crdt_serde_json_v1` | `serde_json` of `ChangeMessage` (benchmark transport, not a product wire mandate) |
-| Yrs | `yrs_lib0_v1` | `encode_state_as_update_v1` / `Update::decode_v1` |
+| md-crdt Tier C | `md_crdt_serde_json_v1` | `serde_json` of `ChangeMessage` (JSON envelopes) |
+| md-crdt Tier C′ | `md_crdt_bin_v1` | postcard envelopes + binary ChangeMessage frame |
+| Yrs Tier C | `yrs_lib0_v1` | `encode_state_as_update_v1` / `Update::decode_v1` |
 
 ### Out of scope for competitive claims
 

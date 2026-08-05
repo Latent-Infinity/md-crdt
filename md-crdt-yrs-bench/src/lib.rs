@@ -33,6 +33,9 @@ pub const PEER_B: u64 = 2;
 /// Declared md-crdt wire codec label for Tier C results.
 pub const MD_CRDT_WIRE_CODEC: &str = "md_crdt_serde_json_v1";
 
+/// Declared md-crdt binary wire codec label for Tier C′ results (not ratioed with Yrs).
+pub const MD_CRDT_BIN_WIRE_CODEC: &str = "md_crdt_bin_v1";
+
 /// Declared Yrs wire codec label for Tier C results.
 pub const YRS_WIRE_CODEC: &str = "yrs_lib0_v1";
 
@@ -41,7 +44,7 @@ pub use harness::{
     CallTrace, DEFAULT_DESTRUCTIVE_BATCH, DropProbe, TracedInput, run_batched_iteration,
     run_batched_iteration_traced,
 };
-pub use md_crdt_adapter::{MdCrdtAdapter, MdCrdtSeed};
+pub use md_crdt_adapter::{MdCrdtAdapter, MdCrdtBinAdapter, MdCrdtSeed};
 pub use report::{
     CaseMetadata, INVOCATION_REQUIRED_KEYS, PROVENANCE_REQUIRED_KEYS, PROVENANCE_SCHEMA_VERSION,
     validate_provenance_document,
@@ -72,6 +75,7 @@ mod tests {
         assert_eq!(PEER_A, 1);
         assert_eq!(PEER_B, 2);
         assert_eq!(MD_CRDT_WIRE_CODEC, "md_crdt_serde_json_v1");
+        assert_eq!(MD_CRDT_BIN_WIRE_CODEC, "md_crdt_bin_v1");
         assert_eq!(YRS_WIRE_CODEC, "yrs_lib0_v1");
     }
 

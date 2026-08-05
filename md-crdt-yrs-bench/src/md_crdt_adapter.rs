@@ -143,6 +143,84 @@ impl SyncEngine for MdCrdtAdapter {
     }
 }
 
+/// Same collaborative engine as [`MdCrdtAdapter`], but Tier C wire bytes use
+/// `md_crdt_bin_v1` (binary envelopes + ChangeMessage frame). Never ratio against Yrs.
+pub struct MdCrdtBinAdapter {
+    inner: MdCrdtAdapter,
+}
+
+impl MdCrdtBinAdapter {
+    #[must_use]
+    pub fn session(&self) -> &CollaborativeDocument {
+        self.inner.session()
+    }
+}
+
+impl ComparisonAdapter for MdCrdtBinAdapter {
+    fn empty(peer: u64) -> Self {
+        Self {
+            inner: MdCrdtAdapter::empty(peer),
+        }
+    }
+}
+
+impl TextEngine for MdCrdtBinAdapter {
+    type Seed = MdCrdtSeed;
+
+    fn seed(peer: u64, text: &str) -> Self::Seed {
+        MdCrdtAdapter::seed(peer, text)
+    }
+
+    fn restore(seed: &Self::Seed) -> Self {
+        Self {
+            inner: MdCrdtAdapter::restore(seed),
+        }
+    }
+
+    fn insert_at(&mut self, index: usize, text: &str) {
+        self.inner.insert_at(index, text);
+    }
+
+    fn delete_at(&mut self, index: usize, len: usize) {
+        self.inner.delete_at(index, len);
+    }
+
+    fn visible_len(&self) -> usize {
+        self.inner.visible_len()
+    }
+
+    fn visible_string(&self) -> String {
+        self.inner.visible_string()
+    }
+}
+
+impl SyncEngine for MdCrdtBinAdapter {
+    type StateVector = StateVector;
+    type DecodedUpdate = ChangeMessage;
+
+    fn state_vector(&self) -> Self::StateVector {
+        self.inner.state_vector()
+    }
+
+    fn export_decoded_since(&self, sv: &Self::StateVector) -> Self::DecodedUpdate {
+        self.inner.export_decoded_since(sv)
+    }
+
+    fn encode_wire_since(&self, sv: &Self::StateVector) -> Vec<u8> {
+        let message = self.export_decoded_since(sv);
+        md_crdt::encode_json_change_message_as_bin_v1(&message).expect("md_crdt_bin_v1 encode")
+    }
+
+    fn decode_wire(bytes: &[u8]) -> Self::DecodedUpdate {
+        md_crdt::decode_bin_v1_change_message_to_json_payloads(bytes)
+            .expect("md_crdt_bin_v1 decode")
+    }
+
+    fn apply_decoded(&mut self, update: Self::DecodedUpdate) {
+        self.inner.apply_decoded(update);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +231,24 @@ mod tests {
         MIDDLE_INSERT, append_run_payload, fill_text, keystroke_payload, middle_index,
     };
     use crate::{PEER_A, PEER_B, TextEngine};
+
+    #[test]
+    fn binary_wire_round_trip_preserves_visible_text() {
+        use crate::{MdCrdtBinAdapter, PEER_A};
+        let seed = MdCrdtBinAdapter::seed(PEER_A, &fill_text(64));
+        let mut source = MdCrdtBinAdapter::restore(&seed);
+        source.insert_at(32, "y");
+        let empty = StateVector::default();
+        let wire = source.encode_wire_since(&empty);
+        assert!(
+            wire.starts_with(b"MDCRBIN1"),
+            "expected binary change magic"
+        );
+        let mut target = MdCrdtBinAdapter::empty(PEER_B);
+        let update = MdCrdtBinAdapter::decode_wire(&wire);
+        target.apply_decoded(update);
+        assert_eq!(target.visible_string(), source.visible_string());
+    }
 
     #[test]
     fn middle_insert_matches_exact_expectation() {

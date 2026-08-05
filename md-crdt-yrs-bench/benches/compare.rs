@@ -12,10 +12,12 @@ use md_crdt_yrs_bench::runners::{
     setup_integrate_decoded, setup_multi_peer_fan_in, setup_two_peer_round_trip,
 };
 use md_crdt_yrs_bench::scenario::{
-    BatchPolicy, EngineId, ScenarioManifest, all_competitive_manifests,
+    BatchPolicy, EngineId, ScenarioManifest, all_binary_wire_manifests, all_competitive_manifests,
 };
 use md_crdt_yrs_bench::sizes::fill_text;
-use md_crdt_yrs_bench::{ComparisonAdapter, MdCrdtAdapter, YrsAdapter, keystroke_payload};
+use md_crdt_yrs_bench::{
+    ComparisonAdapter, MdCrdtAdapter, MdCrdtBinAdapter, YrsAdapter, keystroke_payload,
+};
 
 fn criterion_batch(policy: BatchPolicy) -> BatchSize {
     match policy {
@@ -381,6 +383,27 @@ fn compare_yrs(c: &mut Criterion) {
     register_engine_cases::<YrsAdapter>(c, EngineId::Yrs, "compare_yrs");
 }
 
+/// Tier C′ binary wire path for md-crdt only (never ratio against Yrs lib0).
+fn compare_md_crdt_bin(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compare_md_crdt_bin");
+    let engine = EngineId::MdCrdt;
+    for manifest in all_binary_wire_manifests() {
+        match manifest.workload_id {
+            "wire_encode_full" => {
+                bench_encode_full::<MdCrdtBinAdapter>(&mut group, &manifest, engine)
+            }
+            "wire_encode_delta" => {
+                bench_encode_delta::<MdCrdtBinAdapter>(&mut group, &manifest, engine)
+            }
+            "wire_decode_apply" => {
+                bench_decode_apply::<MdCrdtBinAdapter>(&mut group, &manifest, engine)
+            }
+            other => panic!("unhandled binary workload {other}"),
+        }
+    }
+    group.finish();
+}
+
 /// Full suite with optional engine registration order for multi-run reports.
 ///
 /// Set `MD_CRDT_COMPARE_ENGINE_ORDER` to `yrs_first` or `md_first` (default).
@@ -398,6 +421,8 @@ fn compare_suite(c: &mut Criterion) {
             compare_yrs(c);
         }
     }
+    // Tier C′ binary codec (md-crdt only; interpret separately from JSON Tier C).
+    compare_md_crdt_bin(c);
     // Non-competitive diagnostics (never ratioed across engines / models).
     diagnostic_md_crdt_markdown_serialize(c);
     diagnostic_yrs_text_get_string(c);

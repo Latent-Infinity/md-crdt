@@ -1,6 +1,6 @@
 //! Report metadata and provenance schema for competitive cases.
 
-use crate::scenario::{BatchPolicy, EngineId, ScenarioManifest, Tier};
+use crate::scenario::{BatchPolicy, EngineId, ScenarioManifest};
 
 /// Required top-level keys in a multi-run provenance sidecar (S10).
 ///
@@ -233,7 +233,7 @@ impl CaseMetadata {
                 }
                 // Wire length is optional for non-wire tiers.
             }
-            "wire_pipeline" => {
+            "wire_pipeline" | "wire_pipeline_bin" => {
                 if self.codec.is_none() {
                     return false;
                 }
@@ -250,7 +250,7 @@ impl CaseMetadata {
         if !self.is_complete() {
             return false;
         }
-        if self.tier == Tier::WirePipeline.id() {
+        if matches!(self.tier, "wire_pipeline" | "wire_pipeline_bin") {
             matches!(self.wire_payload_bytes, Some(n) if n > 0)
         } else {
             true
@@ -261,7 +261,7 @@ impl CaseMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenario::all_v1_manifests;
+    use crate::scenario::{Tier, all_binary_wire_manifests, all_v1_manifests};
 
     #[test]
     fn every_manifest_engine_pair_has_complete_metadata() {
@@ -306,6 +306,19 @@ mod tests {
         assert!(meta.is_complete());
         assert!(meta.is_complete_with_wire_sample());
         assert!(meta.codec.is_none());
+    }
+
+    #[test]
+    fn binary_wire_manifests_require_and_accept_wire_metadata() {
+        for manifest in all_binary_wire_manifests() {
+            let without = CaseMetadata::from_manifest(&manifest, EngineId::MdCrdt, None);
+            assert!(without.is_complete());
+            assert!(!without.is_complete_with_wire_sample());
+
+            let with = CaseMetadata::from_manifest(&manifest, EngineId::MdCrdt, Some(128));
+            assert!(with.is_complete_with_wire_sample());
+            assert_eq!(with.codec.as_deref(), Some("md_crdt_bin_v1"));
+        }
     }
 
     #[test]

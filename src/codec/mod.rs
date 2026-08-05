@@ -2,9 +2,15 @@
 //!
 //! The codec owns encode/decode of [`Envelope`] payloads only. Causal logging
 //! stays in `sync`; document apply stays in `session` / `doc`.
+//!
+//! Two envelope codecs are provided:
+//! - [`JsonOpCodec`] — default, human-inspectable (`md_crdt_serde_json_v1` on the wire)
+//! - [`BinaryOpCodec`] — compact postcard frame (`md_crdt_bin_v1`)
 
+mod binary;
 mod wire;
 
+pub use binary::{BINARY_ENVELOPE_FORMAT, BINARY_ENVELOPE_MAGIC, BinaryOpCodec};
 pub use wire::{
     BlockKindSkeleton, BlockSkeleton, BlockSkeletonInsert, ColumnAlignmentWire, DocOp, Envelope,
     ListItemSkeleton, MAX_WIRE_NEST_DEPTH, MovedBlockWire, MovedTextUnitWire, OpBody,

@@ -199,6 +199,11 @@ remote.apply_remote(
 `apply_remote` durably flushes the updated per-file session before returning. The application still
 chooses how the `ChangeMessage` reaches the other vault.
 
+JSON operation envelopes remain the default transport representation. Peers that explicitly agree
+on the versioned `md_crdt_bin_v1` format can use `encode_json_change_message_as_bin_v1` and
+`decode_bin_v1_change_message_to_json_payloads` for a compact binary transport; the frame is not a
+snapshot format and does not change the default session codec.
+
 Long-running hosts can bound retained operation history with `checkpoint_history`. Each checkpoint
 request names the active peers and the state vector each has acknowledged; peers omitted by the host
 are expired for that checkpoint. `encode_changes_since` returns `RebaseRequired` when a caller is
