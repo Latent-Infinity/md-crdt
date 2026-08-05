@@ -118,6 +118,15 @@ impl<T: Clone> Sequence<T> {
     }
 
     pub fn apply(&mut self, op: SequenceOp<T>) {
+        // A ready single insert uses the same O(n) splice path as multi-unit
+        // chains, avoiding a full rebuild_order for the common case.
+        if matches!(&op, SequenceOp::Insert { .. })
+            && self.try_apply_contiguous_insert_chain(std::slice::from_ref(&op))
+        {
+            #[cfg(feature = "sequence_incremental")]
+            self.debug_assert_incremental_order();
+            return;
+        }
         if let Some(inserted_id) = self.apply_now(op) {
             self.process_pending(inserted_id);
         }
@@ -126,6 +135,18 @@ impl<T: Clone> Sequence<T> {
     }
 
     pub(crate) fn apply_batch(&mut self, ops: impl IntoIterator<Item = SequenceOp<T>>) {
+        let ops: Vec<SequenceOp<T>> = ops.into_iter().collect();
+        if ops.is_empty() {
+            return;
+        }
+        // Contiguous same-peer insert chains (local paste / multi-grapheme insert)
+        // splice once without a full sequence rebuild.
+        if self.try_apply_contiguous_insert_chain(&ops) {
+            #[cfg(feature = "sequence_incremental")]
+            self.debug_assert_incremental_order();
+            return;
+        }
+
         #[cfg(feature = "sequence_incremental")]
         for op in ops {
             self.apply(op);
@@ -144,6 +165,96 @@ impl<T: Clone> Sequence<T> {
                 self.rebuild_order();
             }
         }
+    }
+
+    /// Fast path for a pure insert chain: each unit after the first anchors on
+    /// the previous unit id (local multi-grapheme expand). Places the whole
+    /// chain with one sibling-position lookup and one splice; rebuilds only the
+    /// id→index map.
+    ///
+    /// Returns `false` when the batch is not a ready contiguous chain (mixed
+    /// deletes, missing anchors, duplicate ids, pending work), so the caller
+    /// falls back to the general apply path.
+    fn try_apply_contiguous_insert_chain(&mut self, ops: &[SequenceOp<T>]) -> bool {
+        if ops.is_empty() {
+            return true;
+        }
+        // Refuse when any pending work exists: chain placement assumes a stable
+        // linearized order without delayed promotions mid-batch.
+        if !self.pending_inserts.is_empty() || !self.pending_deletes.is_empty() {
+            return false;
+        }
+
+        let mut chain: Vec<Element<T>> = Vec::with_capacity(ops.len());
+        for (i, op) in ops.iter().enumerate() {
+            let SequenceOp::Insert {
+                after,
+                id,
+                value,
+                right_origin,
+            } = op
+            else {
+                return false;
+            };
+            if self.index.contains_key(id) {
+                return false;
+            }
+            if i == 0 {
+                if let Some(anchor) = after
+                    && !self.index.contains_key(anchor)
+                {
+                    return false;
+                }
+            } else {
+                let SequenceOp::Insert { id: prev_id, .. } = &ops[i - 1] else {
+                    return false;
+                };
+                if *after != Some(*prev_id) {
+                    return false;
+                }
+                // A local expanded insert reserves one consecutive counter run.
+                // Enforcing that invariant also prevents duplicate ids within
+                // the batch from corrupting the id-to-index map.
+                if id.peer != prev_id.peer || prev_id.counter.checked_add(1) != Some(id.counter) {
+                    return false;
+                }
+                // Tail units of a local expand always use right_origin = None.
+                if right_origin.is_some() {
+                    return false;
+                }
+            }
+            chain.push(Element {
+                id: *id,
+                value: Some(value.clone()),
+                after: *after,
+                right_origin: *right_origin,
+            });
+        }
+
+        let first = &chain[0];
+        let insert_at = self.linearized_insert_index(first);
+        self.elements.splice(insert_at..insert_at, chain);
+
+        // Only indices from insert_at onward shifted; rebuild the whole map is
+        // still O(n) but much cheaper than rebuild_order's tree walk + sorts.
+        for index in insert_at..self.elements.len() {
+            self.index.insert(self.elements[index].id, index);
+        }
+        true
+    }
+
+    /// Physical index where `element` belongs among siblings of `element.after`.
+    fn linearized_insert_index(&self, element: &Element<T>) -> usize {
+        // Match incremental sibling placement: first sibling that sorts after
+        // `element` among those with the same `after`, else end of that subtree.
+        self.elements
+            .iter()
+            .enumerate()
+            .find(|(_, sibling)| {
+                sibling.after == element.after && Self::compare_siblings(element, sibling).is_lt()
+            })
+            .map(|(index, _)| index)
+            .unwrap_or_else(|| self.subtree_end(element.after))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &T> {
@@ -339,15 +450,7 @@ impl<T: Clone> Sequence<T> {
 
     #[cfg(feature = "sequence_incremental")]
     fn insert_incrementally(&mut self, element: Element<T>) {
-        let insert_at = self
-            .elements
-            .iter()
-            .enumerate()
-            .find(|(_, sibling)| {
-                sibling.after == element.after && Self::compare_siblings(&element, sibling).is_lt()
-            })
-            .map(|(index, _)| index)
-            .unwrap_or_else(|| self.subtree_end(element.after));
+        let insert_at = self.linearized_insert_index(&element);
 
         self.elements.insert(insert_at, element);
         for index in insert_at..self.elements.len() {
@@ -355,7 +458,6 @@ impl<T: Clone> Sequence<T> {
         }
     }
 
-    #[cfg(feature = "sequence_incremental")]
     fn subtree_end(&self, parent: Option<OpId>) -> usize {
         let Some(parent) = parent else {
             return self.elements.len();
@@ -367,7 +469,6 @@ impl<T: Clone> Sequence<T> {
             .map_or(self.elements.len(), |offset| start + offset)
     }
 
-    #[cfg(feature = "sequence_incremental")]
     fn is_descendant_of(&self, candidate: &Element<T>, ancestor: OpId) -> bool {
         let mut cursor = candidate.after;
         while let Some(id) = cursor {
@@ -614,6 +715,19 @@ mod batch_tests {
         }
     }
 
+    fn apply_with_full_rebuild(sequence: &mut Sequence<char>, ops: Vec<SequenceOp<char>>) {
+        let mut inserted = false;
+        for op in ops {
+            if let Some(inserted_id) = sequence.apply_now_with_rebuild(op, false) {
+                inserted = true;
+                inserted |= sequence.process_pending_inner(inserted_id, false);
+            }
+        }
+        if inserted {
+            sequence.rebuild_order();
+        }
+    }
+
     #[test]
     fn batched_apply_matches_individual_apply_and_promotes_pending_ops() {
         let pending = insert(Some(id(3)), 4, 'd');
@@ -635,6 +749,99 @@ mod batch_tests {
 
         assert_eq!(batched, individual);
         assert_eq!(batched.iter().copied().collect::<String>(), "abcd");
+    }
+
+    #[test]
+    fn contiguous_chain_middle_insert_matches_full_rebuild() {
+        let mut base = Sequence::new();
+        for (i, ch) in ['w', 'x', 'y', 'z'].into_iter().enumerate() {
+            base.apply(insert(
+                if i == 0 { None } else { Some(id(i as u64)) },
+                (i + 1) as u64,
+                ch,
+            ));
+        }
+        // Insert "ab" after 'x' (id 2): chain after=2, then after first new.
+        let chain = vec![
+            SequenceOp::Insert {
+                after: Some(id(2)),
+                id: id(10),
+                value: 'a',
+                right_origin: base.compute_right_origin(Some(id(2))),
+            },
+            SequenceOp::Insert {
+                after: Some(id(10)),
+                id: id(11),
+                value: 'b',
+                right_origin: None,
+            },
+        ];
+
+        let mut rebuilt = base.clone();
+        apply_with_full_rebuild(&mut rebuilt, chain.clone());
+
+        let mut batched = base;
+        batched.apply_batch(chain);
+
+        assert_eq!(batched, rebuilt);
+        assert_eq!(batched.iter().copied().collect::<String>(), "wxabyz");
+        assert_eq!(batched.element_ids(), rebuilt.element_ids());
+    }
+
+    #[test]
+    fn duplicate_id_chain_falls_back_without_corrupting_the_index() {
+        let mut base = Sequence::new();
+        base.apply(insert(None, 1, 'a'));
+        let duplicate = vec![
+            insert(Some(id(1)), 10, 'x'),
+            SequenceOp::Insert {
+                after: Some(id(10)),
+                id: id(10),
+                value: 'y',
+                right_origin: None,
+            },
+        ];
+
+        let mut rebuilt = base.clone();
+        apply_with_full_rebuild(&mut rebuilt, duplicate.clone());
+        let mut batched = base;
+        batched.apply_batch(duplicate);
+
+        assert_eq!(batched, rebuilt);
+        assert_eq!(
+            batched
+                .element_ids()
+                .into_iter()
+                .filter(|candidate| *candidate == id(10))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn non_chain_batch_still_converges() {
+        // Two inserts with the same after (siblings) are not a parent chain.
+        let ops = vec![
+            SequenceOp::Insert {
+                after: None,
+                id: id(1),
+                value: 'a',
+                right_origin: None,
+            },
+            SequenceOp::Insert {
+                after: None,
+                id: id(2),
+                value: 'b',
+                right_origin: None,
+            },
+        ];
+        let mut individual = Sequence::new();
+        for op in ops.clone() {
+            individual.apply(op);
+        }
+        let mut batched = Sequence::new();
+        batched.apply_batch(ops);
+        assert_eq!(batched, individual);
     }
 }
 

@@ -337,7 +337,10 @@ fn traverse_descriptors(vault: &mut VaultSession, path: &str, limit: usize) -> u
 
 fn workspace_hierarchy(c: &mut Criterion) {
     let wide_markdown = (0..10_000)
-        .map(|index| format!("{index:05} {}", "x".repeat(122)))
+        // This benchmark varies hierarchy width, not body size. Keep each body
+        // short so the 10k-block persisted session stays below the snapshot
+        // decompression safety ceiling during untimed fixture setup.
+        .map(|index| format!("{index:05} {}", "x".repeat(10)))
         .collect::<Vec<_>>()
         .join("\n\n");
     let directory = tempdir().unwrap();

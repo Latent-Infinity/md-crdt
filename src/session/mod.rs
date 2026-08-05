@@ -1311,18 +1311,22 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             }
 
             let mut after = after_for_grapheme_offset(body, grapheme_offset);
+            // First unit only: stamp right_origin once; chain tail uses None.
+            let first_right_origin = body.compute_right_origin(after);
             let mut counter = self.next_counter;
-            let mut units = Vec::new();
-            for g in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
+            let graphemes = unicode_segmentation::UnicodeSegmentation::graphemes(text, true);
+            // Byte length is the exact unit count only for ASCII. Using it as
+            // capacity for arbitrary UTF-8 can massively over-allocate on one
+            // grapheme made from many combining scalars.
+            let mut units = Vec::with_capacity(if text.is_ascii() { text.len() } else { 0 });
+            for g in graphemes {
                 let id = OpId {
                     counter,
                     peer: self.peer,
                 };
                 counter = counter.saturating_add(1);
-                // First unit: right_origin from current paragraph; subsequent chain units
-                // insert after a brand-new id so right_origin is None.
                 let right_origin = if units.is_empty() {
-                    body.compute_right_origin(after)
+                    first_right_origin
                 } else {
                     None
                 };

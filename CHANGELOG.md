@@ -41,8 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Breaking snapshot V7 wraps the versioned JSON state in a zlib-compressed envelope with an
   authenticated declared length and a 512 MiB decompression limit. Non-current raw JSON snapshots
   still report the actionable reinitialize/re-ingest error.
-- Batched text-unit integration rebuilds sequence order once per inserted run and uses iterative
-  traversal for long causal chains, removing quadratic cold-ingest behavior and stack growth.
+- Ready single inserts and contiguous same-peer text-unit runs splice into sequence order once and
+  repair shifted indices without a full order rebuild. Other batches rebuild at most once, and
+  long causal chains use iterative traversal, removing quadratic cold-ingest behavior and stack
+  growth.
 - Vault discovery skips hidden directories, `target`, and `graphify-out` trees.
 - Vault session persistence appends checksummed operation segments between
   periodic full snapshots, replays them on reopen, and forces a full snapshot
