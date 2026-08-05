@@ -151,6 +151,9 @@ assert_eq!(outcome.document_id, opened.document_id);
 `with_local_edit` preserves its original durability contract: the edit is persisted before the
 call returns. For explicit batching, `apply_local_edit` changes only the in-memory session; call
 `flush_document` (or its `save_state` alias) to make all accumulated edits durable.
+When several already-known text runs belong at one position, `CollaborativeDocument::insert_text_batch`
+concatenates them into one grapheme-safe wire envelope; use ordinary `insert_text` when edits must
+remain separate or may be interleaved with other operations.
 `compact_document` forces a full snapshot. Normal flushes append bounded operation segments between
 periodic full snapshots, and reopen replays those segments before exposing the document.
 `save_all_state` flushes every open session. None of these methods publishes Markdown.

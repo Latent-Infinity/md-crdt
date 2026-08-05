@@ -1370,6 +1370,31 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         Ok(Some(op_id))
     }
 
+    /// Insert many text runs in **one** commit (one wire envelope).
+    ///
+    /// Runs are concatenated left-to-right and inserted at `grapheme_offset`,
+    /// matching sequential `insert_text` calls at successive offsets when every
+    /// run is a pure insert (no interleaved deletes). Empty runs are skipped.
+    /// When every run is empty, this is a no-op that does not advance the clock.
+    ///
+    /// Prefer this over M separate `insert_text` calls when the agent already
+    /// knows the full keystroke/paste run (Band C amortization).
+    pub fn insert_text_batch(
+        &mut self,
+        block_id: BlockId,
+        grapheme_offset: usize,
+        parts: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> Result<Option<OpId>, SessionError> {
+        let mut combined = String::new();
+        for part in parts {
+            let part = part.as_ref();
+            if !part.is_empty() {
+                combined.push_str(part);
+            }
+        }
+        self.insert_text(block_id, grapheme_offset, &combined)
+    }
+
     /// Delete a visible grapheme range from a paragraph. Returns the delete-op id.
     ///
     /// `grapheme_count == 0` is a no-op that does not advance the clock.
@@ -1946,6 +1971,11 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         }
 
         let mut result = SessionApplyResult::default();
+        result.applied.reserve(prepared.len());
+        // When the session has no buffered/deferred work, in-order ready ops can
+        // skip per-op pending scans (still correct: promote/defer only matter when
+        // something is waiting). Falls back to the full path on the first buffer.
+        let mut clean_path = self.sync.pending_count() == 0 && self.pending_envelopes.is_empty();
         for (op, env) in prepared {
             let id = op.id;
             let (_, span) = operation_extent(&env);
@@ -1953,20 +1983,31 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 match self.sync.apply_one(op, span) {
                     IntegrateResult::AlreadyPresent => Ok::<(), SessionError>(()),
                     IntegrateResult::Buffered => {
+                        clean_path = false;
                         self.pending_envelopes.insert(id, env);
                         result.buffered.push(id);
                         Ok(())
                     }
                     IntegrateResult::Applied => {
-                        self.apply_or_defer(id, env, &mut result);
-                        self.drain_promoted(&mut result)?;
-                        self.drain_deferred(&mut result);
+                        // Fast path only when nothing is waiting and this envelope
+                        // has no observed-frontier gate. Otherwise defer and drain.
+                        if clean_path && envelope_observed_frontier(&env).is_none() {
+                            apply_envelope_to_document(&mut self.document, &env);
+                            result.applied.push(id);
+                        } else {
+                            clean_path = false;
+                            self.apply_or_defer(id, env, &mut result);
+                            self.drain_promoted(&mut result)?;
+                            self.drain_deferred(&mut result);
+                        }
                         Ok(())
                     }
                 }
             })?;
         }
-        self.drain_deferred(&mut result);
+        if !clean_path {
+            self.drain_deferred(&mut result);
+        }
         Ok(result)
     }
 
@@ -1994,20 +2035,23 @@ impl<C: OpCodec> CollaborativeDocument<C> {
 
     fn apply_or_defer(&mut self, id: OpId, envelope: Envelope, result: &mut SessionApplyResult) {
         if !self.observed_frontier_is_ready(&envelope) {
+            let first = !self.pending_envelopes.contains_key(&id);
             self.pending_envelopes.insert(id, envelope);
-            if !result.buffered.contains(&id) {
+            if first {
                 result.buffered.push(id);
             }
             return;
         }
         apply_envelope_to_document(&mut self.document, &envelope);
         result.buffered.retain(|pending| *pending != id);
-        if !result.applied.contains(&id) {
-            result.applied.push(id);
-        }
+        // Callers only invoke this once per applied id in a message.
+        result.applied.push(id);
     }
 
     fn drain_deferred(&mut self, result: &mut SessionApplyResult) {
+        if self.pending_envelopes.is_empty() {
+            return;
+        }
         loop {
             let ready: Vec<_> = self
                 .pending_envelopes

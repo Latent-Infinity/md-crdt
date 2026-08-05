@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   durable on return.
 - The default-off `perf_trace` feature provides opt-in hot-path attribution
   counters and md-crdt-only sub-probes without affecting competitive ratios.
+- `CollaborativeDocument::insert_text_batch` coalesces known text runs into one
+  grapheme-safe `InsertText` envelope without advancing the clock for an empty batch.
 
 ### Changed
 
@@ -51,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for source adoption or buffered causal state. Revision calculation now hashes
   the exact Markdown materialization and causal frontier instead of serializing
   and compressing the complete session snapshot on every edit.
+- Remote application skips pending/deferred scans while integrating an in-order
+  message into a clean session, retaining the full causal path after any buffer
+  or observed-frontier gate.
 
 ### Fixed
 

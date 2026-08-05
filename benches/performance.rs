@@ -241,6 +241,57 @@ fn session_insert_text(c: &mut Criterion) {
     group.finish();
 }
 
+/// Band C: M sequential one-grapheme appends vs one `insert_text_batch` of M parts.
+fn session_keystroke_batch(c: &mut Criterion) {
+    let mut group = c.benchmark_group("session_keystroke_batch");
+    for m in [32usize, 256] {
+        let seed_n = 1_000usize;
+        let mut base = CollaborativeDocument::new(1);
+        let block_elem = base.insert_paragraph(None, &"x".repeat(seed_n)).unwrap();
+        let block_id = block_id_from_op(block_elem);
+        let snapshot = base.save_snapshot().unwrap();
+        let parts: Vec<String> = (0..m)
+            .map(|i| ((b'a' + (i % 26) as u8) as char).to_string())
+            .collect();
+        let part_refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+
+        group.throughput(Throughput::Elements(m as u64));
+        group.bench_function(BenchmarkId::new("sequential_calls", m), |b| {
+            b.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let mut session =
+                        CollaborativeDocument::restore_from_snapshot(snapshot.clone()).unwrap();
+                    let start = Instant::now();
+                    for (offset, part) in (seed_n..).zip(part_refs.iter()) {
+                        session.insert_text(block_id, offset, part).unwrap();
+                    }
+                    elapsed += start.elapsed();
+                    black_box(session);
+                }
+                elapsed
+            });
+        });
+        group.bench_function(BenchmarkId::new("insert_text_batch", m), |b| {
+            b.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    let mut session =
+                        CollaborativeDocument::restore_from_snapshot(snapshot.clone()).unwrap();
+                    let start = Instant::now();
+                    let inserted = session
+                        .insert_text_batch(block_id, seed_n, part_refs.iter().copied())
+                        .unwrap();
+                    elapsed += start.elapsed();
+                    black_box((session, inserted));
+                }
+                elapsed
+            });
+        });
+    }
+    group.finish();
+}
+
 /// MCP-shaped: one grapheme insert into a selected middle block among many blocks.
 ///
 /// Models an agent edit of one selected block in a large note. Full session
@@ -1273,6 +1324,7 @@ criterion_group!(
     sequence_insert_middle,
     nested_text_insert,
     session_insert_text,
+    session_keystroke_batch,
     mcp_selected_block_insert,
     vault_local_edit,
     document_serialize,

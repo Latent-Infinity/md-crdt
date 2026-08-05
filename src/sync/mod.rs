@@ -231,10 +231,14 @@ impl SyncState {
     /// Returns payloads in promotion order so a session can apply document effects
     /// for each without re-decoding from a side map when payloads are still available.
     pub fn promote_ready_pending(&mut self) -> Vec<Operation> {
-        let mut promoted = Vec::new();
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let mut promoted = Vec::with_capacity(self.pending.len());
         let mut made_progress = true;
         while made_progress {
             made_progress = false;
+            // Snapshot keys once per promotion wave, rather than after every removal.
             let pending_ids: Vec<OpId> = self.pending.keys().copied().collect();
             for op_id in pending_ids {
                 let frontier = self.max_applied_counter(op_id.peer);
@@ -243,6 +247,7 @@ impl SyncState {
                     && let Some((op, _)) = self.pending.remove(&op_id)
                 {
                     self.observe(op.id);
+                    // `Operation.payload` is `Arc<[u8]>` — clone is refcount only.
                     self.ops.insert(op.id, op.payload.clone());
                     promoted.push(op);
                     made_progress = true;
