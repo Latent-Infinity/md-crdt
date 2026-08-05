@@ -56,13 +56,13 @@ mod commutativity {
         let op_a = SequenceOp::Insert {
             after: None,
             id: block_a.elem_id,
-            value: block_a.clone(),
+            value: block_a,
             right_origin: None,
         };
         let op_b = SequenceOp::Insert {
             after: None,
             id: block_b.elem_id,
-            value: block_b.clone(),
+            value: block_b,
             right_origin: None,
         };
 
@@ -94,19 +94,19 @@ mod commutativity {
         let op_a = SequenceOp::Insert {
             after: None,
             id: block_a.elem_id,
-            value: block_a.clone(),
+            value: block_a,
             right_origin: None,
         };
         let op_b = SequenceOp::Insert {
             after: None,
             id: block_b.elem_id,
-            value: block_b.clone(),
+            value: block_b,
             right_origin: None,
         };
         let op_c = SequenceOp::Insert {
             after: None,
             id: block_c.elem_id,
-            value: block_c.clone(),
+            value: block_c,
             right_origin: None,
         };
 
@@ -117,7 +117,7 @@ mod commutativity {
             vec![op_b.clone(), op_a.clone(), op_c.clone()],
             vec![op_b.clone(), op_c.clone(), op_a.clone()],
             vec![op_c.clone(), op_a.clone(), op_b.clone()],
-            vec![op_c.clone(), op_b.clone(), op_a.clone()],
+            vec![op_c, op_b, op_a],
         ];
 
         let mut outputs = Vec::new();
@@ -155,13 +155,13 @@ mod commutativity {
         let op_a = SequenceOp::Insert {
             after: Some(block_base.elem_id),
             id: block_a.elem_id,
-            value: block_a.clone(),
+            value: block_a,
             right_origin: None,
         };
         let op_b = SequenceOp::Insert {
             after: Some(block_base.elem_id),
             id: block_b.elem_id,
-            value: block_b.clone(),
+            value: block_b,
             right_origin: None,
         };
 
@@ -173,9 +173,9 @@ mod commutativity {
 
         // Order: base, b, a
         let mut doc2 = Document::new();
-        doc2.blocks.apply(op_base.clone());
-        doc2.blocks.apply(op_b.clone());
-        doc2.blocks.apply(op_a.clone());
+        doc2.blocks.apply(op_base);
+        doc2.blocks.apply(op_b);
+        doc2.blocks.apply(op_a);
 
         assert_eq!(
             serialize_structural(&doc1),
@@ -198,7 +198,7 @@ mod idempotency {
         let op = SequenceOp::Insert {
             after: None,
             id: block.elem_id,
-            value: block.clone(),
+            value: block,
             right_origin: None,
         };
 
@@ -206,7 +206,7 @@ mod idempotency {
         doc.blocks.apply(op.clone());
         let output1 = serialize_structural(&doc);
 
-        doc.blocks.apply(op.clone());
+        doc.blocks.apply(op);
         let output2 = serialize_structural(&doc);
 
         assert_eq!(
@@ -229,7 +229,7 @@ mod idempotency {
         let op_b = SequenceOp::Insert {
             after: Some(block_a.elem_id),
             id: block_b.elem_id,
-            value: block_b.clone(),
+            value: block_b,
             right_origin: None,
         };
 
@@ -275,7 +275,7 @@ mod delete_behavior {
         let op_insert_new = SequenceOp::Insert {
             after: None,
             id: block_new.elem_id,
-            value: block_new.clone(),
+            value: block_new,
             right_origin: None,
         };
 
@@ -287,9 +287,9 @@ mod delete_behavior {
 
         // Order 2: insert, insert_new, delete
         let mut doc2 = Document::new();
-        doc2.blocks.apply(op_insert.clone());
-        doc2.blocks.apply(op_insert_new.clone());
-        doc2.blocks.apply(op_delete.clone());
+        doc2.blocks.apply(op_insert);
+        doc2.blocks.apply(op_insert_new);
+        doc2.blocks.apply(op_delete);
 
         assert_eq!(
             serialize_structural(&doc1),
@@ -330,7 +330,7 @@ mod delete_behavior {
         doc1.blocks.apply(op_delete_b.clone());
 
         let mut doc2 = Document::new();
-        doc2.blocks.apply(op_insert.clone());
+        doc2.blocks.apply(op_insert);
         doc2.blocks.apply(op_delete_b);
         doc2.blocks.apply(op_delete_a);
 
@@ -478,7 +478,7 @@ mod edge_cases {
         let op_a2 = SequenceOp::Insert {
             after: Some(block_a1.elem_id),
             id: block_a2.elem_id,
-            value: block_a2.clone(),
+            value: block_a2,
             right_origin: None,
         };
         let op_b1 = SequenceOp::Insert {
@@ -490,7 +490,7 @@ mod edge_cases {
         let op_b2 = SequenceOp::Insert {
             after: Some(block_b1.elem_id),
             id: block_b2.elem_id,
-            value: block_b2.clone(),
+            value: block_b2,
             right_origin: None,
         };
 

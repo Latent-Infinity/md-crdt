@@ -154,7 +154,7 @@ fn contract_fixture() -> Value {
         },
         "batch_receipt": BatchReceipt {
             document_id,
-            previous_revision: revision.clone(),
+            previous_revision: revision,
             revision: next_revision.clone(),
             changes: summary,
         },

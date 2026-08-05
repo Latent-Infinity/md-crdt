@@ -833,10 +833,10 @@ impl VaultSession {
                 };
             }
         };
-        if let Some(journal_path) = journal_path {
-            if let Err(error) = cleanup_export_entries(&self.vault, &entries, &journal_path) {
-                return Err(recoverable_error(&journal_path, error));
-            }
+        if let Some(journal_path) = journal_path
+            && let Err(error) = cleanup_export_entries(&self.vault, &entries, &journal_path)
+        {
+            return Err(recoverable_error(&journal_path, error));
         }
         Ok(MultiExportOutcome {
             documents: outcomes,

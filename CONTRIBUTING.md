@@ -10,7 +10,10 @@ This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDU
 
 ### Prerequisites
 
-- Rust stable (edition 2024)
+- Rust 1.97.1. `rust-toolchain.toml` pins it, so `rustup` installs it for you.
+  The pin is deliberate: 1.97.1 carries an LLVM miscompilation fix that 1.87
+  through 1.97.0 lack. Do not build release artifacts on an unpinned `stable`.
+- Edition 2024; the declared MSRV is 1.95, which CI checks separately.
 - [just](https://github.com/casey/just) command runner (optional but recommended)
 
 ### Building
@@ -45,8 +48,16 @@ just check    # Run fmt + lint + test
 
 ### Code Style
 
+Governed by `docs/rust-code-standards.md`, a vendored copy of the organization's
+High-Performance Rust Coding Standards. Do not edit that file here — edits
+belong upstream. Project-specific decisions and open gaps are recorded in
+`docs/rust-standards-conformance.md`. Cite rule identifiers (`RPS-NNN`) in
+review, not section numbers.
+
 - Follow standard Rust formatting (`cargo fmt`)
-- Pass all clippy lints (`cargo clippy --workspace -- -W clippy::perf`)
+- Pass all clippy lints (`just lint`). The lint baseline lives in the workspace
+  manifest under `[workspace.lints]` and every member inherits it, so a bare
+  `cargo clippy` already applies it — no per-invocation `-W` flags needed.
 - Use meaningful variable and function names
 - Prefer `impl Trait` return types for iterators to enable lazy evaluation
 - Avoid unnecessary allocations (prefer `&str` over `String` where possible)

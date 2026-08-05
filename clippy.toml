@@ -8,7 +8,7 @@
 # This file configures Clippy thresholds and settings.
 
 # MSRV - Minimum Supported Rust Version
-msrv = "1.85"
+msrv = "1.95"
 
 # Allow slightly larger enums before warning
 enum-variant-size-threshold = 200

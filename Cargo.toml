@@ -2,7 +2,7 @@
 name = "md-crdt"
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license = "MIT"
 repository = "https://github.com/latenty-infinity/md-crdt"
 description = "Conflict-free replicated data types for collaborative markdown editing"
@@ -19,6 +19,26 @@ members = [
 ]
 exclude = ["md-crdt-yrs-bench"]
 resolver = "2"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+perf = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+needless_collect = "warn"
+redundant_clone = "warn"
+large_enum_variant = "warn"
+large_stack_arrays = "warn"
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+large_futures = "warn"
+unused_async = "warn"
+rc_buffer = "warn"
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "md-crdt"

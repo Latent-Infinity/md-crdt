@@ -484,10 +484,10 @@ fn next_index(dir: &Path, prefix: &str) -> Result<usize, StorageError> {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if let Some(rest) = name.strip_prefix(prefix) {
-            if let Ok(value) = rest.parse::<usize>() {
-                max_index = Some(max_index.map_or(value, |current| current.max(value)));
-            }
+        if let Some(rest) = name.strip_prefix(prefix)
+            && let Ok(value) = rest.parse::<usize>()
+        {
+            max_index = Some(max_index.map_or(value, |current| current.max(value)));
         }
     }
     Ok(max_index.map_or(0, |value| value + 1))

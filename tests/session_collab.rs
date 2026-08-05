@@ -111,7 +111,7 @@ fn out_of_order_remote_ops_buffer_then_apply() {
     let msg = a.encode_changes_since(&b.state_vector()).unwrap();
     // Each paragraph: InsertBlock + InsertText → 4 ops
     assert_eq!(msg.ops.len(), 4);
-    let mut ops = msg.ops.clone();
+    let mut ops = msg.ops;
     ops.sort_by_key(|o| o.id.counter);
     let op_lo = ops[0].clone();
     let op_hi = ops[ops.len() - 1].clone();

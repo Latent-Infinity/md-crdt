@@ -2,9 +2,13 @@
 name = "md-crdt-ci"
 version = "0.3.0"
 edition = "2024"
+rust-version = "1.95"
 license = "MIT"
 repository = "https://github.com/latenty-infinity/md-crdt"
 description = "CI utilities and integration tests"
 publish = false
 
 [dependencies]
+
+[lints]
+workspace = true

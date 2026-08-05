@@ -20,9 +20,21 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # Pinned, not `stable`: lint sets and diagnostics change across releases, so
+    # a blocking gate on a moving compiler is not reproducible (RPS-289). The
+    # version is read from rust-toolchain.toml so there is one source of truth.
+    - name: Read pinned Rust toolchain
+      id: rust-toolchain
+      shell: bash
+      run: |
+        channel=$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)
+        test -n "$channel"
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@master
       with:
+        toolchain: ${{ steps.rust-toolchain.outputs.channel }}
         components: clippy, rustfmt
 
     - name: Cache cargo registry
@@ -52,6 +64,23 @@ jobs:
 
     - name: Differential tests
       run: just differential-test
+
+  msrv:
+    name: MSRV (1.95)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    # The declared floor must be built, or it is a claim rather than a contract
+    # (RPS-004). Checking rather than testing keeps this job cheap; the pinned
+    # job above is what proves behaviour.
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: "1.95.0"
+
+    - name: Check against the declared MSRV
+      run: cargo check --workspace --all-targets
 
   nightly-differential-test:
     if: github.event_name == 'schedule'

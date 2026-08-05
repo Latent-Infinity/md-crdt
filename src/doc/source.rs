@@ -32,6 +32,7 @@ impl DocumentSource {
             .map(|region| region.body_end.saturating_sub(region.body_start))
     }
 
+    #[cfg(feature = "filesync")]
     pub(crate) fn render_root_region(&self, root: BlockId, block: &Block) -> Option<String> {
         let region = self.regions.get(&root)?;
         if self.dirty.contains(&root) {
@@ -41,6 +42,7 @@ impl DocumentSource {
         }
     }
 
+    #[cfg(feature = "filesync")]
     pub(crate) fn root_for_block(&self, block_id: BlockId) -> Option<BlockId> {
         self.root_by_block.get(&block_id).copied()
     }

@@ -328,7 +328,7 @@ fn continuation_and_serialized_byte_limits_are_hard() {
         ids
     );
 
-    let mut changed_shape = projection_request.clone();
+    let mut changed_shape = projection_request;
     changed_shape.continuation = first.continuation;
     changed_shape.fields = ProjectionFields::EXACT;
     assert!(matches!(

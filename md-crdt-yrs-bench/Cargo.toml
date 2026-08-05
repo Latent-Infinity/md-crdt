@@ -2,7 +2,7 @@
 name = "md-crdt-yrs-bench"
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license = "MIT"
 repository = "https://github.com/latenty-infinity/md-crdt"
 description = "Controlled md-crdt versus Yrs competitive benchmarks (unpublished)"
@@ -36,3 +36,16 @@ required-features = ["sub_probes"]
 
 [profile.bench]
 debug = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+perf = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+needless_collect = "warn"
+redundant_clone = "warn"
+large_enum_variant = "warn"
+large_stack_arrays = "warn"
+rc_buffer = "warn"

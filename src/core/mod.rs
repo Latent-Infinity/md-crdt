@@ -287,10 +287,12 @@ impl<T: Clone> Sequence<T> {
             .count()
     }
 
+    #[cfg(feature = "filesync")]
     pub(crate) fn visible_at_physical(&self, index: usize) -> Option<&T> {
         self.elements.get(index)?.value.as_ref()
     }
 
+    #[cfg(feature = "filesync")]
     pub(crate) fn iter_visible_from_physical(
         &self,
         start: usize,

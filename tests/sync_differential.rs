@@ -211,11 +211,11 @@ fn test_two_peer_sync_simulation() {
     };
 
     // Peer 1 applies its own operations
-    peer1_doc.add_local_op(peer1_op1.clone());
-    peer1_doc.add_local_op(peer1_op2.clone());
+    peer1_doc.add_local_op(peer1_op1);
+    peer1_doc.add_local_op(peer1_op2);
 
     // Peer 2 applies its own operation
-    peer2_doc.add_local_op(peer2_op1.clone());
+    peer2_doc.add_local_op(peer2_op1);
 
     // Simulate sync: peer 1 sends to peer 2
     let peer1_outbox = peer1_doc.outbox();

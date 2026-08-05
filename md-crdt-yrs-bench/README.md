@@ -46,7 +46,7 @@ md-crdt = { path = "..", default-features = false }
 | `yrs` | `=0.27.3` (`default-features = false`) |
 | `criterion` | `=0.5.1` |
 | `md-crdt` | path `..`, `default-features = false` |
-| Rust | declared repository MSRV `1.85` (effective host toolchain must build both crates) |
+| Rust | declared repository MSRV `1.95` (effective host toolchain must build both crates) |
 
 Yrs configuration fixed by methodology: root name `"text"`, client ids `1`/`2`,
 `OffsetKind::Bytes`, `skip_gc = false`, lib0 v1 encoding. md-crdt peer ids `1`/`2`.

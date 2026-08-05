@@ -450,7 +450,7 @@ fn every_structural_precondition_shape_is_captured_and_invalid_parents_fail_earl
         },
         WorkspaceEdit::SetTableMetadata {
             table_id: table,
-            columns: columns.clone(),
+            columns,
             header: vec!["B".into()],
         },
         WorkspaceEdit::MoveTableRow {

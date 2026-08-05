@@ -308,6 +308,7 @@ pub fn block_text_seq(kind: &BlockKind) -> Option<&Sequence<TextUnit>> {
     }
 }
 
+#[cfg(feature = "filesync")]
 fn projection_root(blocks: &Sequence<Block>, target: BlockId) -> Option<BlockId> {
     blocks
         .iter()
@@ -315,6 +316,7 @@ fn projection_root(blocks: &Sequence<Block>, target: BlockId) -> Option<BlockId>
         .map(|block| block.id)
 }
 
+#[cfg(feature = "filesync")]
 fn projection_block_contains(block: &Block, target: BlockId) -> bool {
     if block.id == target {
         return true;
@@ -1061,6 +1063,7 @@ impl Document {
         self.source.clone()
     }
 
+    #[cfg(feature = "filesync")]
     pub(crate) fn has_source_state(&self) -> bool {
         self.source.is_some()
     }
@@ -1069,6 +1072,7 @@ impl Document {
         self.source.as_ref()?.region_body_bytes(block_id)
     }
 
+    #[cfg(feature = "filesync")]
     pub(crate) fn projection_exact_region(&self, block_id: BlockId) -> Option<(BlockId, String)> {
         let root_id = self
             .source

@@ -1,0 +1,6 @@
+# Production pin. 1.97.1 carries the LLVM miscompilation fix that 1.87 through
+# 1.97.0 lacked, so it is the oldest release safe to build artifacts with.
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

@@ -238,6 +238,9 @@ snapshots or send changes over a network.
 
 **Development**
 
+The workspace uses the exact Rust 1.97.1 toolchain in `rust-toolchain.toml`;
+its declared consumer MSRV is 1.95.
+
 Install `just` (optional but recommended):
 
 ```sh

@@ -186,9 +186,11 @@ pub struct DescriptorCursor {
 }
 
 impl DescriptorCursor {
+    #[cfg(feature = "filesync")]
     const VERSION: u8 = 1;
     const WIRE_BYTES: usize = 83;
 
+    #[cfg(feature = "filesync")]
     fn new(
         document_id: DocumentId,
         revision: RevisionToken,
@@ -213,6 +215,7 @@ impl DescriptorCursor {
         cursor
     }
 
+    #[cfg(feature = "filesync")]
     fn expected_checksum(&self) -> [u8; 8] {
         // Gathered into one buffer because the digest hashes a slice rather
         // than accumulating; the cursor is around a hundred bytes, so this
@@ -237,6 +240,7 @@ impl DescriptorCursor {
         stable_hash_64(&fields).to_be_bytes()
     }
 
+    #[cfg(feature = "filesync")]
     fn validate(
         &self,
         document_id: DocumentId,
@@ -487,6 +491,7 @@ impl ProjectionFields {
         self.0 & field.0 == field.0
     }
 
+    #[cfg(feature = "filesync")]
     const fn is_valid(self) -> bool {
         self.0 & !Self::ALL.0 == 0
     }
@@ -1083,6 +1088,7 @@ pub struct EditBatch {
 pub struct PreviewToken([u8; 8]);
 
 impl PreviewToken {
+    #[cfg(feature = "filesync")]
     pub(crate) fn from_u64(value: u64) -> Self {
         Self(value.to_be_bytes())
     }
@@ -1157,6 +1163,9 @@ pub struct ExportOutcome {
     pub changes: ChangeSummary,
 }
 
+// Without `filesync` the only payload reader, `descriptor_page`, is gated out,
+// while `placement_precondition` still matches these variants for shape alone.
+#[cfg_attr(not(feature = "filesync"), allow(dead_code))]
 enum DescriptorChildren<'a> {
     Blocks(&'a Sequence<Block>),
     Items(&'a Sequence<ListItem>),
@@ -1370,6 +1379,7 @@ impl Document {
         Ok(preconditions)
     }
 
+    #[cfg(feature = "filesync")]
     pub(crate) fn projection_page(
         &self,
         request: &ProjectionRequest,
@@ -1469,6 +1479,7 @@ impl Document {
         Ok(page)
     }
 
+    #[cfg(feature = "filesync")]
     fn project_node(
         &self,
         node: ProjectionNode<'_>,
@@ -1603,6 +1614,7 @@ impl Document {
         })
     }
 
+    #[cfg(feature = "filesync")]
     pub(crate) fn node_digest_for(&self, block_id: BlockId) -> Result<u64, WorkspaceTargetError> {
         if let Some(block) = self.find_block_by_id(block_id) {
             return Ok(block_node_digest(block));
@@ -1687,6 +1699,7 @@ impl Document {
     /// `None` addresses the document root. A blockquote or list item exposes block
     /// children; a list exposes list-item descriptors. Continuations are bound to
     /// this document identity, revision, parent, and traversal order.
+    #[cfg(feature = "filesync")]
     pub(crate) fn descriptor_page(
         &self,
         document_id: DocumentId,
@@ -1799,12 +1812,14 @@ impl Document {
     }
 }
 
+#[cfg(feature = "filesync")]
 #[derive(Clone, Copy)]
 enum ProjectionNode<'a> {
     Block(&'a Block),
     ListItem(&'a ListItem),
 }
 
+#[cfg(feature = "filesync")]
 impl ProjectionNode<'_> {
     fn id(self) -> BlockId {
         match self {
@@ -1814,6 +1829,7 @@ impl ProjectionNode<'_> {
     }
 }
 
+#[cfg(feature = "filesync")]
 fn collect_projection_nodes<'a>(
     blocks: &'a Sequence<Block>,
     targets: &BTreeSet<BlockId>,
@@ -1855,6 +1871,7 @@ fn collect_projection_nodes<'a>(
     }
 }
 
+#[cfg(feature = "filesync")]
 fn projection_kind(node: ProjectionNode<'_>) -> BlockProjectionKind {
     match node {
         ProjectionNode::ListItem(item) => BlockProjectionKind::ListItem { task: item.task },
@@ -1873,6 +1890,7 @@ fn projection_kind(node: ProjectionNode<'_>) -> BlockProjectionKind {
     }
 }
 
+#[cfg(feature = "filesync")]
 fn projection_visible_text(node: ProjectionNode<'_>) -> String {
     match node {
         ProjectionNode::ListItem(item) => projection_blocks_text(&item.children),
@@ -1901,6 +1919,7 @@ fn projection_visible_text(node: ProjectionNode<'_>) -> String {
     }
 }
 
+#[cfg(feature = "filesync")]
 fn projection_blocks_text(blocks: &Sequence<Block>) -> String {
     blocks
         .iter()
@@ -1909,6 +1928,7 @@ fn projection_blocks_text(blocks: &Sequence<Block>) -> String {
         .join("\n")
 }
 
+#[cfg(feature = "filesync")]
 fn projection_structure(node: ProjectionNode<'_>) -> Option<BlockProjectionStructure> {
     match node {
         ProjectionNode::ListItem(item) => Some(BlockProjectionStructure::Children {
@@ -1978,6 +1998,7 @@ fn text_range_for_sequence(
     })
 }
 
+#[cfg(feature = "filesync")]
 fn collect_projection_marks(
     node: ProjectionNode<'_>,
     include_interval_id: bool,
@@ -2036,6 +2057,7 @@ fn collect_projection_marks(
     Ok(())
 }
 
+#[cfg(feature = "filesync")]
 fn collect_projection_text_ranges(
     node: ProjectionNode<'_>,
     output: &mut Vec<TextRange>,
@@ -2071,6 +2093,7 @@ fn collect_projection_text_ranges(
     Ok(())
 }
 
+#[cfg(feature = "filesync")]
 fn projection_node_digest(node: ProjectionNode<'_>) -> u64 {
     match node {
         ProjectionNode::Block(block) => block_digest(block),
@@ -2088,6 +2111,7 @@ fn list_item_digest(item: &ListItem) -> u64 {
     digest.finish()
 }
 
+#[cfg(feature = "filesync")]
 fn projection_request_digest(request: &ProjectionRequest) -> Result<[u8; 8], ProjectionError> {
     let encoded = serde_json::to_vec(&(
         request.document_id,
@@ -2109,10 +2133,12 @@ fn projection_request_digest(request: &ProjectionRequest) -> Result<[u8; 8], Pro
 /// uniform collision distribution is the relevant property; these tokens are
 /// stale-state sentinels, not authentication codes. A birthday collision is on
 /// the order of four billion distinct revisions of one document away.
+#[cfg(feature = "filesync")]
 pub(crate) fn stable_hash_64(bytes: &[u8]) -> u64 {
     rapidhash::v3::rapidhash_v3(bytes)
 }
 
+#[cfg(feature = "filesync")]
 fn projection_continuation(
     request_digest: [u8; 8],
     offset: usize,
@@ -2124,6 +2150,7 @@ fn projection_continuation(
     })
 }
 
+#[cfg(feature = "filesync")]
 fn stabilize_projection_bytes(page: &mut ProjectionPage) -> Result<(), ProjectionError> {
     for _ in 0..usize::BITS {
         let bytes = serde_json::to_vec(page)
@@ -2503,6 +2530,9 @@ pub(crate) struct DocumentOutline {
 #[derive(Clone)]
 struct OutlineEntry {
     descriptor: BlockDescriptor,
+    // Read only by the gated outline-diffing helpers; still captured
+    // unconditionally so the outline itself has one shape in every build.
+    #[cfg_attr(not(feature = "filesync"), allow(dead_code))]
     section: Option<BlockId>,
 }
 
@@ -2577,6 +2607,7 @@ fn collect_block_outline(
     }
 }
 
+#[cfg(feature = "filesync")]
 pub(crate) fn summarize_outline_change(
     before: &DocumentOutline,
     after: &DocumentOutline,
@@ -2634,6 +2665,7 @@ pub(crate) fn summarize_outline_change(
     }
 }
 
+#[cfg(feature = "filesync")]
 pub(crate) fn replace_moved_ids(
     summary: &mut ChangeSummary,
     before: &DocumentOutline,
@@ -2665,6 +2697,7 @@ pub(crate) fn replace_moved_ids(
     summary.affected_sections = affected_sections.into_iter().collect();
 }
 
+#[cfg(feature = "filesync")]
 fn descriptor_content_changed(old: &BlockDescriptor, new: &BlockDescriptor) -> bool {
     old.kind != new.kind
         || old.heading_level != new.heading_level
@@ -2676,6 +2709,7 @@ fn descriptor_content_changed(old: &BlockDescriptor, new: &BlockDescriptor) -> b
         || old.subtree_digest != new.subtree_digest
 }
 
+#[cfg(feature = "filesync")]
 fn reordered_ids(before: &DocumentOutline, after: &DocumentOutline) -> BTreeSet<BlockId> {
     let parents: BTreeSet<_> = before
         .entries
@@ -2719,6 +2753,7 @@ fn reordered_ids(before: &DocumentOutline, after: &DocumentOutline) -> BTreeSet<
     moved
 }
 
+#[cfg(feature = "filesync")]
 fn longest_increasing_ids(items: &[(BlockId, usize)]) -> BTreeSet<BlockId> {
     let mut tails: Vec<usize> = Vec::new();
     let mut tail_indices: Vec<usize> = Vec::new();

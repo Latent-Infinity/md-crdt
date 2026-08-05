@@ -98,10 +98,10 @@ pub enum SessionError {
 fn codec_err<E: std::fmt::Display>(e: E) -> SessionError {
     let s = e.to_string();
     // JsonOpCodec rejects unknown versions as CodecError::UnknownVersion(...).
-    if let Some(rest) = s.strip_prefix("unknown wire version ") {
-        if let Ok(v) = rest.parse::<u16>() {
-            return SessionError::UnknownWireVersion(v);
-        }
+    if let Some(rest) = s.strip_prefix("unknown wire version ")
+        && let Ok(v) = rest.parse::<u16>()
+    {
+        return SessionError::UnknownWireVersion(v);
     }
     SessionError::Codec(s)
 }
@@ -226,6 +226,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         &self.document
     }
 
+    #[cfg(feature = "filesync")]
     pub(crate) fn document_mut(&mut self) -> &mut Document {
         &mut self.document
     }
@@ -239,6 +240,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
     /// Incremental change messages contain only the applied operation log. An
     /// out-of-order operation buffered by sync, or an applied operation waiting
     /// for its observed frontier, exists only in snapshot state.
+    #[cfg(feature = "filesync")]
     pub(crate) fn requires_full_snapshot(&self) -> bool {
         self.sync.pending_count() != 0 || !self.pending_envelopes.is_empty()
     }
