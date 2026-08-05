@@ -32,11 +32,16 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+/// After this many incremental op-segment flushes, the next flush writes a full
+/// snapshot and clears live segments. Bounds recovery replay cost.
+const MAX_APPENDS_BEFORE_FULL_SNAPSHOT: u32 = 8;
+
 /// Shared vault-level identity and open collaborative documents.
 ///
 /// One peer id is stored at `.mdcrdt/peer_id` and used for every file session in
 /// this vault. Documents are opened lazily into memory and persisted as
-/// [`crate::session::SessionSnapshot`] blobs under `.mdcrdt/sessions/`.
+/// [`crate::session::SessionSnapshot`] blobs under `.mdcrdt/sessions/`, with
+/// optional op segments for incremental flushes between full snapshots.
 pub struct VaultSession {
     pub vault: Vault,
     vault_id: VaultId,
@@ -47,6 +52,10 @@ pub struct VaultSession {
     docs: BTreeMap<PathBuf, CollaborativeDocument>,
     document_ids: BTreeMap<PathBuf, DocumentId>,
     revision_cache: BTreeMap<PathBuf, RevisionToken>,
+    /// State vector covered by durable storage (full snapshot + applied segments).
+    flush_frontier: BTreeMap<PathBuf, StateVector>,
+    /// Live op-segment count since the last full snapshot for each document.
+    append_count: BTreeMap<PathBuf, u32>,
 }
 
 impl VaultSession {
@@ -66,6 +75,8 @@ impl VaultSession {
             docs: BTreeMap::new(),
             document_ids: BTreeMap::new(),
             revision_cache: BTreeMap::new(),
+            flush_frontier: BTreeMap::new(),
+            append_count: BTreeMap::new(),
         })
     }
 
@@ -173,7 +184,7 @@ impl VaultSession {
         if let Some(revision) = self.revision_cache.get(&rel) {
             return Ok(revision.clone());
         }
-        let revision = revision_for(self.docs.get(&rel).expect("session opened above"))?;
+        let revision = revision_for(self.docs.get(&rel).expect("session opened above"));
         self.revision_cache.insert(rel, revision.clone());
         Ok(revision)
     }
@@ -282,11 +293,15 @@ impl VaultSession {
         Ok(document.projection_page(&request, actual_revision)?)
     }
 
-    /// Execute a non-atomic local edit and report only the identities it changed.
+    /// Apply a local edit in memory without writing durable storage.
     ///
-    /// This intentionally carries no revision precondition or rollback guarantee;
-    /// preconditioned all-or-nothing edit batches are a separate workspace API.
-    pub fn with_local_edit<T>(
+    /// The edit is visible to subsequent calls on this `VaultSession` but is
+    /// **not** durable until [`Self::flush_document`] / [`Self::save_state`].
+    /// Use this to batch N edits into one snapshot or op-segment write.
+    ///
+    /// Crash after this returns and before flush can lose the edit. That is the
+    /// explicit durability boundary for batched editing.
+    pub fn apply_local_edit<T>(
         &mut self,
         rel_path: impl AsRef<Path>,
         edit: impl FnOnce(&mut CollaborativeDocument) -> T,
@@ -302,8 +317,39 @@ impl VaultSession {
         };
         self.revision_cache
             .insert(rel.clone(), changes.revision.clone());
-        self.save_state(&rel)?;
         Ok(LocalEditOutcome { value, changes })
+    }
+
+    /// Execute a non-atomic local edit and report only the identities it changed.
+    ///
+    /// Persists when the call returns (same durability as before the edit/flush
+    /// split). Prefer [`Self::apply_local_edit`] + [`Self::flush_document`] when
+    /// multiple edits should share one write.
+    ///
+    /// This intentionally carries no revision precondition or rollback guarantee;
+    /// preconditioned all-or-nothing edit batches are a separate workspace API.
+    pub fn with_local_edit<T>(
+        &mut self,
+        rel_path: impl AsRef<Path>,
+        edit: impl FnOnce(&mut CollaborativeDocument) -> T,
+    ) -> Result<LocalEditOutcome<T>, VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        let outcome = self.apply_local_edit(&rel, edit)?;
+        self.flush_document(&rel)?;
+        Ok(outcome)
+    }
+
+    /// Persist one open document using the default policy (append op segment when
+    /// possible, periodic full snapshot).
+    pub fn flush_document(&mut self, rel_path: impl AsRef<Path>) -> Result<(), VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.persist_document(&rel, PersistMode::Auto)
+    }
+
+    /// Force a full snapshot write and clear live op segments for one document.
+    pub fn compact_document(&mut self, rel_path: impl AsRef<Path>) -> Result<(), VaultError> {
+        let rel = normalize_rel(rel_path.as_ref())?;
+        self.persist_document(&rel, PersistMode::Full)
     }
 
     /// Validate and execute a batch on an isolated session without mutating the vault.
@@ -432,6 +478,9 @@ impl VaultSession {
         write_session_snapshot(&self.vault, &rel, &prepared.session)?;
         self.revision_cache
             .insert(rel.clone(), prepared.receipt.revision.clone());
+        self.flush_frontier
+            .insert(rel.clone(), prepared.session.state_vector());
+        self.append_count.insert(rel.clone(), 0);
         self.docs.insert(rel, prepared.session);
         Ok(prepared.receipt)
     }
@@ -566,7 +615,8 @@ impl VaultSession {
             blocks: fingerprint_document(session.document()),
         };
         self.vault.write_last_flushed(&path, &state)?;
-        self.save_state(&rel)?;
+        // Source adoption is not carried in CRDT op deltas — full snapshot required.
+        self.compact_document(&rel)?;
         // Last: the file and the baseline that agree with this state are both
         // durable, so the document is provably not ahead of its file.
         self.vault.clear_unexported(&path)?;
@@ -643,6 +693,12 @@ impl VaultSession {
         if let Some(revision) = self.revision_cache.remove(&from) {
             self.revision_cache.insert(to.clone(), revision);
         }
+        if let Some(frontier) = self.flush_frontier.remove(&from) {
+            self.flush_frontier.insert(to.clone(), frontier);
+        }
+        if let Some(count) = self.append_count.remove(&from) {
+            self.append_count.insert(to.clone(), count);
+        }
         self.document_ids.remove(&from);
         self.document_ids.insert(to.clone(), document_id);
         self.document_handle(&to)
@@ -675,6 +731,8 @@ impl VaultSession {
         self.docs.remove(&rel);
         self.document_ids.remove(&rel);
         self.revision_cache.remove(&rel);
+        self.flush_frontier.remove(&rel);
+        self.append_count.remove(&rel);
         Ok(DeletedDocument {
             document_id,
             path: rel,
@@ -809,7 +867,8 @@ impl VaultSession {
             };
             let path = self.vault.path.join(&export.rel);
             self.vault.write_last_flushed(&path, &state)?;
-            self.save_state(&export.rel)?;
+            // Source adoption is not carried in CRDT op deltas — full snapshot required.
+            self.compact_document(&export.rel)?;
             // Last, per document: its file and baseline are both installed.
             self.vault.clear_unexported(&path)?;
             let revision = self.revision(&export.rel)?;
@@ -917,21 +976,16 @@ impl VaultSession {
         })
     }
 
-    /// Persist one open document's session snapshot to storage.
-    pub fn save_state(&self, rel_path: impl AsRef<Path>) -> Result<(), VaultError> {
-        let rel = normalize_rel(rel_path.as_ref())?;
-        let doc = self
-            .docs
-            .get(&rel)
-            .ok_or_else(|| VaultError::SessionNotOpen(rel.clone()))?;
-        write_session_snapshot(&self.vault, &rel, doc)
+    /// Persist one open document (alias of [`Self::flush_document`]).
+    pub fn save_state(&mut self, rel_path: impl AsRef<Path>) -> Result<(), VaultError> {
+        self.flush_document(rel_path)
     }
 
     /// Persist all open document snapshots.
-    pub fn save_all_state(&self) -> Result<(), VaultError> {
-        for rel in self.docs.keys() {
-            let doc = self.docs.get(rel).expect("key from map");
-            write_session_snapshot(&self.vault, rel, doc)?;
+    pub fn save_all_state(&mut self) -> Result<(), VaultError> {
+        let paths: Vec<PathBuf> = self.docs.keys().cloned().collect();
+        for rel in paths {
+            self.persist_document(&rel, PersistMode::Auto)?;
         }
         Ok(())
     }
@@ -941,6 +995,8 @@ impl VaultSession {
         let rel = normalize_rel(rel_path.as_ref())?;
         self.docs.remove(&rel);
         self.revision_cache.remove(&rel);
+        self.flush_frontier.remove(&rel);
+        self.append_count.remove(&rel);
         Ok(())
     }
 
@@ -1011,7 +1067,7 @@ impl VaultSession {
                 self.session_mut(&rel)?
                     .document_mut()
                     .adopt_source_from(&parsed);
-                self.save_state(&rel)?;
+                self.compact_document(&rel)?;
                 // This branch applies no operations: the file already hashes to
                 // the baseline and only source formatting was adopted from
                 // bytes identical to it. The document's relation to its file is
@@ -1056,8 +1112,9 @@ impl VaultSession {
             .document_mut()
             .adopt_source_from(&parsed);
 
-        // Persist session snapshot + fingerprint/hash gate state.
-        self.save_state(&rel)?;
+        // Persist full session snapshot + fingerprint/hash gate state.
+        // Ingest adopts source formatting that is not present in CRDT op deltas.
+        self.compact_document(&rel)?;
         let session = self.docs.get(&rel).expect("session still open");
         let state = LastFlushedState {
             content_hash,
@@ -1079,7 +1136,7 @@ impl VaultSession {
         })
     }
 
-    fn load_or_create_session(&self, rel: &Path) -> Result<CollaborativeDocument, VaultError> {
+    fn load_or_create_session(&mut self, rel: &Path) -> Result<CollaborativeDocument, VaultError> {
         let storage_path = session_storage_path(&self.vault, rel);
         match Storage::open(&storage_path) {
             Ok(storage) => match CollaborativeDocument::read_from_storage(&storage) {
@@ -1092,20 +1149,98 @@ impl VaultSession {
                     if !doc.unit_mode() {
                         doc.set_unit_mode(true);
                     }
+                    let segment_count = replay_op_segments(&storage, &mut doc)?;
+                    self.flush_frontier
+                        .insert(rel.to_path_buf(), doc.state_vector());
+                    self.append_count
+                        .insert(rel.to_path_buf(), segment_count as u32);
                     Ok(doc)
                 }
                 Err(SnapshotError::Storage(StorageError::Missing)) => {
+                    self.flush_frontier
+                        .insert(rel.to_path_buf(), StateVector::default());
+                    self.append_count.insert(rel.to_path_buf(), 0);
                     Ok(CollaborativeDocument::new(self.peer))
                 }
                 Err(err) => Err(VaultError::Snapshot(err.to_string())),
             },
             Err(StorageError::Missing) => {
-                // Storage::open creates dirs; Missing is rare — treat as empty.
+                self.flush_frontier
+                    .insert(rel.to_path_buf(), StateVector::default());
+                self.append_count.insert(rel.to_path_buf(), 0);
                 Ok(CollaborativeDocument::new(self.peer))
             }
             Err(err) => Err(VaultError::Storage(err)),
         }
     }
+
+    fn persist_document(&mut self, rel: &Path, mode: PersistMode) -> Result<(), VaultError> {
+        // Do not lazily open: flush is only meaningful for an in-memory session.
+        let doc = self
+            .docs
+            .get(rel)
+            .ok_or_else(|| VaultError::SessionNotOpen(rel.to_path_buf()))?;
+        let storage_path = session_storage_path(&self.vault, rel);
+        if let Some(parent) = storage_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let storage = Storage::open(&storage_path)?;
+        self.vault.mark_unexported(&self.vault.path.join(rel))?;
+
+        let appends = self.append_count.get(rel).copied().unwrap_or(0);
+        let has_snapshot = storage.has_snapshot().map_err(VaultError::Storage)?;
+        let want_full = match mode {
+            PersistMode::Full => true,
+            PersistMode::Auto => {
+                !has_snapshot
+                    || appends >= MAX_APPENDS_BEFORE_FULL_SNAPSHOT
+                    || doc.requires_full_snapshot()
+            }
+        };
+
+        if want_full {
+            write_full_snapshot(&storage, doc)?;
+            self.flush_frontier
+                .insert(rel.to_path_buf(), doc.state_vector());
+            self.append_count.insert(rel.to_path_buf(), 0);
+            return Ok(());
+        }
+
+        let since = self.flush_frontier.get(rel).cloned().unwrap_or_default();
+        let message = match doc.encode_changes_since(&since) {
+            Ok(message) => message,
+            Err(rebase) => {
+                // Behind a checkpoint floor — fall back to a full snapshot.
+                let _ = rebase;
+                write_full_snapshot(&storage, doc)?;
+                self.flush_frontier
+                    .insert(rel.to_path_buf(), doc.state_vector());
+                self.append_count.insert(rel.to_path_buf(), 0);
+                return Ok(());
+            }
+        };
+        if message.ops.is_empty() {
+            return Ok(());
+        }
+        let payload = serde_json::to_vec(&message)
+            .map_err(|error| VaultError::Snapshot(format!("encode op segment: {error}")))?;
+        storage
+            .append_op_segment(&payload)
+            .map_err(VaultError::Storage)?;
+        self.flush_frontier
+            .insert(rel.to_path_buf(), doc.state_vector());
+        self.append_count
+            .insert(rel.to_path_buf(), appends.saturating_add(1));
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistMode {
+    /// Append an op segment when a full snapshot already exists; otherwise full write.
+    Auto,
+    /// Always write a full snapshot and clear live segments.
+    Full,
 }
 
 struct PreparedBatch {
@@ -1959,12 +2094,27 @@ fn document_id_path(vault: &Vault, rel: &Path) -> PathBuf {
     path
 }
 
-fn revision_for(document: &CollaborativeDocument) -> Result<RevisionToken, VaultError> {
-    let bytes = document
-        .save_snapshot()
-        .and_then(|snapshot| snapshot.to_bytes())
-        .map_err(|error| VaultError::Snapshot(error.to_string()))?;
-    Ok(RevisionToken::from_u64(stable_hash_64(&bytes)))
+/// Cheap revision token for optimistic concurrency.
+///
+/// Hashes peer identity, unit mode, the causal state vector, and the exact
+/// Markdown materialization. This deliberately does **not** serialize the full
+/// session snapshot (JSON + compress): that path was O(document) at ~18× source
+/// size and dominated every local edit. Equality still changes when visible
+/// content or clocks change, which is what export/edit preconditions need.
+fn revision_for(document: &CollaborativeDocument) -> RevisionToken {
+    let exact = document
+        .document()
+        .serialize(crate::doc::EquivalenceMode::Exact);
+    let state_vector = document.state_vector();
+    let mut material = Vec::with_capacity(exact.len().saturating_add(64));
+    material.extend_from_slice(&document.peer().to_le_bytes());
+    material.push(u8::from(document.unit_mode()));
+    for (peer, counter) in state_vector.iter() {
+        material.extend_from_slice(&peer.to_le_bytes());
+        material.extend_from_slice(&counter.to_le_bytes());
+    }
+    material.extend_from_slice(exact.as_bytes());
+    RevisionToken::from_u64(stable_hash_64(&material))
 }
 
 fn summarize_session_transition(
@@ -1985,7 +2135,7 @@ fn summarize_session_transition(
         }
     }
     let after = capture_outline(session.document());
-    let revision = revision_for(session)?;
+    let revision = revision_for(session);
     let mut summary = summarize_outline_change(before, &after, operation_count, revision);
     if !explicit_moved.is_empty() {
         replace_moved_ids(&mut summary, before, &after, explicit_moved);
@@ -2117,12 +2267,11 @@ fn session_storage_path(vault: &Vault, rel: &Path) -> PathBuf {
     path
 }
 
-/// Persist one session snapshot, first recording that it may be ahead of the file.
+/// Persist a full session snapshot, first recording that it may be ahead of the file.
 ///
-/// This is the only path that writes a session snapshot, so marking here covers
-/// every mutation route — including a caller that mutates through the public
-/// `session_mut` and then calls `save_state`, which no list of named mutation
-/// sites would catch.
+/// Used when a complete replacement document is installed (edit batches) and as
+/// the full-write half of incremental flush. Clears live op segments after a
+/// successful snapshot so recovery does not need to replay superseded history.
 ///
 /// The marker is made durable before the snapshot so no crash can publish state
 /// that outruns the file without a signal. A crash between the two leaves a
@@ -2139,9 +2288,29 @@ fn write_session_snapshot(
         fs::create_dir_all(parent)?;
     }
     let storage = Storage::open(&storage_path)?;
-    doc.write_to_storage(&storage)
+    write_full_snapshot(&storage, doc)
+}
+
+fn write_full_snapshot(storage: &Storage, doc: &CollaborativeDocument) -> Result<(), VaultError> {
+    doc.write_to_storage(storage)
         .map_err(|e| VaultError::Snapshot(e.to_string()))?;
+    storage.clear_op_segments().map_err(VaultError::Storage)?;
     Ok(())
+}
+
+/// Apply durable op segments (ChangeMessage JSON) onto a restored snapshot.
+fn replay_op_segments(
+    storage: &Storage,
+    doc: &mut CollaborativeDocument,
+) -> Result<usize, VaultError> {
+    let segments = storage.read_op_segments().map_err(VaultError::Storage)?;
+    let limits = ValidationLimits::default();
+    for payload in &segments {
+        let message: ChangeMessage = serde_json::from_slice(payload)
+            .map_err(|error| VaultError::Snapshot(format!("decode op segment: {error}")))?;
+        doc.apply_remote(message, &limits).map_err(session_err)?;
+    }
+    Ok(segments.len())
 }
 
 fn session_err(err: SessionError) -> VaultError {
@@ -3190,7 +3359,7 @@ mod tests {
     #[test]
     fn save_without_open_errors() {
         let dir = tempdir().unwrap();
-        let vs = VaultSession::open(dir.path()).unwrap();
+        let mut vs = VaultSession::open(dir.path()).unwrap();
         let err = vs.save_state("missing.md").unwrap_err();
         assert!(matches!(err, VaultError::SessionNotOpen(_)));
     }

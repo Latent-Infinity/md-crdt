@@ -26,6 +26,8 @@
 //! - `storage` - Enables checksummed, generation-based persistence with rkyv serialization
 //! - `filesync` - Enables vault-based file system synchronization (requires `storage`)
 //! - `dhat-heap` - Enables heap profiling with dhat
+//! - `sequence_incremental` - Sibling-local sequence ordering (default off; soak control)
+//! - `perf_trace` - Opt-in atomic counters for hot-path attribution
 
 /// Compiles the README's Rust examples as doctests so they cannot silently rot.
 ///
@@ -56,6 +58,9 @@ pub mod session;
 
 // Concrete workspace contract types
 pub mod workspace;
+
+// Optional hot-path performance counters (`perf_trace` feature)
+pub mod perf;
 
 // Optional: Persistent storage layer
 #[cfg(feature = "storage")]

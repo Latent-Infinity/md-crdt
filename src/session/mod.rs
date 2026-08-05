@@ -234,6 +234,15 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         self.sync.state_vector()
     }
 
+    /// Whether recovery needs a full snapshot to preserve unapplied operations.
+    ///
+    /// Incremental change messages contain only the applied operation log. An
+    /// out-of-order operation buffered by sync, or an applied operation waiting
+    /// for its observed frontier, exists only in snapshot state.
+    pub(crate) fn requires_full_snapshot(&self) -> bool {
+        self.sync.pending_count() != 0 || !self.pending_envelopes.is_empty()
+    }
+
     pub fn unit_mode(&self) -> bool {
         self.unit_mode
     }
@@ -1286,11 +1295,13 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             return Ok(None);
         }
 
-        let (block_elem, units) = {
-            let block = self
-                .document
+        // Spans are exclusive (not nested) so attribution shares sum cleanly.
+        let block = crate::perf::timed(crate::perf::Span::BlockLookup, || {
+            self.document
                 .find_block_by_id(block_id)
-                .ok_or(SessionError::BlockNotFound)?;
+                .ok_or(SessionError::BlockNotFound)
+        })?;
+        let (block_elem, units) = crate::perf::timed(crate::perf::Span::UnitExpand, || {
             let block_elem = block.elem_id;
             let Some(body) = crate::doc::block_text_seq(&block.kind) else {
                 return Err(SessionError::NotParagraph);
@@ -1323,8 +1334,8 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 });
                 after = Some(id);
             }
-            (block_elem, units)
-        };
+            Ok::<_, SessionError>((block_elem, units))
+        })?;
 
         if units.is_empty() {
             return Ok(None);
@@ -1339,11 +1350,17 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             }),
         };
         let (op_id, _span) = operation_extent(&envelope);
-        let payload = self.codec.encode(&envelope).map_err(codec_err)?;
-        apply_envelope_to_document(&mut self.document, &envelope);
-        self.sync.add_local_op(Operation {
-            id: op_id,
-            payload: payload.into(),
+        let payload = crate::perf::timed(crate::perf::Span::EnvelopeEncode, || {
+            self.codec.encode(&envelope).map_err(codec_err)
+        })?;
+        crate::perf::timed(crate::perf::Span::SequenceApply, || {
+            apply_envelope_to_document(&mut self.document, &envelope);
+        });
+        crate::perf::timed(crate::perf::Span::SyncLogAppend, || {
+            self.sync.add_local_op(Operation {
+                id: op_id,
+                payload: payload.into(),
+            });
         });
         self.next_counter = op_id.counter + 1;
         Ok(Some(op_id))
@@ -1884,11 +1901,13 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             .keys()
             .filter(|id| self.sync.contains(**id))
             .count();
-        validate_changes(
-            &message,
-            limits,
-            self.sync.pending_count().saturating_add(deferred_count),
-        )?;
+        crate::perf::timed(crate::perf::Span::ApplyValidate, || {
+            validate_changes(
+                &message,
+                limits,
+                self.sync.pending_count().saturating_add(deferred_count),
+            )
+        })?;
 
         let mut prepared: Vec<(Operation, Envelope)> = Vec::with_capacity(message.ops.len());
         for op in message.ops {
@@ -1903,7 +1922,9 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                     },
                 ));
             }
-            let env = self.codec.decode(&op.payload).map_err(codec_err)?;
+            let env = crate::perf::timed(crate::perf::Span::ApplyDecode, || {
+                self.codec.decode(&op.payload).map_err(codec_err)
+            })?;
             if env.version != WIRE_VERSION {
                 return Err(SessionError::UnknownWireVersion(env.version));
             }
@@ -1924,18 +1945,22 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         for (op, env) in prepared {
             let id = op.id;
             let (_, span) = operation_extent(&env);
-            match self.sync.apply_one(op, span) {
-                IntegrateResult::AlreadyPresent => {}
-                IntegrateResult::Buffered => {
-                    self.pending_envelopes.insert(id, env);
-                    result.buffered.push(id);
+            crate::perf::timed(crate::perf::Span::ApplyIntegrate, || {
+                match self.sync.apply_one(op, span) {
+                    IntegrateResult::AlreadyPresent => Ok::<(), SessionError>(()),
+                    IntegrateResult::Buffered => {
+                        self.pending_envelopes.insert(id, env);
+                        result.buffered.push(id);
+                        Ok(())
+                    }
+                    IntegrateResult::Applied => {
+                        self.apply_or_defer(id, env, &mut result);
+                        self.drain_promoted(&mut result)?;
+                        self.drain_deferred(&mut result);
+                        Ok(())
+                    }
                 }
-                IntegrateResult::Applied => {
-                    self.apply_or_defer(id, env, &mut result);
-                    self.drain_promoted(&mut result)?;
-                    self.drain_deferred(&mut result);
-                }
-            }
+            })?;
         }
         self.drain_deferred(&mut result);
         Ok(result)

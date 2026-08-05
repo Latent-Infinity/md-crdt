@@ -15,7 +15,7 @@ md-crdt is a Rust library and CLI for offline-first, deterministic collaboration
 
 **Workspace Layout**
 
-- `md-crdt`: Primary library crate (modules: `core`, `doc`, `sync`; features: `storage`, `filesync`) and bundled CLI binary (`src/bin/md-crdt.rs`).
+- `md-crdt`: Primary library crate (modules: `core`, `doc`, `sync`; features: `storage`, `filesync`, default-off `sequence_incremental`, and diagnostic `perf_trace`) and bundled CLI binary (`src/bin/md-crdt.rs`).
 - `md-crdt-ffi`: Reserved workspace placeholder. It is not published and does not expose a C ABI or supported language bindings; Rust consumers should use `md-crdt` directly.
 - `md-crdt-naive-oracle`: Unpublished reference implementation used for differential testing.
 
@@ -133,9 +133,10 @@ let block_id = vault
     .blocks_in_order()[0]
     .id;
 
-vault
-    .session_mut("projects/alpha.md")?
-    .insert_text(block_id, 5, " focused")?;
+let edit = vault.with_local_edit("projects/alpha.md", |document| {
+    document.insert_text(block_id, 5, " focused")
+})?;
+edit.value?;
 let edited = vault.open_document("projects/alpha.md")?;
 let outcome = vault.export_markdown(
     "projects/alpha.md",
@@ -147,8 +148,14 @@ assert_eq!(outcome.document_id, opened.document_id);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`save_state` and `save_all_state` persist CRDT snapshots only. `export_markdown` publishes one
-source-preserving Markdown view with revision and optional disk-fingerprint preconditions.
+`with_local_edit` preserves its original durability contract: the edit is persisted before the
+call returns. For explicit batching, `apply_local_edit` changes only the in-memory session; call
+`flush_document` (or its `save_state` alias) to make all accumulated edits durable.
+`compact_document` forces a full snapshot. Normal flushes append bounded operation segments between
+periodic full snapshots, and reopen replays those segments before exposing the document.
+`save_all_state` flushes every open session. None of these methods publishes Markdown.
+`export_markdown` publishes one source-preserving Markdown view with revision and optional
+disk-fingerprint preconditions.
 `export_markdown_transaction` prevalidates several document identities, revisions, and disk
 fingerprints before publishing any of them, then uses a durable recovery journal so an interrupted
 commit is completed when the vault reopens. `create_markdown`, `rename_markdown`, and
@@ -186,8 +193,8 @@ remote.apply_remote(
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`apply_remote` saves the updated per-file session snapshot. The application still chooses how the
-`ChangeMessage` reaches the other vault.
+`apply_remote` durably flushes the updated per-file session before returning. The application still
+chooses how the `ChangeMessage` reaches the other vault.
 
 Long-running hosts can bound retained operation history with `checkpoint_history`. Each checkpoint
 request names the active peers and the state vector each has acknowledged; peers omitted by the host

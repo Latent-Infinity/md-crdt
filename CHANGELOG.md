@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provenance-checked multi-run reporting. Extended scenarios cover large paste
   and multi-peer fan-in; memory RSS, materialization, and illustrative block-map
   probes remain separately labeled and are never cross-engine ratios.
+- `VaultSession::apply_local_edit`, `flush_document`, and `compact_document`
+  expose an explicit batching/flush boundary while `with_local_edit` remains
+  durable on return.
+- The default-off `perf_trace` feature provides opt-in hot-path attribution
+  counters and md-crdt-only sub-probes without affecting competitive ratios.
 
 ### Changed
 
@@ -39,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Batched text-unit integration rebuilds sequence order once per inserted run and uses iterative
   traversal for long causal chains, removing quadratic cold-ingest behavior and stack growth.
 - Vault discovery skips hidden directories, `target`, and `graphify-out` trees.
+- Vault session persistence appends checksummed operation segments between
+  periodic full snapshots, replays them on reopen, and forces a full snapshot
+  for source adoption or buffered causal state. Revision calculation now hashes
+  the exact Markdown materialization and causal frontier instead of serializing
+  and compressing the complete session snapshot on every edit.
 
 ### Fixed
 

@@ -241,6 +241,63 @@ fn session_insert_text(c: &mut Criterion) {
     group.finish();
 }
 
+/// MCP-shaped: one grapheme insert into a selected middle block among many blocks.
+///
+/// Models an agent edit of one selected block in a large note. Full session
+/// snapshots of 10k short paragraphs exceed the snapshot safety limit, so the
+/// fixture is rebuilt live and each timed insert is undone outside the timer.
+fn mcp_selected_block_insert(c: &mut Criterion) {
+    fn build_multi_block(block_count: usize) -> (CollaborativeDocument, md_crdt::BlockId) {
+        let mut session = CollaborativeDocument::new(1);
+        let mut after = None;
+        let mut target = None;
+        for i in 0..block_count {
+            let elem = session
+                .insert_paragraph(after, &format!("item-{i:05}"))
+                .unwrap();
+            after = Some(elem);
+            if i == block_count / 2 {
+                target = Some(block_id_from_op(elem));
+            }
+        }
+        (session, target.expect("middle block"))
+    }
+
+    let mut group = c.benchmark_group("mcp_selected_block_insert");
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(2));
+    for block_count in [1_000usize, 10_000] {
+        group.throughput(Throughput::Elements(1));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(block_count),
+            &block_count,
+            |b, &block_count| {
+                b.iter_custom(|iterations| {
+                    let mut elapsed = Duration::ZERO;
+                    // Rebuild periodically so tombstones from undo do not dominate.
+                    const REBUILD_EVERY: u64 = 32;
+                    let (mut session, mut target) = build_multi_block(block_count);
+                    for i in 0..iterations {
+                        if i > 0 && i % REBUILD_EVERY == 0 {
+                            let rebuilt = build_multi_block(block_count);
+                            session = rebuilt.0;
+                            target = rebuilt.1;
+                        }
+                        let start = Instant::now();
+                        let inserted = session.insert_text(target, 1, "y").unwrap();
+                        elapsed += start.elapsed();
+                        // Undo outside the timer so the next insert stays one grapheme deep.
+                        let _ = session.delete_text(target, 1, 1);
+                        black_box(inserted);
+                    }
+                    elapsed
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 fn document_serialize(c: &mut Criterion) {
     let mut group = c.benchmark_group("document_serialize");
     for count in [1_000usize, 10_000] {
@@ -1122,6 +1179,89 @@ fn structured_workspace_edit(c: &mut Criterion) {
     group.finish();
 }
 
+/// Product T0 probe: wall time of `with_local_edit` (apply + durable flush).
+///
+/// Document sizes match Band E (≈6 / 31 / 123 KB source). Measures both the
+/// default persist-on-return path and a 8-edit batched apply + single flush.
+fn vault_local_edit(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vault_local_edit");
+    group.sample_size(15);
+    group.measurement_time(Duration::from_secs(3));
+
+    for target_kb in [6usize, 31, 123] {
+        let source_chars = target_kb * 1024;
+        let paragraph = "x".repeat(source_chars);
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("note.md"), &paragraph).unwrap();
+        let mut vault = VaultSession::open(directory.path()).unwrap();
+        vault.ingest_all().unwrap();
+        vault.compact_document("note.md").unwrap();
+        let block_id = {
+            let blocks = vault
+                .session_mut("note.md")
+                .unwrap()
+                .document()
+                .blocks_in_order();
+            blocks.first().expect("block").id
+        };
+
+        group.throughput(Throughput::Bytes(source_chars as u64));
+        group.bench_function(
+            BenchmarkId::new("with_local_edit", format!("{target_kb}kb")),
+            |b| {
+                b.iter_custom(|iterations| {
+                    let mut elapsed = Duration::ZERO;
+                    for i in 0..iterations {
+                        let start = Instant::now();
+                        vault
+                            .with_local_edit("note.md", |session| {
+                                session
+                                    .insert_text(block_id, (i as usize) % 64, "y")
+                                    .unwrap()
+                            })
+                            .unwrap();
+                        elapsed += start.elapsed();
+                        // Undo outside the timer so the document does not grow without bound.
+                        let _ = vault.apply_local_edit("note.md", |session| {
+                            session.delete_text(block_id, (i as usize) % 64, 1).unwrap()
+                        });
+                        let _ = vault.flush_document("note.md");
+                    }
+                    elapsed
+                });
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new("batched_8_edits_one_flush", format!("{target_kb}kb")),
+            |b| {
+                b.iter_custom(|iterations| {
+                    let mut elapsed = Duration::ZERO;
+                    for iter in 0..iterations {
+                        let start = Instant::now();
+                        for _ in 0..8u64 {
+                            vault
+                                .apply_local_edit("note.md", |session| {
+                                    session.insert_text(block_id, 32, "z").unwrap()
+                                })
+                                .unwrap();
+                        }
+                        vault.flush_document("note.md").unwrap();
+                        elapsed += start.elapsed();
+                        black_box(iter);
+                        let _ = vault.apply_local_edit("note.md", |session| {
+                            session.delete_text(block_id, 32, 8).unwrap()
+                        });
+                        let _ = vault.flush_document("note.md");
+                    }
+                    elapsed
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     block_lookup,
@@ -1130,6 +1270,8 @@ criterion_group!(
     sequence_insert_middle,
     nested_text_insert,
     session_insert_text,
+    mcp_selected_block_insert,
+    vault_local_edit,
     document_serialize,
     workspace_hierarchy,
     checkpoint_history,

@@ -695,3 +695,113 @@ fn row_from_dto(dto: TableRowDto) -> TableRow {
         placement_observed: dto.placement_observed,
     }
 }
+
+fn count_units_in_blocks(blocks: &SequenceDto<BlockDto>) -> usize {
+    blocks
+        .elements
+        .iter()
+        .filter_map(|elem| elem.value.as_ref())
+        .map(|block| match &block.kind {
+            BlockKindDto::Paragraph { units } | BlockKindDto::Heading { units, .. } => {
+                units.elements.len()
+            }
+            BlockKindDto::List { items, .. } => items
+                .elements
+                .iter()
+                .filter_map(|item| item.value.as_ref())
+                .map(|item| count_units_in_blocks(&item.children))
+                .sum(),
+            BlockKindDto::BlockQuote { children } => count_units_in_blocks(children),
+            BlockKindDto::CodeFence { text, .. } => text.chars().count().max(1),
+            BlockKindDto::RawBlock { .. } | BlockKindDto::Table { .. } => 0,
+        })
+        .sum()
+}
+
+/// Byte-level breakdown of a session snapshot (feeds size attribution).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotSizeBreakdown {
+    pub source_chars: usize,
+    pub unit_count: usize,
+    pub op_count: usize,
+    pub json_total: usize,
+    pub document_json: usize,
+    pub ops_json: usize,
+    pub ops_payload_bytes: usize,
+    pub compressed_envelope: usize,
+    pub header_overhead: usize,
+}
+
+impl SessionSnapshot {
+    /// Attribute serialized snapshot cost without changing on-disk format.
+    #[must_use]
+    pub fn size_breakdown(&self, source_chars: usize) -> SnapshotSizeBreakdown {
+        let json_total = serde_json::to_vec(self).map(|v| v.len()).unwrap_or(0);
+        let document_json = serde_json::to_vec(&self.document)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let ops_json = serde_json::to_vec(&self.ops).map(|v| v.len()).unwrap_or(0);
+        let ops_payload_bytes: usize = self.ops.iter().map(|(_, p)| p.len()).sum();
+        let unit_count = count_units_in_blocks(&self.document.blocks);
+        let compressed_envelope = self.to_bytes().map(|b| b.len()).unwrap_or(0);
+        SnapshotSizeBreakdown {
+            source_chars,
+            unit_count,
+            op_count: self.ops.len(),
+            json_total,
+            document_json,
+            ops_json,
+            ops_payload_bytes,
+            compressed_envelope,
+            header_overhead: SNAPSHOT_HEADER_LEN,
+        }
+    }
+}
+
+#[cfg(test)]
+mod size_attribution_tests {
+    use crate::session::CollaborativeDocument;
+
+    #[test]
+    fn snapshot_size_is_dominated_by_document_and_ops_json() {
+        let source = "x".repeat(2_000);
+        let mut session = CollaborativeDocument::new(1);
+        session
+            .insert_paragraph(None, &source)
+            .expect("seed paragraph");
+        let snap = session.save_snapshot().expect("snapshot");
+        let b = snap.size_breakdown(source.len());
+
+        // ~one unit per source grapheme in a single paragraph.
+        assert_eq!(b.unit_count, source.len());
+        assert!(b.json_total > source.len().saturating_mul(10));
+        // Document materialization and retained op log are both first-class costs.
+        assert!(b.document_json > source.len());
+        assert!(b.ops_json > 0);
+        assert!(b.ops_payload_bytes > 0);
+        // Compressed envelope is smaller than raw JSON but still multiplies source.
+        assert!(b.compressed_envelope < b.json_total);
+        assert!(b.compressed_envelope > source.len());
+        // Document + ops account for most of the JSON blob.
+        let accounted = b.document_json + b.ops_json;
+        assert!(accounted as f64 / b.json_total as f64 > 0.85);
+
+        // Bytes per source char for plan-state reporting (indicative, debug build).
+        let ratio = b.compressed_envelope as f64 / source.len() as f64;
+        assert!(
+            ratio > 2.0,
+            "expected snapshot expansion; got ratio {ratio:.2}"
+        );
+        eprintln!(
+            "snapshot_size_attribution source={n} units={} ops={} json={} doc_json={} ops_json={} payload={} compressed={} ratio={ratio:.2}",
+            b.unit_count,
+            b.op_count,
+            b.json_total,
+            b.document_json,
+            b.ops_json,
+            b.ops_payload_bytes,
+            b.compressed_envelope,
+            n = source.len(),
+        );
+    }
+}

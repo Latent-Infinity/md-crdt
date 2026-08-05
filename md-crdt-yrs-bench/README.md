@@ -23,6 +23,22 @@ replace the RGA or add Yrs as a runtime dependency of the published library.
 
 Invoke only via `--manifest-path` or the just recipes below.
 
+## Product-shaped config (md-crdt features)
+
+The compare dependency is:
+
+```toml
+md-crdt = { path = "..", default-features = false }
+```
+
+| Feature | Compare default | Notes |
+| --- | --- | --- |
+| `storage` / `filesync` | **off** | Competitive path is in-memory session only; no vault/persistence (Band E excluded) |
+| `sequence_incremental` | **off** | Matches product default. Ablation: build with `--features` only on the product side (`just bench` runs both). Compare stays on the control (full rebuild) so ratios remain a stable soak baseline |
+| `perf_trace` | **off** for Criterion | Enable via compare feature `sub_probes` for attribution only |
+
+**Decision (P0):** keep `sequence_incremental` default-off in the product and in compare. Competitive numbers report the control path. When measuring the treatment, run product benches with `--features sequence_incremental` and label results; do not silently flip compare defaults.
+
 ## Pins (frozen)
 
 | Dependency | Pin |
@@ -133,6 +149,35 @@ cargo fmt --manifest-path md-crdt-yrs-bench/Cargo.toml --all -- --check
 cargo clippy --manifest-path md-crdt-yrs-bench/Cargo.toml --all-targets --locked -- -D warnings
 cargo deny --manifest-path md-crdt-yrs-bench/Cargo.toml check --config md-crdt-yrs-bench/deny.toml advisories
 ```
+
+## Sub-probes and flamegraphs (md-crdt only)
+
+Optional feature `sub_probes` enables product `perf_trace` and builds exclusive-span
+attribution helpers. **Never ratio these against Yrs.**
+
+```bash
+# Print span tables for insert_middle n∈{1k,10k} and apply_remote k=100
+just sub-probes
+# equivalent:
+cargo run --manifest-path md-crdt-yrs-bench/Cargo.toml --example sub_probes --features sub_probes --release --locked
+
+# Select only one probe family (used by the flamegraph recipes)
+cargo run --manifest-path md-crdt-yrs-bench/Cargo.toml --example sub_probes --features sub_probes --release --locked -- insert
+
+# Tests for sub-probe wiring
+cargo test --manifest-path md-crdt-yrs-bench/Cargo.toml --features sub_probes --locked
+
+# Flamegraph (requires cargo-flamegraph; host-dependent)
+just flamegraph-compare insert
+# or with samply / Instruments:
+samply record cargo run --manifest-path md-crdt-yrs-bench/Cargo.toml \
+  --example sub_probes --features sub_probes --release -- insert
+```
+
+Workloads covered: middle `insert_text` on a bulk-seeded paragraph; `apply_remote` of
+full history with lag keystrokes (k=100). Spans: `block_lookup`, `unit_expand`,
+`envelope_encode`, `sequence_apply`, `sync_log_append`, `apply_validate` /
+`apply_decode` / `apply_integrate`.
 
 ## How to interpret results
 

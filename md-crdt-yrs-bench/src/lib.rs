@@ -10,6 +10,8 @@ pub mod report;
 pub mod runners;
 pub mod scenario;
 pub mod sizes;
+#[cfg(feature = "sub_probes")]
+pub mod sub_probes;
 pub mod yrs_adapter;
 
 /// Crate identity for smoke tests and report provenance.

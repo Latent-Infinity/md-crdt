@@ -50,6 +50,37 @@ bench-compare-report:
 memory-compare:
     md-crdt-yrs-bench/scripts/memory_rss.sh
 
+# md-crdt exclusive-span sub-probes (requires sub_probes; not competitive ratios)
+sub-probes:
+    cargo run --manifest-path md-crdt-yrs-bench/Cargo.toml --example sub_probes --features sub_probes --release --locked
+
+# Flamegraph recipe for competitive-shaped insert / apply (needs cargo-flamegraph)
+# Example: just flamegraph-compare insert
+#          just flamegraph-compare apply
+flamegraph-compare target="insert":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{target}}" in
+      insert)
+        echo "Profile: public insert path via sub_probes example (insert_middle)."
+        echo "Install: cargo install flamegraph"
+        cargo flamegraph --manifest-path md-crdt-yrs-bench/Cargo.toml \
+          --features sub_probes --example sub_probes --release \
+          -o md-crdt-yrs-bench/report-out/flamegraph-insert.svg -- insert
+        echo "Also: samply record cargo run --manifest-path md-crdt-yrs-bench/Cargo.toml --example sub_probes --features sub_probes --release -- insert"
+        ;;
+      apply)
+        echo "Profile apply_remote k=100 via the same example (second pair of tables)."
+        cargo flamegraph --manifest-path md-crdt-yrs-bench/Cargo.toml \
+          --features sub_probes --example sub_probes --release \
+          -o md-crdt-yrs-bench/report-out/flamegraph-apply.svg -- apply
+        ;;
+      *)
+        echo "usage: just flamegraph-compare insert|apply" >&2
+        exit 1
+        ;;
+    esac
+
 # Fetch external markdown test fixtures (markdown-it, Comrak, GFM spec)
 fuzz-fetch-fixtures:
     python3 scripts/fetch_test_fixtures.py

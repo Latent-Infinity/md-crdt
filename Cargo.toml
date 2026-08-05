@@ -62,6 +62,8 @@ storage = ["dep:rkyv", "dep:crc32fast"]
 filesync = ["storage", "dep:walkdir", "dep:tracing"]
 dhat-heap = ["dhat"]
 sequence_incremental = []
+# Opt-in atomic hot-path counters (zero cost when off; no extra dependencies).
+perf_trace = []
 
 [[bench]]
 name = "performance"

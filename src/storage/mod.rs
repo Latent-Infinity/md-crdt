@@ -210,6 +210,46 @@ impl Storage {
         Ok(ops_dir.join(name))
     }
 
+    /// Remove live `ops/op_*` segment files after a successful full snapshot write.
+    ///
+    /// Call only after the new snapshot is durable. Leftover segments that survive a
+    /// crash between snapshot write and clear are safe to replay because apply skips
+    /// already-present op ids.
+    pub fn clear_op_segments(&self) -> Result<usize, StorageError> {
+        let ops_dir = self.root.join(OPS_DIR);
+        if !ops_dir.exists() {
+            return Ok(0);
+        }
+        let mut removed = 0usize;
+        for entry in fs::read_dir(&ops_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name
+                .strip_prefix("op_")
+                .and_then(|v| v.parse::<usize>().ok())
+                .is_none()
+            {
+                continue;
+            }
+            fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
+    /// Whether a readable full snapshot currently exists.
+    pub fn has_snapshot(&self) -> Result<bool, StorageError> {
+        match self.read_snapshot() {
+            Ok(_) => Ok(true),
+            Err(StorageError::Missing) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Read and validate all operation segments in append order.
     pub fn read_op_segments(&self) -> Result<Vec<Vec<u8>>, StorageError> {
         let ops_dir = self.root.join(OPS_DIR);
@@ -780,6 +820,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Storage::open(dir.path()).unwrap();
 
+        storage.append_op_segment(b"first").unwrap();
+        storage.append_op_segment(b"second").unwrap();
+        assert_eq!(storage.clear_op_segments().unwrap(), 2);
+        assert!(storage.read_op_segments().unwrap().is_empty());
+        // Re-seed for the remainder of the original test body.
         storage.append_op_segment(b"first").unwrap();
         storage.append_op_segment(b"second").unwrap();
 
