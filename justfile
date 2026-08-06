@@ -60,6 +60,7 @@ sub-probes:
 flamegraph-compare target="insert":
     #!/usr/bin/env bash
     set -euo pipefail
+    mkdir -p md-crdt-yrs-bench/report-out
     case "{{target}}" in
       insert)
         echo "Profile: public insert path via sub_probes example (insert_middle)."
@@ -80,17 +81,6 @@ flamegraph-compare target="insert":
         exit 1
         ;;
     esac
-
-# Fetch external markdown test fixtures (markdown-it, Comrak, GFM spec)
-fuzz-fetch-fixtures:
-    python3 scripts/fetch_test_fixtures.py
-
-# Seed fuzz corpus with markdown from test fixtures
-fuzz-seed:
-    python3 scripts/seed_fuzz_corpus.py
-
-# Fetch fixtures and seed corpus
-fuzz-init: fuzz-fetch-fixtures fuzz-seed
 
 # Quick fuzz run (5 minutes per target, single process, no worker spawning)
 fuzz-quick:
