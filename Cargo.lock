@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "md-crdt"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -592,15 +592,15 @@ dependencies = [
 
 [[package]]
 name = "md-crdt-ci"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "md-crdt-ffi"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "md-crdt-naive-oracle"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "md-crdt",
 ]

@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "md-crdt"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "miniz_oxide",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "md-crdt-yrs-bench"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "md-crdt",

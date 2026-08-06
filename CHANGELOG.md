@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-05
+
 ### Added
 
 - `ReadDocument` provides side-effect-free, fence-aware outline, heading-section,
@@ -36,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Breaking the minimum supported Rust version rises from 1.85 to 1.95, and builds are
+  pinned to 1.97.1 via `rust-toolchain.toml`. The pin is a correctness decision rather
+  than a preference: 1.97.1 carries the fix for an LLVM miscompilation present from 1.87
+  through 1.97.0, which no benchmark can detect because the benchmark is built by the
+  same compiler. Consumers pinned below 1.95 must raise their toolchain.
 - Breaking revision and preview tokens now use 64-bit rapidhash digests rendered
   as fixed-width 11-character base62 strings. Descriptor-cursor checksums and
   projection-request digests are likewise narrowed to 64 bits, reducing the
@@ -372,7 +379,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive CONTRIBUTING.md guide
 - MIT license
 
-[Unreleased]: https://github.com/latenty-infinity/md-crdt/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/latenty-infinity/md-crdt/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/latenty-infinity/md-crdt/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/latenty-infinity/md-crdt/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/latenty-infinity/md-crdt/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/latenty-infinity/md-crdt/compare/v0.1.0...v0.2.0
