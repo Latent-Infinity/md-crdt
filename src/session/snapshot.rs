@@ -22,6 +22,13 @@ const SNAPSHOT_MAGIC: &[u8; 5] = b"MDSN\x01";
 const SNAPSHOT_HEADER_LEN: usize = SNAPSHOT_MAGIC.len() + size_of::<u64>();
 const MAX_SNAPSHOT_DECOMPRESSED_BYTES: usize = 512 * 1024 * 1024;
 
+/// Deflate level used for persisted snapshots.
+///
+/// A level 1/3/6/9 ablation on representative 123 KiB vault snapshots selected
+/// level 3 as the balance between full-snapshot tail latency and persisted size.
+/// Readers remain level-agnostic because the envelope uses ordinary zlib.
+const SNAPSHOT_DEFLATE_LEVEL: u8 = 3;
+
 /// Errors loading or decoding session snapshots.
 #[derive(Debug, Error)]
 pub enum SnapshotError {
@@ -227,7 +234,7 @@ impl SessionSnapshot {
             });
         }
 
-        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&json, 6);
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&json, SNAPSHOT_DEFLATE_LEVEL);
         let mut bytes = Vec::with_capacity(SNAPSHOT_HEADER_LEN + compressed.len());
         bytes.extend_from_slice(SNAPSHOT_MAGIC);
         bytes.extend_from_slice(&(json.len() as u64).to_le_bytes());
@@ -755,6 +762,32 @@ impl SessionSnapshot {
             compressed_envelope,
             header_overhead: SNAPSHOT_HEADER_LEN,
         }
+    }
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use crate::session::CollaborativeDocument;
+    use crate::session::snapshot::{SNAPSHOT_DEFLATE_LEVEL, SessionSnapshot};
+
+    /// The deflate level is chosen by ablation, so it must stay a tuning knob
+    /// and never a correctness one: whatever it is set to, a snapshot has to
+    /// survive the round trip byte for byte.
+    #[test]
+    fn a_snapshot_round_trips_at_the_configured_deflate_level() {
+        let mut session = CollaborativeDocument::new(1);
+        session
+            .insert_paragraph(None, &"lorem ipsum ".repeat(200))
+            .expect("seed paragraph");
+        let original = session.save_snapshot().expect("snapshot");
+
+        let bytes = original.to_bytes().expect("encode");
+        let restored = SessionSnapshot::from_bytes(&bytes).expect("decode");
+
+        assert_eq!(
+            original, restored,
+            "level {SNAPSHOT_DEFLATE_LEVEL} must be lossless"
+        );
     }
 }
 

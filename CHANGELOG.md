@@ -47,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Breaking snapshot V7 wraps the versioned JSON state in a zlib-compressed envelope with an
   authenticated declared length and a 512 MiB decompression limit. Non-current raw JSON snapshots
   still report the actionable reinitialize/re-ingest error.
+- Full snapshot writes use zlib level 3 instead of level 6, reducing representative tail latency
+  in exchange for a modest increase in persisted snapshot size without changing the V7 format.
 - Ready single inserts and contiguous same-peer text-unit runs splice into sequence order once and
   repair shifted indices without a full order rebuild. Other batches rebuild at most once, and
   long causal chains use iterative traversal, removing quadratic cold-ingest behavior and stack
