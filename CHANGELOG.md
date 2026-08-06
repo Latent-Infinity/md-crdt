@@ -71,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report zero `bytes_written` when an export does not rewrite the Markdown file.
 - Bound persisted session storage across both crash-recovery slots instead of amplifying a small
   Markdown file by hundreds of times.
+- Disable the comparison workspace's unused library benchmark harness so Criterion baseline flags
+  are handled only by the `compare` target.
 
 ## [0.3.0] - 2026-07-16
 

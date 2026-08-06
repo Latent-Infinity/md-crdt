@@ -11,6 +11,12 @@ publish = false
 [workspace]
 resolver = "2"
 
+# `cargo bench` would otherwise also run the library's default libtest harness,
+# which rejects Criterion's flags (`--save-baseline`) and fails the whole run.
+# The measurements live in the `compare` bench target, not in the lib.
+[lib]
+bench = false
+
 [dependencies]
 md-crdt = { version = "0.3.0", path = "..", default-features = false }
 yrs = { version = "=0.27.3", default-features = false }
