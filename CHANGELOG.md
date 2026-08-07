@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Parse bare, aliased, and embedded wikilinks into semantic link marks, and
+  expose `doc::inline_links` so raw table-cell text uses the parser's link rules.
+
 ### Changed
 
 - Breaking wire V5 and snapshot V8 distinguish an unmarked table column from
@@ -21,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serialization with distinct default and explicit-left alignment values.
 - Apply Markdown refreshes against an isolated session so a late ingest refusal
   cannot leave partially applied CRDT state or block a later repaired file.
+- Keep escaped link openers and links inside single- or multi-backtick code spans
+  literal in both parsed blocks and the public raw-text link scanner.
 
 ## [0.4.0] - 2026-08-05
 

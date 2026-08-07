@@ -133,6 +133,26 @@ fn a_wikilink_inside_inline_code_is_not_a_link() {
 }
 
 #[test]
+fn links_inside_multi_backtick_code_are_not_marks() {
+    let (text, links) =
+        paragraph("Double ``[[note-a]] and [label](./target.md)`` stays literal.\n");
+    assert_eq!(
+        text,
+        "Double [[note-a]] and [label](./target.md) stays literal."
+    );
+    assert!(
+        links.is_empty(),
+        "multi-backtick code must not produce links"
+    );
+}
+
+#[test]
+fn an_escaped_markdown_link_is_not_a_mark() {
+    let (_, links) = paragraph("Escaped \\[label](./target.md) stays literal.\n");
+    assert!(links.is_empty(), "an escaped opener must stay literal");
+}
+
+#[test]
 fn a_python_slice_inside_inline_code_is_not_a_link() {
     let (text, links) = paragraph("A slice `df[[\"close\", \"volume\"]]` is not a link.\n");
     assert_eq!(text, "A slice df[[\"close\", \"volume\"]] is not a link.");
@@ -177,6 +197,8 @@ fn every_wikilink_form_round_trips_to_its_source() {
         "![[note-a|shown]]\n",
         "Both [[note-a]] and [label](./note-a.md) here.\n",
         "Inline `[[note-a]]` stays literal.\n",
+        "Double ``[[note-a]] and [label](./target.md)`` stays literal.\n",
+        "Escaped \\[label](./target.md) stays literal.\n",
         "An escaped \\[\\[note-a\\]\\] stays visible.\n",
         "Two [[note-a]] and [[note-b]] in one line.\n",
     ] {

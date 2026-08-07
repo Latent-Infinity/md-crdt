@@ -55,10 +55,39 @@ fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
     let mut cursor = 0usize;
     while cursor < markdown.len() {
         let rest = &markdown[cursor..];
-        if rest.starts_with("``") {
-            let run = rest.chars().take_while(|ch| *ch == '`').count();
-            visible.push_str(&rest[..run]);
-            cursor += run;
+        if rest.starts_with('\\') {
+            let escaped_len = rest
+                .chars()
+                .nth(1)
+                .map_or(1, |escaped| 1 + escaped.len_utf8());
+            visible.push_str(&rest[..escaped_len]);
+            cursor += escaped_len;
+            continue;
+        }
+        if rest.starts_with('`') {
+            let run = rest.bytes().take_while(|byte| *byte == b'`').count();
+            if let Some(relative_end) = find_backtick_closer(&rest[run..], run) {
+                let inner_start = cursor + run;
+                let inner_end = inner_start + relative_end;
+                let start = grapheme_count(&visible);
+                visible.push_str(&markdown[inner_start..inner_end]);
+                let end = grapheme_count(&visible);
+                let mut attrs = BTreeMap::new();
+                attrs.insert(
+                    "delimiter".into(),
+                    MarkValue::String(rest[..run].to_string()),
+                );
+                marks.push(ParsedMark {
+                    kind: MarkKind::Code,
+                    start,
+                    end,
+                    attrs,
+                });
+                cursor = inner_end + run;
+            } else {
+                visible.push_str(&rest[..run]);
+                cursor += run;
+            }
             continue;
         }
         if let Some((open, close, kind)) = delimiter_at(rest)
@@ -159,11 +188,29 @@ fn delimiter_at(input: &str) -> Option<(&'static str, &'static str, MarkKind)> {
         Some(("**", "**", MarkKind::Bold))
     } else if input.starts_with('*') {
         Some(("*", "*", MarkKind::Italic))
-    } else if input.starts_with('`') {
-        Some(("`", "`", MarkKind::Code))
     } else {
         None
     }
+}
+
+/// Byte index of a closing backtick run with exactly the opener's length.
+fn find_backtick_closer(input: &str, expected_run: usize) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'`' {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && bytes[index] == b'`' {
+            index += 1;
+        }
+        if index - start == expected_run {
+            return Some(start);
+        }
+    }
+    None
 }
 
 fn find_closing_delimiter(input: &str, close: &str, kind: &MarkKind) -> Option<usize> {
@@ -274,9 +321,17 @@ fn collect_inline_links(markdown: &str, offset: usize, found: &mut Vec<InlineLin
     let mut cursor = 0usize;
     while cursor < markdown.len() {
         let rest = &markdown[cursor..];
-        if rest.starts_with("``") {
-            let run = rest.chars().take_while(|ch| *ch == '`').count();
-            cursor += run;
+        if rest.starts_with('\\') {
+            cursor += rest
+                .chars()
+                .nth(1)
+                .map_or(1, |escaped| 1 + escaped.len_utf8());
+            continue;
+        }
+        if rest.starts_with('`') {
+            let run = rest.bytes().take_while(|byte| *byte == b'`').count();
+            cursor += find_backtick_closer(&rest[run..], run)
+                .map_or(run, |relative_end| run + relative_end + run);
             continue;
         }
         if let Some((open, close, kind)) = delimiter_at(rest)

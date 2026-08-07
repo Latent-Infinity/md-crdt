@@ -82,6 +82,17 @@ fn an_escaped_wikilink_is_not_reported() {
 }
 
 #[test]
+fn an_escaped_markdown_link_is_not_reported() {
+    assert!(inline_links("\\[label](./target.md)").is_empty());
+}
+
+#[test]
+fn links_inside_multi_backtick_code_spans_are_not_reported() {
+    assert!(inline_links("``[label](./target.md)``").is_empty());
+    assert!(inline_links("``[[note-a]]``").is_empty());
+}
+
+#[test]
 fn a_literal_bracket_before_a_link_does_not_extend_it() {
     let input = "As shown in [1] and a link [label](./target.md).";
     let links = inline_links(input);
