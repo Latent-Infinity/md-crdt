@@ -478,7 +478,7 @@ Vault ingest and “create block with body” helpers **must** emit this pair (o
 ```rust
 // src/codec/wire.rs
 
-pub const WIRE_VERSION: u16 = 4;
+pub const WIRE_VERSION: u16 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {

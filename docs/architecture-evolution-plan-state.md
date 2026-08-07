@@ -9,7 +9,7 @@ Companion to [`architecture-evolution.md`](architecture-evolution.md).
 | **Tracking unit** | PR slices under design phases A–Q |
 | **Joint consumer plan** | `../md-mcp/docs/joint-md-crdt-v2-implementation-plan.md` |
 
-**Release compatibility policy:** only V7 session snapshots, wire V4, and current V2 dual-slot storage are
+**Release compatibility policy:** only V8 session snapshots, wire V5, and current V2 dual-slot storage are
 accepted. Earlier completed entries record what landed historically; the temporary snapshot V1–V6
 and storage V1 readers, upgrade branches, and fixtures are removed. Older vault state must be
 reinitialized and re-ingested from Markdown.

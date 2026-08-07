@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Current wire protocol version for [`Envelope`].
-pub const WIRE_VERSION: u16 = 4;
+pub const WIRE_VERSION: u16 = 5;
 
 /// Maximum nested BlockQuote / structure depth accepted on encode and decode.
 ///

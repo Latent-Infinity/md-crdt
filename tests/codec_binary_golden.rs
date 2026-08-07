@@ -1,7 +1,8 @@
 //! Golden vectors and cross-codec pins for `md_crdt_bin_v1`.
 //!
 //! Golden expected bytes are produced by the encoder for fixed inputs and locked
-//! here so format drift is intentional (bump frame version), not accidental.
+//! here so format drift is intentional (bump frame or semantic wire version),
+//! not accidental.
 
 use md_crdt::codec::{
     BinaryOpCodec, DocOp, Envelope, JsonOpCodec, OpBody, OpCodec, TextUnitWire, WIRE_VERSION,
@@ -46,10 +47,10 @@ fn golden_binary_envelope_prefix_and_roundtrip() {
     assert_eq!(
         bytes,
         [
-            77, 68, 69, 49, 1, 0, 31, 0, 0, 0, 4, 0, 3, 1, 1, 16, 0, 0, 0, 0, 0, 0, 0, 0, 17, 17,
+            77, 68, 69, 49, 1, 0, 31, 0, 0, 0, 5, 0, 3, 1, 1, 16, 0, 0, 0, 0, 0, 0, 0, 0, 17, 17,
             34, 34, 51, 51, 68, 68, 1, 2, 1, 1, 1, 1, 0, 1, 97,
         ],
-        "binary envelope wire bytes changed without a format bump"
+        "binary envelope bytes changed without a frame or semantic version bump"
     );
     assert_eq!(BinaryOpCodec.decode(&bytes).unwrap(), env);
 }
@@ -123,10 +124,10 @@ fn change_message_bin_v1_golden_prefix() {
         [
             77, 68, 67, 82, 66, 73, 78, 49, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
             0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 41, 0, 0, 0,
-            77, 68, 69, 49, 1, 0, 31, 0, 0, 0, 4, 0, 3, 1, 1, 16, 0, 0, 0, 0, 0, 0, 0, 0, 17, 17,
+            77, 68, 69, 49, 1, 0, 31, 0, 0, 0, 5, 0, 3, 1, 1, 16, 0, 0, 0, 0, 0, 0, 0, 0, 17, 17,
             34, 34, 51, 51, 68, 68, 1, 2, 1, 1, 1, 1, 0, 1, 97,
         ],
-        "binary change-message wire bytes changed without a format bump"
+        "binary change-message bytes changed without a frame or semantic version bump"
     );
     let restored = decode_bin_v1_change_message_to_json_payloads(&wire).unwrap();
     assert_eq!(restored.ops.len(), 1);

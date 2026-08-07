@@ -97,6 +97,18 @@ fn unknown_wire_version_rejected() {
 }
 
 #[test]
+fn wire_v4_is_rejected_after_adding_default_table_alignment() {
+    let codec = JsonOpCodec;
+    let mut env = sample_insert_block("");
+    env.version = 4;
+    let bytes = codec.encode(&env).expect("encode still serializes");
+    let err = codec
+        .decode(&bytes)
+        .expect_err("wire v4 predates Default alignment");
+    assert!(matches!(err, CodecError::UnknownVersion(4)));
+}
+
+#[test]
 fn malformed_json_rejected() {
     let codec = JsonOpCodec;
     let err = codec.decode(b"not-json").expect_err("malformed");

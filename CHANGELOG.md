@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Breaking wire V5 and snapshot V8 distinguish an unmarked table column from
+  explicit left alignment. Older peers and persisted sessions fail closed and
+  must upgrade or re-ingest rather than decoding the expanded enum as V4/V7.
+
+### Fixed
+
+- Preserve literal, escaped, and nested brackets before inline Markdown links
+  instead of letting the next unrelated `](` absorb intervening text.
+- Preserve `---` versus `:---` table delimiters through structural edits and
+  serialization with distinct default and explicit-left alignment values.
+
 ## [0.4.0] - 2026-08-05
 
 ### Added

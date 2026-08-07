@@ -441,6 +441,23 @@ fn legacy_json_snapshot_reports_reinitialization_requirement() {
 }
 
 #[test]
+fn snapshot_v7_requires_reinitialization_after_adding_default_table_alignment() {
+    let mut session = CollaborativeDocument::new(3);
+    session.insert_paragraph(None, "prior schema").unwrap();
+    let mut prior = session.save_snapshot().unwrap();
+    prior.format_version = 7;
+
+    let error = SessionSnapshot::from_bytes(&prior.to_bytes().unwrap()).unwrap_err();
+    assert!(matches!(
+        error,
+        SnapshotError::ReinitializeRequired {
+            found: 7,
+            expected: SNAPSHOT_FORMAT_VERSION,
+        }
+    ));
+}
+
+#[test]
 fn non_current_snapshot_versions_require_reinitialize() {
     let mut session = CollaborativeDocument::new(3);
     session.insert_paragraph(None, "current").unwrap();

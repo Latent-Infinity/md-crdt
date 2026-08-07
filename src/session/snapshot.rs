@@ -15,8 +15,8 @@ use thiserror::Error;
 
 /// Snapshot schema version (not wire `Envelope` version).
 ///
-/// v7: snapshots use a bounded compressed envelope around the versioned JSON payload.
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 7;
+/// v8: table columns preserve the distinction between default and explicit-left alignment.
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 8;
 
 const SNAPSHOT_MAGIC: &[u8; 5] = b"MDSN\x01";
 const SNAPSHOT_HEADER_LEN: usize = SNAPSHOT_MAGIC.len() + size_of::<u64>();
