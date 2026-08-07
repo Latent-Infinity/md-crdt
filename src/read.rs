@@ -226,9 +226,8 @@ impl ReadDocument {
 
     /// Outbound links in document order.
     ///
-    /// Only inline `[label](target)` links carry a link mark. `[[wikilinks]]` are
-    /// not parsed as links — they stay literal text — so they are never reported
-    /// here.
+    /// Reports both inline `[label](target)` links and bare, aliased, or embedded
+    /// `[[wikilinks]]` from their semantic link marks.
     pub fn links(&self) -> Vec<ReadLink> {
         let mut links = Vec::new();
         for (ordinal, block) in self.document.blocks_in_order().into_iter().enumerate() {
