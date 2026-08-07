@@ -209,12 +209,39 @@ fn parse_blocks_with_spans(
             && let Some(header) = parse_table_cells(line)
             && header.len() == columns.len()
         {
+            // The body is scanned before the columns are built, because a row may
+            // carry more cells than the header declares. Zipping cells onto the
+            // declared columns would drop that surplus here at parse, so an
+            // untouched document would still export it — source regions are
+            // replayed — while editing any cell rebuilt the table without it.
+            // Widening the table instead gives every source cell a column to
+            // live in, and costs only an empty header cell the author left blank.
+            let mut body = Vec::new();
+            let mut end_index = index + 2;
+            while end_index < lines.len() {
+                let Some(cells) = parse_table_cells(lines[end_index]) else {
+                    break;
+                };
+                body.push(cells);
+                end_index += 1;
+            }
+            let width = body
+                .iter()
+                .map(Vec::len)
+                .max()
+                .unwrap_or_default()
+                .max(columns.len());
+
             let elem_id = next_op_id(counter);
             let mut table = Table::new(block_id_from_op(elem_id), elem_id, elem_id);
             let mut after_column = None;
-            for (column, header) in columns.into_iter().zip(header) {
+            for position in 0..width {
+                let alignment = columns
+                    .get(position)
+                    .map_or(ColumnAlignment::Default, |column| column.alignment.clone());
+                let header_cell = header.get(position).cloned().unwrap_or_default();
                 let column_id = next_op_id(counter);
-                table.insert_column(after_column, column.alignment, header, column_id);
+                table.insert_column(after_column, alignment, header_cell, column_id);
                 after_column = Some(column_id);
             }
             let column_ids: Vec<_> = table
@@ -223,11 +250,7 @@ fn parse_blocks_with_spans(
                 .map(|column| column.id)
                 .collect();
             let mut after = None;
-            let mut end_index = index + 2;
-            while end_index < lines.len() {
-                let Some(cells) = parse_table_cells(lines[end_index]) else {
-                    break;
-                };
+            for cells in body {
                 let row_id = next_op_id(counter);
                 table.insert_row(
                     after,
@@ -235,7 +258,6 @@ fn parse_blocks_with_spans(
                     row_id,
                 );
                 after = Some(row_id);
-                end_index += 1;
             }
             let block = Block::new(
                 BlockKind::Table {
