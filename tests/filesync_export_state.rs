@@ -143,6 +143,55 @@ fn explicit_refresh_discards_unexported_work_when_the_file_is_unchanged() {
 }
 
 #[test]
+fn failed_refresh_preserves_the_clean_session_and_allows_a_later_repair() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("note.md");
+    fs::write(&path, "# Note\n\nbefore\n").unwrap();
+
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    let opened = vault.open_document("note.md").unwrap();
+    let before = vault
+        .session_mut("note.md")
+        .unwrap()
+        .document()
+        .serialize(EquivalenceMode::Structural);
+
+    fs::write(
+        &path,
+        "# Note\n\n```markdown\n* item:\n  ```text\n  code\n  ```\n```\n",
+    )
+    .unwrap();
+    vault
+        .refresh_markdown("note.md", Some(&opened.revision), None)
+        .expect_err("the ambiguous fence cannot be ingested");
+
+    assert_eq!(
+        vault
+            .session_mut("note.md")
+            .unwrap()
+            .document()
+            .serialize(EquivalenceMode::Structural),
+        before,
+        "a failed refresh must not leave a partially ingested document"
+    );
+    assert_eq!(
+        vault.export_state("note.md").unwrap(),
+        ExportState::Exported
+    );
+    assert!(!vault.has_unexported_changes("note.md").unwrap());
+
+    fs::write(&path, "# Note\n\nrepaired\n").unwrap();
+    let revision = vault.revision("note.md").unwrap();
+    vault
+        .refresh_markdown("note.md", Some(&revision), None)
+        .expect("repair can be ingested after the failed attempt");
+    assert_eq!(
+        vault.export_state("note.md").unwrap(),
+        ExportState::Exported
+    );
+}
+
+#[test]
 fn reopening_clears_a_report_left_over_from_a_crash() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("note.md"), "alpha\n").unwrap();

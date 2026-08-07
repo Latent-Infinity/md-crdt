@@ -1091,8 +1091,21 @@ impl VaultSession {
         }
 
         let parsed = Parser::parse(&content);
+        // Re-ingest is a state transition, not a stream of best-effort edits.
+        // Build it against an isolated copy so a late validation failure cannot
+        // leave the live session holding only the prefix applied before the
+        // refusal. Snapshot/restore is the existing exact clone boundary for a
+        // collaborative session, including buffered and deferred operations.
+        let snapshot = self
+            .docs
+            .get(&rel)
+            .expect("session opened above")
+            .save_snapshot()
+            .map_err(|error| VaultError::Snapshot(error.to_string()))?;
+        let mut candidate = CollaborativeDocument::restore_from_snapshot(snapshot)
+            .map_err(|error| VaultError::Snapshot(error.to_string()))?;
         let _ops = {
-            let session = self.docs.get_mut(&rel).expect("session opened above");
+            let session = &mut candidate;
             let mut ops = sync_frontmatter(session, &parsed)?;
             let empty = session.document().blocks_in_order().is_empty();
             if empty {
@@ -1106,15 +1119,21 @@ impl VaultSession {
             ops
         };
 
-        self.docs
-            .get_mut(&rel)
-            .expect("session still open")
-            .document_mut()
-            .adopt_source_from(&parsed);
+        candidate.document_mut().adopt_source_from(&parsed);
 
         // Persist full session snapshot + fingerprint/hash gate state.
         // Ingest adopts source formatting that is not present in CRDT op deltas.
-        self.compact_document(&rel)?;
+        let original = self
+            .docs
+            .insert(rel.clone(), candidate)
+            .expect("session opened above");
+        if let Err(error) = self.compact_document(&rel) {
+            self.docs.insert(rel.clone(), original);
+            // `persist_document` marks before writing. Keep that conservative
+            // marker: the snapshot may have landed before a later storage step
+            // failed, so clearing it here could hide state ahead of the file.
+            return Err(error);
+        }
         let session = self.docs.get(&rel).expect("session still open");
         let state = LastFlushedState {
             content_hash,

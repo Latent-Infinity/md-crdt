@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of letting the next unrelated `](` absorb intervening text.
 - Preserve `---` versus `:---` table delimiters through structural edits and
   serialization with distinct default and explicit-left alignment values.
+- Apply Markdown refreshes against an isolated session so a late ingest refusal
+  cannot leave partially applied CRDT state or block a later repaired file.
 
 ## [0.4.0] - 2026-08-05
 
