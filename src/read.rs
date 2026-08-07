@@ -683,13 +683,17 @@ mod tests {
     }
 
     #[test]
-    fn wikilinks_are_not_extracted_as_links() {
+    fn wikilinks_are_extracted_as_links() {
         let document = ReadDocument::parse("See [[Page Name]] and [[Other|Alias]] here.\n");
+        let links = document.links();
 
-        assert!(
-            document.links().is_empty(),
-            "the parser leaves wikilinks as literal text"
-        );
+        // A bare wikilink labels itself; an aliased one shows the alias and
+        // targets the file.
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].label, "Page Name");
+        assert_eq!(links[0].target, "Page Name");
+        assert_eq!(links[1].label, "Alias");
+        assert_eq!(links[1].target, "Other");
         assert_eq!(
             document.section(0),
             Vec::new(),

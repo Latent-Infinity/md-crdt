@@ -22,6 +22,7 @@ pub mod text;
 pub(crate) use source::DocumentSource;
 
 pub use frontmatter::{Frontmatter, FrontmatterError};
+pub use inline::{InlineLink, inline_links};
 pub use parser::Parser;
 use serialize::{
     grapheme_offset_to_byte, is_grapheme_boundary, normalize_structural, serialize_block,

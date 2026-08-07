@@ -63,9 +63,12 @@ fn citation_marker_before_a_link_survives() {
 
 #[test]
 fn wikilink_before_a_link_survives() {
+    // The wikilink is now a link in its own right, so it renders as its target
+    // rather than staying literal. What matters here is unchanged: the markdown
+    // link that follows is parsed on its own and neither swallows the other.
     assert_eq!(
         visible("A wikilink [[note-a]] and a link [label](./target.md) and trailing.\n"),
-        "A wikilink [[note-a]] and a link label and trailing."
+        "A wikilink note-a and a link label and trailing."
     );
 }
 

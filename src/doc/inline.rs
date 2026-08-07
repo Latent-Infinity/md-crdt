@@ -90,6 +90,35 @@ fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
             cursor = inner_end + close.len();
             continue;
         }
+        // Wikilinks are tried before the `[label](target)` form: their target
+        // lives in the visible text or the opening delimiter, not in a trailing
+        // `(href)`, so the form is recorded on the mark and rebuilt from there.
+        if let Some(open) = wikilink_open(rest)
+            && let Some(inner_end) = find_wikilink_end(&rest[open.len()..])
+        {
+            let inner = &rest[open.len()..open.len() + inner_end];
+            let (target, label) = match inner.split_once('|') {
+                Some((target, alias)) => (target, alias),
+                None => (inner, inner),
+            };
+            let start = grapheme_count(&visible);
+            visible.push_str(label);
+            let end = grapheme_count(&visible);
+            let mut attrs = BTreeMap::new();
+            attrs.insert("href".into(), MarkValue::String(target.into()));
+            attrs.insert(
+                "delimiter".into(),
+                MarkValue::String(wikilink_delimiter(open, inner.contains('|'))),
+            );
+            marks.push(ParsedMark {
+                kind: MarkKind::Link,
+                start,
+                end,
+                attrs,
+            });
+            cursor += open.len() + inner_end + WIKILINK_CLOSE.len();
+            continue;
+        }
         if rest.starts_with('[')
             && let Some(label_end) = find_link_label_end(rest)
             && rest[label_end + 1..].starts_with('(')
@@ -205,6 +234,154 @@ fn has_unclosed_single_star(input: &str) -> bool {
         odd_runs += (index - start) % 2;
     }
     odd_runs % 2 == 1
+}
+
+const WIKILINK_CLOSE: &str = "]]";
+
+/// One link found in raw inline Markdown, with the source span it occupies.
+///
+/// Reported for text that is not a parsed block — a table cell is stored as a
+/// raw string and never carries marks — so callers get the parser's own notion
+/// of a link, code spans and escapes included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineLink {
+    /// Visible label: the alias when a wikilink is piped, else the link text.
+    pub label: String,
+    /// Link target as authored, `#fragment` included.
+    pub target: String,
+    /// Byte offset of the whole construct in the input.
+    pub start: usize,
+    /// Byte offset just past the whole construct.
+    pub end: usize,
+    /// Whether the source used `[[…]]` rather than `[label](target)`.
+    pub wikilink: bool,
+    /// Whether a wikilink was written as an `![[…]]` embed.
+    pub embed: bool,
+}
+
+/// Finds every inline link in raw Markdown, in source order.
+///
+/// Shares the parser's branch order, so anything the parser refuses — a link
+/// inside a code span, an escaped `\[\[`, a literal bracket that is not an
+/// opener — is refused here identically.
+pub fn inline_links(markdown: &str) -> Vec<InlineLink> {
+    let mut found = Vec::new();
+    collect_inline_links(markdown, 0, &mut found);
+    found
+}
+
+fn collect_inline_links(markdown: &str, offset: usize, found: &mut Vec<InlineLink>) {
+    let mut cursor = 0usize;
+    while cursor < markdown.len() {
+        let rest = &markdown[cursor..];
+        if rest.starts_with("``") {
+            let run = rest.chars().take_while(|ch| *ch == '`').count();
+            cursor += run;
+            continue;
+        }
+        if let Some((open, close, kind)) = delimiter_at(rest)
+            && let Some(relative_end) = find_closing_delimiter(&rest[open.len()..], close, &kind)
+        {
+            let inner_start = cursor + open.len();
+            let inner_end = inner_start + relative_end;
+            // A code span is literal; anything else may still contain a link.
+            if kind != MarkKind::Code {
+                collect_inline_links(
+                    &markdown[inner_start..inner_end],
+                    offset + inner_start,
+                    found,
+                );
+            }
+            cursor = inner_end + close.len();
+            continue;
+        }
+        if let Some(open) = wikilink_open(rest)
+            && let Some(inner_end) = find_wikilink_end(&rest[open.len()..])
+        {
+            let inner = &rest[open.len()..open.len() + inner_end];
+            let (target, label) = match inner.split_once('|') {
+                Some((target, alias)) => (target, alias),
+                None => (inner, inner),
+            };
+            let end = cursor + open.len() + inner_end + WIKILINK_CLOSE.len();
+            found.push(InlineLink {
+                label: label.to_string(),
+                target: target.to_string(),
+                start: offset + cursor,
+                end: offset + end,
+                wikilink: true,
+                embed: open == "![[",
+            });
+            cursor = end;
+            continue;
+        }
+        if rest.starts_with('[')
+            && let Some(label_end) = find_link_label_end(rest)
+            && rest[label_end + 1..].starts_with('(')
+            && let Some(target_end) = find_link_target_end(&rest[label_end + 2..])
+        {
+            let end = cursor + label_end + 2 + target_end + 1;
+            found.push(InlineLink {
+                label: rest[1..label_end].to_string(),
+                target: rest[label_end + 2..label_end + 2 + target_end].to_string(),
+                start: offset + cursor,
+                end: offset + end,
+                wikilink: false,
+                embed: false,
+            });
+            cursor = end;
+            continue;
+        }
+        let ch = rest.chars().next().expect("cursor is in bounds");
+        cursor += ch.len_utf8();
+    }
+}
+
+/// The opening delimiter when `input` starts a wikilink: `[[` or the `![[` embed.
+fn wikilink_open(input: &str) -> Option<&'static str> {
+    if input.starts_with("![[") {
+        Some("![[")
+    } else if input.starts_with("[[") {
+        Some("[[")
+    } else {
+        None
+    }
+}
+
+/// The stored form, which serialization rebuilds the source from.
+fn wikilink_delimiter(open: &str, aliased: bool) -> String {
+    match (open, aliased) {
+        ("![[", true) => "![[|]]".into(),
+        ("![[", false) => "![[]]".into(),
+        (_, true) => "[[|]]".into(),
+        (_, false) => "[[]]".into(),
+    }
+}
+
+/// Byte index of the `]]` closing a wikilink body, or `None` when unclosed.
+///
+/// A wikilink body holds a target and an optional alias, never nested brackets
+/// or a line break, so a `[` or a newline before the close means this was never
+/// a wikilink — which is what keeps `df[["close", "volume"]]` literal even
+/// outside inline code.
+fn find_wikilink_end(input: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (index, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '\n' | '[' => return None,
+            ']' if input[index..].starts_with(WIKILINK_CLOSE) => {
+                return (index > 0).then_some(index);
+            }
+            ']' => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Byte index of the `]` that closes the `[` starting `input`, honouring nested
@@ -398,9 +575,28 @@ fn open_delimiter(interval: &crate::core::mark::MarkInterval) -> String {
         MarkKind::Bold => delimiter_attr(interval).unwrap_or_else(|| "**".into()),
         MarkKind::Italic => delimiter_attr(interval).unwrap_or_else(|| "*".into()),
         MarkKind::Code => delimiter_attr(interval).unwrap_or_else(|| "`".into()),
-        MarkKind::Link => "[".into(),
+        // A wikilink's target is its visible text, or sits in the opener ahead
+        // of the alias; only the `[label](href)` form carries it in the closer.
+        MarkKind::Link => match delimiter_attr(interval).as_deref() {
+            Some("[[]]") => "[[".into(),
+            Some("![[]]") => "![[".into(),
+            Some("[[|]]") => format!("[[{}|", link_href(interval)),
+            Some("![[|]]") => format!("![[{}|", link_href(interval)),
+            _ => "[".into(),
+        },
         MarkKind::Custom(_) => String::new(),
     }
+}
+
+fn link_href(interval: &crate::core::mark::MarkInterval) -> String {
+    interval
+        .attrs
+        .get("href")
+        .and_then(|value| match value.get_ref() {
+            MarkValue::String(value) => Some(value.clone()),
+            MarkValue::Bool(_) => None,
+        })
+        .unwrap_or_default()
 }
 
 fn close_delimiter(interval: &crate::core::mark::MarkInterval) -> String {
@@ -408,17 +604,10 @@ fn close_delimiter(interval: &crate::core::mark::MarkInterval) -> String {
         MarkKind::Bold => delimiter_attr(interval).unwrap_or_else(|| "**".into()),
         MarkKind::Italic => delimiter_attr(interval).unwrap_or_else(|| "*".into()),
         MarkKind::Code => delimiter_attr(interval).unwrap_or_else(|| "`".into()),
-        MarkKind::Link => {
-            let href = interval
-                .attrs
-                .get("href")
-                .and_then(|value| match value.get_ref() {
-                    MarkValue::String(value) => Some(value.as_str()),
-                    MarkValue::Bool(_) => None,
-                })
-                .unwrap_or_default();
-            format!("]({href})")
-        }
+        MarkKind::Link => match delimiter_attr(interval).as_deref() {
+            Some("[[]]" | "![[]]" | "[[|]]" | "![[|]]") => WIKILINK_CLOSE.into(),
+            _ => format!("]({})", link_href(interval)),
+        },
         MarkKind::Custom(_) => String::new(),
     }
 }
