@@ -181,9 +181,10 @@ fn serialize_table(table: &Table) -> String {
         let alignment = columns
             .get(idx)
             .map(|col| col.alignment.get_ref())
-            .unwrap_or(&ColumnAlignment::Left);
+            .unwrap_or(&ColumnAlignment::Default);
         let align = match alignment {
-            ColumnAlignment::Left => "---",
+            ColumnAlignment::Default => "---",
+            ColumnAlignment::Left => ":---",
             ColumnAlignment::Center => ":---:",
             ColumnAlignment::Right => "---:",
         };

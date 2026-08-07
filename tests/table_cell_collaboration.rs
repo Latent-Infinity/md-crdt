@@ -18,7 +18,7 @@ fn table_with_row(
             None,
             vec![
                 ColumnDef {
-                    alignment: ColumnAlignment::Left,
+                    alignment: ColumnAlignment::Default,
                 },
                 ColumnDef {
                     alignment: ColumnAlignment::Right,
@@ -152,7 +152,7 @@ fn a_cell_edit_delivered_before_its_row_is_retained() {
         .insert_table(
             None,
             vec![ColumnDef {
-                alignment: ColumnAlignment::Left,
+                alignment: ColumnAlignment::Default,
             }],
             vec!["name".into()],
         )
@@ -284,7 +284,7 @@ fn one_cell_wire_bytes(columns: usize) -> usize {
             None,
             (0..columns)
                 .map(|_| ColumnDef {
-                    alignment: ColumnAlignment::Left,
+                    alignment: ColumnAlignment::Default,
                 })
                 .collect(),
             (0..columns).map(|index| format!("h{index}")).collect(),
@@ -326,7 +326,7 @@ fn delayed_column_move_and_alignment_wait_for_the_column_insert() {
         .insert_table(
             None,
             vec![ColumnDef {
-                alignment: ColumnAlignment::Left,
+                alignment: ColumnAlignment::Default,
             }],
             vec!["first".into()],
         )
@@ -407,7 +407,7 @@ fn snapshot_preserves_pending_column_operations() {
         .insert_table(
             None,
             vec![ColumnDef {
-                alignment: ColumnAlignment::Left,
+                alignment: ColumnAlignment::Default,
             }],
             vec!["first".into()],
         )

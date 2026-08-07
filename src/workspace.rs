@@ -2493,6 +2493,7 @@ fn alignment_tag(alignment: &ColumnAlignment) -> &'static [u8] {
         ColumnAlignment::Left => b"left",
         ColumnAlignment::Center => b"center",
         ColumnAlignment::Right => b"right",
+        ColumnAlignment::Default => b"default",
     }
 }
 

@@ -472,6 +472,11 @@ pub enum ColumnAlignment {
     Left,
     Center,
     Right,
+    /// No alignment marker: `---` rather than `:---`.
+    ///
+    /// Distinct from `Left` so a re-serialize does not invent an alignment the
+    /// author never wrote. Appended last to keep the existing wire ordinals.
+    Default,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

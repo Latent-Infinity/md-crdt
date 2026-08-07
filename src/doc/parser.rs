@@ -391,7 +391,8 @@ fn parse_table_delimiter(line: &str) -> Option<Vec<ColumnDef>> {
                 alignment: match (left, right) {
                     (true, true) => ColumnAlignment::Center,
                     (_, true) => ColumnAlignment::Right,
-                    _ => ColumnAlignment::Left,
+                    (true, false) => ColumnAlignment::Left,
+                    (false, false) => ColumnAlignment::Default,
                 },
             })
         })

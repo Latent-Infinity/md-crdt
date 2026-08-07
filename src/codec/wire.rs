@@ -79,6 +79,8 @@ pub enum ColumnAlignmentWire {
     Left,
     Center,
     Right,
+    /// No alignment marker. Appended last so existing ordinals are unchanged.
+    Default,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -87,7 +87,9 @@ fn table_rows_insert_update_delete_converge() {
     );
     assert_eq!(
         first.document().serialize(EquivalenceMode::Structural),
-        "| Name | Score | Rank |\n| --- | ---: | :---: |"
+        // The first column was created as Left, which is `:---`; an unmarked
+        // column would be ColumnAlignment::Default and serialize as `---`.
+        "| Name | Score | Rank |\n| :--- | ---: | :---: |"
     );
 }
 

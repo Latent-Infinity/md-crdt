@@ -126,7 +126,8 @@ fn one_and_two_dash_gfm_table_delimiters_are_valid() {
             .map(|column| column.alignment.get())
             .collect::<Vec<_>>(),
         vec![
-            ColumnAlignment::Left,
+            // `-` carries no colon, so it is unaligned rather than left-aligned.
+            ColumnAlignment::Default,
             ColumnAlignment::Left,
             ColumnAlignment::Right,
         ]

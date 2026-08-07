@@ -1,6 +1,6 @@
 {
   "affected_read": {
-    "bytes_used": 2086,
+    "bytes_used": 2093,
     "continuation": null,
     "document_id": "00000000-0000-0000-0000-000000000002",
     "items": [
@@ -81,7 +81,7 @@
         ]
       },
       {
-        "content_digest": 5633760252568808471,
+        "content_digest": 16585731763315911351,
         "id": "00000000-0000-0007-0000-000000000014",
         "kind": "Table",
         "marks": [],
@@ -89,11 +89,11 @@
           "Table": {
             "columns": [
               {
-                "alignment": "Left",
+                "alignment": "Default",
                 "id": "00000000-0000-0007-0000-000000000015"
               },
               {
-                "alignment": "Left",
+                "alignment": "Default",
                 "id": "00000000-0000-0007-0000-000000000016"
               }
             ],
@@ -219,7 +219,7 @@
   },
   "fixture_version": 3,
   "initial_read": {
-    "bytes_used": 2218,
+    "bytes_used": 2224,
     "continuation": null,
     "document_id": "00000000-0000-0000-0000-000000000002",
     "items": [
@@ -306,7 +306,7 @@
         ]
       },
       {
-        "content_digest": 9735302092251644456,
+        "content_digest": 8260144562029862924,
         "id": "00000000-0000-0007-0000-000000000014",
         "kind": "Table",
         "marks": [],
@@ -314,11 +314,11 @@
           "Table": {
             "columns": [
               {
-                "alignment": "Left",
+                "alignment": "Default",
                 "id": "00000000-0000-0007-0000-000000000015"
               },
               {
-                "alignment": "Left",
+                "alignment": "Default",
                 "id": "00000000-0000-0007-0000-000000000016"
               }
             ],
@@ -430,7 +430,7 @@
         "heading_level": null,
         "id": "00000000-0000-0007-0000-000000000014",
         "kind": "Table",
-        "node_digest": 3973626709249694130,
+        "node_digest": 1678915355610284988,
         "order": 2,
         "parent": null,
         "source_bytes": 42,
@@ -497,13 +497,13 @@
     "traversal": "DirectChildren"
   },
   "response_bytes": {
-    "affected_read": 2086,
+    "affected_read": 2093,
     "edit": 630,
-    "initial_read": 2218,
+    "initial_read": 2224,
     "map": 1057,
     "map_continuation": 658,
-    "restarted_map": 1380,
-    "total": 8029
+    "restarted_map": 1381,
+    "total": 8043
   },
   "restarted_map": {
     "document_id": "00000000-0000-0000-0000-000000000002",
@@ -540,7 +540,7 @@
         "heading_level": null,
         "id": "00000000-0000-0007-0000-000000000014",
         "kind": "Table",
-        "node_digest": 7523623329317613663,
+        "node_digest": 14548041222539997401,
         "order": 2,
         "parent": null,
         "source_bytes": 42,

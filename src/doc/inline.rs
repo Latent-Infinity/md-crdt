@@ -91,7 +91,8 @@ fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
             continue;
         }
         if rest.starts_with('[')
-            && let Some(label_end) = rest.find("](")
+            && let Some(label_end) = find_link_label_end(rest)
+            && rest[label_end + 1..].starts_with('(')
             && let Some(target_end) = find_link_target_end(&rest[label_end + 2..])
         {
             let label = &rest[1..label_end];
@@ -204,6 +205,35 @@ fn has_unclosed_single_star(input: &str) -> bool {
         odd_runs += (index - start) % 2;
     }
     odd_runs % 2 == 1
+}
+
+/// Byte index of the `]` that closes the `[` starting `input`, honouring nested
+/// brackets and backslash escapes.
+///
+/// Scanning for the next `](` instead would let a literal bracket earlier on the
+/// line — a citation `[1]`, a subscript `x[i]`, a wikilink — open a link that a
+/// later, unrelated link then closes, absorbing everything between them.
+fn find_link_label_end(input: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for (index, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn find_link_target_end(input: &str) -> Option<usize> {

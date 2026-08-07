@@ -976,6 +976,7 @@ pub(super) fn alignment_to_wire(alignment: &ColumnAlignment) -> ColumnAlignmentW
         ColumnAlignment::Left => ColumnAlignmentWire::Left,
         ColumnAlignment::Center => ColumnAlignmentWire::Center,
         ColumnAlignment::Right => ColumnAlignmentWire::Right,
+        ColumnAlignment::Default => ColumnAlignmentWire::Default,
     }
 }
 
@@ -984,6 +985,7 @@ pub(super) fn alignment_from_wire(alignment: ColumnAlignmentWire) -> ColumnAlign
         ColumnAlignmentWire::Left => ColumnAlignment::Left,
         ColumnAlignmentWire::Center => ColumnAlignment::Center,
         ColumnAlignmentWire::Right => ColumnAlignment::Right,
+        ColumnAlignmentWire::Default => ColumnAlignment::Default,
     }
 }
 
