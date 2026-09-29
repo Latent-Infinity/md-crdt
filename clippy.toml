@@ -1,5 +1,5 @@
 # Clippy configuration per Rust Code Standards
-# See: .docs/Rust Code Standards.md
+# See: docs/rust-code-standards.md
 #
 # Note: Lint levels (warn/allow) are configured via:
 # - #![warn(...)] / #![allow(...)] in lib.rs files

@@ -1,12 +1,12 @@
 # Rust standards conformance — md-crdt
 
 Governing standard: [`rust-code-standards.md`](./rust-code-standards.md),
-High-Performance Rust Coding Standards **v3.1**, vendored verbatim. That file is
+High-Performance Rust Coding Standards **v3.3**, vendored verbatim. That file is
 a copy; it is not edited here. This file records what *this* repository decided,
 where it deviates, and what is not yet met. Cite rule identifiers (`RPS-NNN`),
 not section numbers.
 
-Last reviewed: 2026-08-05.
+Last reviewed: 2026-09-29.
 
 ## Declared configuration
 
@@ -14,7 +14,8 @@ Last reviewed: 2026-08-05.
 | --- | --- | --- |
 | Edition | 2024 | `RPS-001` |
 | `rust-version` (MSRV) | 1.95 | `RPS-002`, `RPS-003` |
-| Toolchain pin | 1.97.1 (`rust-toolchain.toml`) | `RPS-005`, `RPS-009` |
+| Toolchain pin | 1.98.1 (`rust-toolchain.toml`) | `RPS-005`, `RPS-009` |
+| Release profile | `opt-level = 3`, fat LTO, `codegen-units = 1`, `panic = "abort"`, `debug = 1`, `strip = "none"`, `overflow-checks = false`; `profiling` profile adds `debug = 2` | `RPS-254`, `RPS-255`, `RPS-263` |
 | Lint baseline | workspace `[lints]`, inherited by every member; excluded workspaces (`fuzz/`, `md-crdt-yrs-bench/`) carry their own copy since they inherit nothing | §22 |
 | Clippy thresholds | `clippy.toml` | §22 |
 | Feature configurations verified | `--no-default-features`, `storage`, `filesync`, `--all-features`, default — all build warning-free | `RPS-291` |
@@ -24,8 +25,12 @@ Last reviewed: 2026-08-05.
 compiler a consumer may use, the pin is the exact compiler that built the
 artifact under measurement. Only the pin is meaningful for a performance claim.
 
-**The pin is a correctness decision, not a preference.** Rust 1.97.1 carries the
-fix for an LLVM miscompilation present from 1.87 through 1.97.0. Any artifact
+**The pin is a correctness decision, not a preference.** Rust 1.97.1 carried the
+fix for an LLVM miscompilation present from 1.87 through 1.97.0; the pin is now
+1.98.1, which also fixes the 1.98.0 vtable miscompilation (`RPS-009`,
+`RPS-010`). Compiler upgrades require re-running benchmarks, allocation
+profiles and binary-size checks (`RPS-307`); that has not been done for the
+1.97.1 → 1.98.1 move. Any artifact
 built by a compiler in that range is exposed, and no benchmark detects it,
 because the benchmark is built by the same compiler. This repository declared
 1.85 and built on unpinned `stable` before 2026-08-05, so published 0.3.0
@@ -46,7 +51,7 @@ requires 1.95, and the crate currently has no known downstream consumers.
 | Aggregate | `just check` | — |
 | Benchmarks | `just bench` (`benches/performance.rs`) | `RPS-020` |
 
-CI (`.github/workflows/ci.yml`) runs the blocking gate on the **pinned** 1.97.1
+CI (`.github/workflows/ci.yml`) runs the blocking gate on the **pinned** 1.98.1
 compiler rather than on `stable`, because lint sets and diagnostics change
 across releases and a blocking gate on a moving compiler is not reproducible
 (`RPS-289`). A separate job checks the declared 1.95 MSRV (`RPS-004`), and the
@@ -60,6 +65,11 @@ Recorded rather than hidden.
 | --- | --- | --- |
 | Benchmarks run on shared GitHub runners, with no dedicated host or tracked history | `RPS-022`, `RPS-025`, `RPS-297` | **Open.** No wall-clock regression is gated, which is the correct conservative choice; the cost is that regressions are found by hand |
 | Competitive results (`md-crdt-yrs-bench`) have no committed multi-run report | `RPS-017`, `RPS-023` | **Open.** The committed benchmark methodology forbids citing quick, dry-run, dirty-tree, or single-run results; no workload has a committed citable baseline yet |
+| Release-profile choices not benchmarked | `RPS-253`, `RPS-263`, `RPS-307` | **Open.** `opt-level` 2 vs 3, thin vs fat LTO and `overflow-checks` are declared explicitly but have no committed comparison. `strip` was changed from `true` to `"none"` and `debug = 1` added so shipped binaries stay attributable (`RPS-254`, `RPS-255`) |
+| MSRV job only runs `cargo check`, without `--locked` | `RPS-004`, `RPS-293` | **Open.** The standard requires tests on the MSRV |
+| No beta release-mode job | `RPS-013` | **Open** |
+| Duplicate semver-incompatible dependencies (`getrandom` 0.3/0.4, others) | `RPS-268` | **Open, low impact.** All arrive via dev-dependencies or proc-macros |
+| `#[inline(always)]` on `perf_trace`-off stubs in `src/perf.rs` | `RPS-148` | **Accepted.** Empty or constant bodies; no codegen evidence recorded |
 | No root dependency-policy configuration | `RPS-296` | **Open.** `cargo deny check advisories` is green, but there is no root `deny.toml`; license policy therefore is not enforced and a default `cargo deny check licenses` rejects the dependency graph rather than representing an approved allowlist |
 | Fuzz targets exist but run in no gate | `RPS-295` | **Open.** `fuzz/` has corpora and artifacts; nothing invokes it on push or schedule. It now declares Edition 2024, MSRV 1.95 and the lint baseline, so it is at least governed once wired up |
 | No feature matrix in the gate | `RPS-291` | **Partly closed.** The 32 `dead_code` warnings a reduced-feature build used to surface are fixed: the projection and descriptor machinery is implementation of the `filesync`-backed workspace API and is now gated behind that feature, so it no longer compiles into builds that cannot reach it. Verified clean across `--no-default-features`, `storage`, `filesync`, `--all-features` and default. **Still open:** nothing in CI walks that matrix, so a future regression would go unnoticed until someone builds a reduced configuration by hand. `cargo hack --feature-powerset` in the scheduled job would close it |

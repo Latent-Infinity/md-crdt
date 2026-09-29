@@ -2,21 +2,20 @@
 VENDORED COPY — DO NOT EDIT IN THIS REPOSITORY.
 
 Source:  Software-Standards/Rust Code Standards.md
-Version: High-Performance Rust Coding Standards v3.1
-sha256:  6815e5cda7e89e04 (first 16 hex)
-Synced:  2026-08-05
+Version: High-Performance Rust Coding Standards v3.3
+sha256:  f1a6cfc48afe585a (first 16 hex)
+Synced:  2026-09-29
 
 Edits belong upstream. To re-sync, copy the upstream file over this one,
 keeping this header, and update the version, hash, and date. Project-specific
 decisions and approved exceptions live in rust-standards-conformance.md, not
 here.
 -->
-
-# High-Performance Rust Coding Standards v3.1
+# High-Performance Rust Coding Standards v3.3
 
 **Hardware sympathy, predictable latency, and evidence-based optimization — Rust 1.95+ / Edition 2024**
 
-**Reviewed through Rust 1.97.1, the current stable release (July 16, 2026). Declared baseline remains Rust 1.95.**
+**Reviewed September 29, 2026 against Rust 1.98.1, the current stable release (September 3, 2026). Declared baseline remains Rust 1.95.**
 
 > Performance is a property of the whole system under a defined workload, not a property inferred from syntax.
 
@@ -56,7 +55,7 @@ Every normative rule carries a permanent identifier of the form `RPS-NNN`. Ident
 - A new rule takes the next unallocated number regardless of where it appears in the document. After the first revision that adds rules, document order and identifier order no longer match, and that is expected.
 - Cite the identifier, not the section number, in review comments and exception records.
 
-As of v3.1 the highest allocated identifier is `RPS-307`. The next new rule takes `RPS-308`.
+As of v3.3 the highest allocated identifier is `RPS-310`. The next new rule takes `RPS-311`.
 
 ### Exception record
 
@@ -95,12 +94,12 @@ For a binary workspace, pin the deployment compiler:
 ```toml
 # rust-toolchain.toml
 [toolchain]
-channel = "1.97.1" # Production pin. 1.97.0 is defective; see "Compiler defect response".
+channel = "1.98.1" # Includes the 1.98.0 vtable miscompilation fix.
 profile = "minimal"
 components = ["clippy", "rustfmt"]
 ```
 
-This revision was reviewed through Rust 1.97.1, released July 16, 2026 and current stable at the time of writing. It retains 1.95 as the baseline so 1.95 features may be used unconditionally; APIs marked 1.96+ or 1.97+ require a corresponding MSRV increase.
+This revision was reviewed through Rust 1.98.1, released September 3, 2026 and current stable on September 29, 2026. It retains 1.95 as the baseline; APIs marked 1.96+, 1.97+, or 1.98+ require a corresponding MSRV increase. The 1.95 CI job checks source compatibility only; production artifacts use the patched compiler pin.
 
 A `rust-version` floor and a toolchain pin answer different questions. `rust-version` is the oldest compiler a consumer may use. The pin is the exact compiler that produced the artifact under measurement. Only the pin is meaningful for a performance claim.
 
@@ -108,13 +107,13 @@ Cargo parses TOML v1.1 in manifests as of Rust 1.94. Using TOML v1.1 syntax rais
 
 ### Compiler defect response
 
-A miscompilation is not a performance tradeoff. It is a correctness failure that no benchmark will detect, because the benchmark is built by the same defective compiler. Rust 1.97.1 fixed an LLVM miscompilation that had been present since at least Rust 1.87, so any artifact built with 1.87 through 1.97.0 was exposed.
+A miscompilation is a correctness failure. Passing tests and benchmarks cannot establish that a compiler defect is absent from an artifact. [Rust 1.97.1](https://blog.rust-lang.org/2026/07/16/Rust-1.97.1/) fixed an LLVM miscompilation present since at least Rust 1.87. [Rust 1.98.1](https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/) fixes a separate 1.98.0 defect that could emit a null function pointer in a trait-object vtable and cause undefined behavior. Production artifacts built with 1.98.0 require rebuilding and redeploying with 1.98.1 or a later fixed release.
 
-- `RPS-009` **MUST** pin to a release carrying every published correctness point release for its minor version. Do not pin to an `x.y.0` once `x.y.1` exists.
+- `RPS-009` **MUST** pin to a release carrying every published correctness point release for its minor version. Move to a newer fixed minor release when a known defect affecting the production pin has no backport. Do not pin to an `x.y.0` once `x.y.1` exists.
 - `RPS-010` **MUST** treat a compiler correctness point release as a rebuild-and-redeploy event for production binaries, not an optional upgrade deferred to the next planned bump.
 - `RPS-011` **MUST** record the exact compiler version in artifact metadata and in every performance change record, so an affected build range can be identified after the fact.
 - `RPS-012` **SHOULD** monitor upstream release announcements and codegen/miscompilation reports against the pinned version, and assign an owner for that monitoring.
-- `RPS-013` **SHOULD** run the test suite in release mode against the beta channel in a scheduled, non-blocking job. Optimization-dependent defects appear in release builds, not debug builds.
+- `RPS-013` **SHOULD** run the test suite in release mode against the beta channel in a scheduled, non-blocking job. Optimization-dependent defects may appear only under release optimization settings.
 
 ### Rust 1.95 features relevant to this standard
 
@@ -135,7 +134,7 @@ These are tools, not automatic optimizations. Their use is governed by the measu
 - `RPS-014` **MUST** define the metric being optimized before changing a hot path: throughput, p99 latency, CPU/request, allocations/request, bytes/request, RSS, cache misses, startup time, or another explicit objective.
 - `RPS-015` **MUST** establish a baseline before a performance change and repeat the same measurement after the change.
 - `RPS-016` **MUST** use representative input distributions, data sizes, concurrency, feature flags, observability settings, and deployment compiler flags.
-- `RPS-017` **MUST** include the exact toolchain, target triple, CPU, build flags, benchmark command, dataset version, and relevant environment settings with reported results.
+- `RPS-017` **MUST** include the source revision and any local changes, lockfile identity, exact toolchain, target triple, CPU, selected packages/targets, enabled and default features, build profile and flags, benchmark command, dataset version, and relevant environment settings with reported results. Preserve the lockfile and use `--locked` for reproducible benchmark and production builds; identify any dependency changes between baseline and candidate.
 - `RPS-018` **MUST** evaluate steady-state and overload behavior for services. A throughput win that creates an unbounded queue or worse p99/p99.9 latency is a regression unless explicitly intended.
 - `RPS-019` **MUST** measure allocations or memory footprint when an optimization changes ownership, buffering, collection capacity, task count, or allocator behavior.
 - `RPS-020` **SHOULD** retain a regression benchmark for material improvements.
@@ -153,6 +152,14 @@ Use load or system tests to report at least:
 - CPU utilization and CPU per operation;
 - RSS/peak memory and allocation rate;
 - queue depth or in-flight work.
+
+### Load generation and latency validity
+
+A generator that waits for each response before sending more work reduces offered load when the service stalls. For workloads whose arrivals are independent of completions, this can hide queueing and understate tail latency: **coordinated omission**. An HDR histogram alone does not correct how samples were collected. See the [wrk2 explanation](https://github.com/giltene/wrk2#wrk2).
+
+- `RPS-310` **MUST** document the arrival model and latency measurement boundary for service load tests. Use independent arrivals when that matches production, or justify a model that waits for completions. Include client/server queueing within the claimed latency boundary, report scheduled versus issued/completed requests, timeouts, rejections, and dropped arrivals, and verify that the generator has sufficient capacity. Do not present successful-request percentiles alone as the service latency result or treat a generator-limited run as server capacity.
+
+Record how coordinated omission is prevented or corrected, including any correction assumptions. Measure from the scheduled arrival when claiming latency under a specified arrival schedule; otherwise expose scheduling delay separately. Report failures alongside latency, without treating a timeout threshold as a completed response time.
 
 ### Noise control
 
@@ -368,10 +375,12 @@ Choose by access pattern, data size, iteration behavior, and memory layout—not
 
 The standard library specializes on trait guarantees. An implementation that compiles but is semantically wrong silently disables those optimizations or, increasingly, panics.
 
-- `RPS-085` **MUST** implement `Ord`/`PartialOrd` as a genuine total order and keep `Eq` and `Hash` consistent, so that `a == b` implies equal hashes. Ordered and hashed collections optimize against these guarantees; Rust 1.96 optimized `BTreeMap::append`, and an incorrect `Ord` implementation can now panic there rather than merely producing a strange ordering.
+- `RPS-085` **MUST** implement a total order for types implementing `Ord` and keep `Ord`, `PartialOrd`, `Eq`, and `PartialEq` consistent: `partial_cmp(a, b) == Some(cmp(a, b))`, and comparison equality agrees with `a == b`. Keep `Eq` and `Hash` consistent so equal values have equal hashes. A type implementing only `PartialOrd` may legitimately have incomparable values.
 - `RPS-086` **MUST** return a correct `size_hint` from custom iterators, and implement `ExactSizeIterator` only when the length is exact. `collect`, `extend`, and `reserve` preallocate from the hint; a wrong or needlessly conservative hint quietly reintroduces reallocation on every hot pipeline that consumes the iterator.
 - `RPS-087` **SHOULD** keep `Clone` cheap and predictable, or document prominently that it is not. Generic code and reviewers both assume `Clone` is not a deep traversal.
-- `RPS-088` **MUST** treat these as correctness rules, not style. They are the reason a pipeline preallocates, a comparison short-circuits, or a collection stays sound under optimization.
+- `RPS-088` **MUST** treat these as correctness rules. Optimized collections and pipelines rely on them for correct results, ordering, and capacity planning; unsafe code must not rely on safe trait implementations being correct to prevent undefined behavior.
+
+Rust 1.96 optimized `BTreeMap::append`, exposing incorrect `Ord` implementations through panics. Rust 1.98 adds a fast path to derived `PartialOrd` when `Ord` is also derived, making agreement between the traits especially relevant during upgrades. See the [comparison contract](https://doc.rust-lang.org/std/cmp/trait.Ord.html) and [1.98 compatibility notes](https://doc.rust-lang.org/releases.html#version-1980-2026-08-20).
 
 ---
 
@@ -464,6 +473,29 @@ fn render(items: &[Item], output: &mut String) {
     }
 }
 ```
+
+### Decimal integer formatting (MSRV 1.98+)
+
+[`core::fmt::NumBuffer`](https://doc.rust-lang.org/core/fmt/struct.NumBuffer.html) and integer `format_into` methods provide decimal text in a reusable buffer without allocating a temporary `String`. The returned `&str` borrows the buffer; consume it before reusing the buffer.
+
+- `RPS-308` **SHOULD** evaluate `format_into` for measured decimal-integer formatting bottlenecks when the declared MSRV is at least 1.98. Compare the complete output path against buffered `write!` or the existing implementation before replacing it or removing a formatting dependency.
+
+```rust
+// Requires rust-version = "1.98" or newer; production pin: 1.98.1.
+use core::fmt::NumBuffer;
+use std::io::{self, Write};
+
+pub fn write_ids(ids: &[u64], output: &mut impl Write) -> io::Result<()> {
+    let mut buffer = NumBuffer::<u64>::new();
+    for &id in ids {
+        output.write_all(id.format_into(&mut buffer).as_bytes())?;
+        output.write_all(b"\n")?;
+    }
+    Ok(())
+}
+```
+
+Pass a buffered writer for files or sockets, and flush at the owning boundary. Use `write!` when width, padding, alternate bases, or compound formatting are required.
 
 ---
 
@@ -589,7 +621,7 @@ Parallelism is profitable only when useful work exceeds scheduling, synchronizat
 
 ### Standards
 
-- `RPS-151` **MUST** bound thread, task, queue, and in-flight operation counts.
+- `RPS-151` **MUST** bound thread, task, queue, and in-flight operation counts, plus retained bytes when payload sizes vary. Derive limits from the memory and latency budgets, including per-item state and backing buffers; a count limit alone does not establish an acceptable memory bound.
 - `RPS-152` **MUST** choose parallel granularity from measurement; do not spawn one thread or task per small item.
 - `RPS-153` **SHOULD** use local aggregation plus merge/reduce instead of a shared increment or lock on every item.
 - `RPS-154` **SHOULD** use scoped threads for bounded lifetimes and Rayon for suitable data-parallel workloads, but neither is mandatory when a dedicated pool, thread-per-core design, or sequential loop performs better.
@@ -620,6 +652,8 @@ fn record_request() {
 }
 ```
 
+For MSRV 1.98+, atomic `from_mut`, `from_mut_slice`, and `get_mut_slice` support safe transitions between exclusive non-atomic access and atomic access. The `from_mut*` methods are available only where the primitive and atomic alignments match. Use the documented APIs instead of pointer casts, and end all concurrent access before recovering exclusive access. See the [atomic API contracts](https://doc.rust-lang.org/core/sync/atomic/struct.Atomic.html#method.from_mut).
+
 ### False sharing and sharding
 
 - `RPS-167` **SHOULD** shard contended counters/state by worker or core and aggregate less frequently.
@@ -646,22 +680,25 @@ Async improves utilization for waiting-heavy work; it does not make CPU work fas
 
 - `RPS-175` **MUST** use async primarily for I/O-bound concurrency or integration with an async ecosystem.
 - `RPS-176` **SHOULD** directly `.await` trivial operations rather than spawn a task solely for indirection.
-- `RPS-177` **MUST** apply admission control or an in-flight limit before spawning, queueing, or issuing work proportional to externally driven input.
+- `RPS-177` **MUST** apply admission control or an in-flight limit before spawning, queueing, or issuing work proportional to externally driven input. Bound admission waiters and queue residence time, define the reject/expire policy, and carry deadlines through queueing and execution so expired work does not begin expensive processing.
 - `RPS-178` **SHOULD** prefer a lazily polled bounded stream or worker pool over spawning one task per item.
 - `RPS-179` **MUST** account for ordering: `buffer_unordered` may reorder results; use an order-preserving combinator when required.
 - `RPS-180` **MUST** move blocking I/O and long CPU work off executor worker threads.
-- `RPS-181` **MUST** bound how long a single future runs between yield points. A future that polls for a long stretch without awaiting starves every other task on that worker; the symptom is tail latency across unrelated endpoints, not a slow endpoint.
+- `RPS-181` **MUST** bound work within each poll before returning control to the executor. An `.await` on an immediately ready future does not necessarily yield; a loop containing `.await` can still starve other tasks. Use a measured work/time budget and the runtime's cooperative scheduling mechanisms where appropriate, and test fairness with continuously ready input.
 - `RPS-182` **SHOULD** split long synchronous stretches inside async code into chunks with an explicit yield, or move them to a blocking or CPU pool, whichever measurement favors.
-- `RPS-183` **MUST** also bound `spawn_blocking` or use a dedicated CPU/Rayon pool for sustained CPU work; the blocking pool is not a substitute for backpressure.
-- `RPS-184` **MUST** define cancellation behavior. Dropping a timeout/select loser must not corrupt protocol state, leak permits, or leave partial side effects without recovery.
-- `RPS-185` **MUST** avoid async locks, channels, and tasks that permit unbounded queued memory.
+- `RPS-183` **MUST** also bound `spawn_blocking` or use a dedicated CPU/Rayon pool for sustained CPU work. Acquire capacity before submission and retain it until the underlying work ends, including after caller timeout; for Tokio, move an owned semaphore permit into the blocking closure so dropping the caller cannot release it early.
+- `RPS-184` **MUST** define cancellation behavior. Dropping a timeout/select loser must not corrupt protocol state, leak permits, or leave partial side effects without recovery. Distinguish stopping the caller's wait from stopping the work; use cooperative cancellation/deadline checks where needed and define shutdown behavior for work that cannot be interrupted.
+- `RPS-185` **MUST** bound queued memory, individual payloads, and retained results across producers, workers, and consumers. Include waiting producers and output/reordering buffers in the budget. Stream or persist results incrementally when collecting the whole batch would exceed it; enforce byte limits before materializing oversized payloads.
 - `RPS-186` **MUST** avoid retaining large locals, buffers, or guards across `.await` when they are no longer needed. Future size and retained state multiply by the number of in-flight tasks.
 - `RPS-187` **SHOULD** inspect future/task size for very high-concurrency paths and isolate unusually large cold states when that improves memory use without excessive boxing or indirection.
 - `RPS-188` **SHOULD** batch messages and writes to amortize wakeups and synchronization.
 
 ### Bounded concurrency without one spawned task per item
 
+The following application sketch caps active fetches, but owns every input URL and collects every response. It requires a bounded batch and payload budget; it does not provide memory usage independent of batch size. `Url`, `Response`, `FetchError`, and `fetch` are application-defined.
+
 ```rust
+// Application sketch: supply the types and fetch implementation described above.
 use futures::{stream, StreamExt};
 
 async fn fetch_all(
@@ -679,6 +716,38 @@ async fn fetch_all(
 ```
 
 Use `.buffered(concurrency)` when output order must match input order.
+
+### Consume results incrementally
+
+This complete helper requires the `futures` 0.3 crate. Supply a lazy input stream and a consumer that writes or discards results within a bounded memory budget.
+
+```rust
+use futures::{Stream, StreamExt};
+use std::{future::Future, num::NonZeroUsize};
+
+pub async fn process_bounded<S, Work, WorkFuture, Consume, ConsumeFuture>(
+    inputs: S,
+    concurrency: NonZeroUsize,
+    work: Work,
+    mut consume: Consume,
+) where
+    S: Stream,
+    Work: FnMut(S::Item) -> WorkFuture,
+    WorkFuture: Future,
+    Consume: FnMut(WorkFuture::Output) -> ConsumeFuture,
+    ConsumeFuture: Future<Output = ()>,
+{
+    let results = inputs.map(work).buffer_unordered(concurrency.get());
+    futures::pin_mut!(results);
+    while let Some(result) = results.next().await {
+        consume(result).await;
+    }
+}
+```
+
+The helper retains at most `concurrency` buffered operations/results and one result being consumed. Upstream buffers, each operation's working memory, and the consumer still need byte limits. A slow consumer pauses polling of the buffered operations; independently spawned work needs its own bounds. Results arrive in completion order. If `work` returns a `Result`, the consumer handles its error policy. This helper does not itself impose deadlines, cancellation, or a per-poll work budget.
+
+Tokio's [cooperative scheduling documentation](https://docs.rs/tokio/latest/tokio/task/coop/index.html) explains ready-future starvation. Its [`spawn_blocking` contract](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html) specifies that started blocking tasks cannot be aborted and can outlive caller timeouts.
 
 ### Async traits and closures
 
@@ -756,7 +825,7 @@ struct Event<'a> {
 
 ## 17. SIMD, CPU Features, and Numeric Semantics
 
-As of Rust 1.97.1, `std::simd` remains unstable. Stable options are compiler auto-vectorization, architecture intrinsics in `std::arch`, or a vetted portable-SIMD crate.
+As of Rust 1.98.1, [`std::simd`](https://doc.rust-lang.org/std/simd/index.html) remains unstable. Stable options are compiler auto-vectorization, architecture intrinsics in `std::arch`, or a vetted portable-SIMD crate.
 
 ### Standards
 
@@ -775,6 +844,12 @@ As of Rust 1.97.1, `std::simd` remains unstable. Stable options are compiler aut
 - `RPS-226` **SHOULD** use function multiversioning when one artifact must support a baseline fleet and exploit newer CPUs.
 - `RPS-227` **MAY** compile a fleet-specific artifact with an explicit deployment CPU target.
 - `RPS-228` **MUST NOT** publish a generally portable artifact built with `target-cpu=native` on an arbitrary build host.
+
+### Algebraic floating-point operations (MSRV 1.98+)
+
+The `f32`/`f64` `algebraic_*` methods permit reassociation and other optimizations that can enable vectorization. Their precision is unspecified; results may differ even within one execution, and NaN, infinity, and signed-zero behavior may differ from ordinary operators. The methods are safe, but unsafe code cannot rely on properties of their results for soundness. See the [algebraic operator contract](https://doc.rust-lang.org/std/primitive.f32.html#algebraic-operators).
+
+- `RPS-309` **MUST** document the accepted input domain, numeric error budget, and reproducibility requirements before using `algebraic_*`. Validate representative and edge-case results against a reference with the production compiler and target, and measure the benefit. Keep ordinary operators or an algorithm with suitable guarantees when the application requires bounded precision, IEEE special-value behavior, or reproducible results that these methods cannot promise.
 
 ### CPU target policy
 
@@ -816,6 +891,8 @@ Several patterns that once required raw pointers are expressible with checked or
 
 - `RPS-240` **SHOULD** replace existing hand-rolled unsafe with one of these forms when behavior is equivalent, and re-benchmark rather than assuming parity.
 - `RPS-241` **MUST** apply the same `// SAFETY:` and testing requirements to the remaining unsafe operations these APIs still require, such as `assume_init`.
+
+Rust 1.98 documents a `ManuallyDrop<Box<_>>` fix effective since 1.96: moving the wrapper after manually dropping its boxed value is no longer itself undefined behavior. Code supporting the 1.95 MSRV cannot rely on that fix; raise the MSRV before adopting that pattern. Reading or dropping an already-dropped value remains invalid. See the [`ManuallyDrop` compatibility note](https://doc.rust-lang.org/std/mem/struct.ManuallyDrop.html#pre-196-interaction-with-box).
 
 ### FFI and accelerator boundaries
 
@@ -866,7 +943,7 @@ This is a starting point, not a universal optimum.
 - `RPS-255` **MUST NOT** strip the only copy of symbols needed to attribute regressions.
 - `RPS-256` **SHOULD** evaluate `panic = "abort"` under the constraints in Section 10.
 - `RPS-257` **SHOULD** use PGO for stable, performance-critical binaries when representative training traffic is available.
-- `RPS-258` **MUST** train PGO on representative behavior, including important uncommon paths; stale or skewed profiles can regress performance.
+- `RPS-258` **MUST** train PGO on representative behavior, including important uncommon paths. Record profile provenance (source/lockfile, compiler, target, features, flags, training inputs and commands), use compatible profile tooling, and regenerate profiles when those inputs change. Validate correctness and performance of the final optimized binary on separate representative workloads, including uncommon paths; training performance alone is insufficient evidence.
 - `RPS-259` **SHOULD** evaluate post-link layout optimization only after LTO/PGO and only with a reproducible symbolized workflow.
 - `RPS-260` **MUST** use the deployment CPU policy from Section 17.
 - `RPS-261` **MUST** preserve build IDs and enough toolchain metadata to reproduce a shipped artifact.
@@ -878,13 +955,56 @@ This is a starting point, not a universal optimum.
 
 Rust 1.97 switched stable Rust to v0 symbol mangling by default. Verify that profilers, crash tooling, and symbol pipelines demangle the shipped binaries correctly.
 
+### PGO workflow
+
+Use the [rustc PGO workflow](https://doc.rust-lang.org/rustc/profile-guided-optimization.html) with the production package selection and settings. This Bash template assumes a native Linux target and a command-line program reading training input from stdin. Replace the package, binary, target, training invocation, and flags for the application; services need a traffic-replay harness and graceful termination to write profiles.
+
+```bash
+# Template: adapt the application-specific values before running.
+set -euo pipefail
+PGO_TOOLCHAIN=1.98.1
+PGO_TARGET=aarch64-unknown-linux-gnu
+PGO_PACKAGE=my-service
+PGO_BINARY=my-service
+PGO_BASE_FLAGS="" # Set the complete production rustc flags, including CPU policy.
+PGO_ROOT="$(mktemp -d /tmp/rust-pgo.XXXXXX)"
+
+# RUSTFLAGS replaces config rustflags; an encoded override takes precedence.
+unset CARGO_ENCODED_RUSTFLAGS
+PGO_BUILD=(build --locked --release --target "$PGO_TARGET"
+           -p "$PGO_PACKAGE" --bin "$PGO_BINARY")
+# Add production --features / --no-default-features to PGO_BUILD as needed.
+rustup component add --toolchain "$PGO_TOOLCHAIN" llvm-tools-preview
+PGO_SYSROOT="$(rustc +"$PGO_TOOLCHAIN" --print sysroot)"
+PGO_HOST="$(rustc +"$PGO_TOOLCHAIN" -vV | sed -n 's/^host: //p')"
+PGO_PROFDATA="$PGO_SYSROOT/lib/rustlib/$PGO_HOST/bin/llvm-profdata"
+
+# 1. Instrument; explicit --target keeps PGO flags off host build scripts.
+RUSTFLAGS="$PGO_BASE_FLAGS -Cprofile-generate=$PGO_ROOT/raw" \
+    CARGO_TARGET_DIR="$PGO_ROOT/instrumented" \
+    cargo +"$PGO_TOOLCHAIN" "${PGO_BUILD[@]}"
+
+# 2. Train: replace this with representative application invocations.
+"$PGO_ROOT/instrumented/$PGO_TARGET/release/$PGO_BINARY" < training-input.txt
+
+# 3. Merge only this run's profiles with the pinned toolchain's LLVM tool.
+"$PGO_PROFDATA" merge -o "$PGO_ROOT/merged.profdata" "$PGO_ROOT/raw"
+
+# 4. Rebuild with the profile; preserve all other production settings.
+RUSTFLAGS="$PGO_BASE_FLAGS -Cprofile-use=$PGO_ROOT/merged.profdata -Cllvm-args=-pgo-warn-missing-function" \
+    CARGO_TARGET_DIR="$PGO_ROOT/optimized" \
+    cargo +"$PGO_TOOLCHAIN" "${PGO_BUILD[@]}"
+```
+
+Investigate missing-profile or mismatch diagnostics. Archive the merged profile, provenance, and build logs before removing temporary files. Compare the optimized artifact with a build without PGO using the same production settings on validation inputs separate from training; apply correctness, latency, memory, and binary-size gates. Benchmark the final optimized artifact, not the instrumented executable. This recipe's paths identify the artifacts explicitly so the two builds cannot be confused.
+
 ### Build and iteration cost
 
 Build cost is a stated objective in the priority order and is measurable like any other.
 
 - `RPS-267` **SHOULD** measure clean build, incremental build, and link time when changing profiles, features, dependencies, or generic surface area.
 - `RPS-268` **SHOULD** audit duplicate and unnecessary dependencies. Duplicate semver-incompatible copies of a crate inflate build time, binary size, and instruction-cache pressure simultaneously.
-- `RPS-269` **MUST** account for feature unification across a workspace: a feature enabled by one member is enabled for every member sharing that dependency, which can silently pull heavier code paths into a hot binary.
+- `RPS-269` **MUST** inspect the dependency features activated by the actual production Cargo invocation. Building multiple workspace packages together can unify their shared dependency features; building one package separately can differ. Resolver 2/3 also separate certain target, build/proc-macro, and development dependency features. Match package/target/feature selection when comparing benchmarks with shipped binaries; use `cargo tree -e features` with the corresponding selection to inspect the graph. See [Cargo feature resolution](https://doc.rust-lang.org/cargo/reference/resolver.html#features).
 - `RPS-270` **SHOULD** keep the profile used for local iteration distinct from the profile used for production measurement, so that nobody benchmarks a configuration nobody ships.
 
 ---
@@ -937,7 +1057,7 @@ Use multiple tools because no single benchmark explains time, allocation, cache 
 - `RPS-285` **SHOULD** include small, median, large, and adversarial sizes.
 - `RPS-286` **MUST** keep correctness assertions outside the timed inner loop when possible, while still validating benchmark outputs.
 - `RPS-287` **MUST NOT** describe instruction-count tools as complete latency predictors; cache, frequency, contention, and I/O still matter.
-- `RPS-288` **MUST NOT** run production benchmarks with debug assertions or an accidental non-release dependency profile.
+- `RPS-288` **MUST** benchmark with the shipped assertion, overflow, panic, and dependency-profile settings. Deliberately enabled production checks belong in the measurement; accidental debug builds or profile overrides do not. Treat measurements under different settings as a separate experiment.
 
 ### Criterion example
 
@@ -1019,6 +1139,8 @@ CARGO_BUILD_WARNINGS=deny cargo check --workspace
 
 For the Rust 1.95 MSRV job, continue using the project’s compatible warning policy. Do not add 1.97-only configuration while claiming a 1.95 Cargo MSRV unless older Cargo behavior has been tested.
 
+Rust 1.98 adds `invalid_runtime_symbol_definitions` (deny by default), `suspicious_runtime_symbol_definitions`, and `c_void_returns` (warn by default). Review runtime-symbol exports and FFI declarations when these diagnostics appear; C `void` returns use `()` or an omitted return type, while opaque pointers use `*mut c_void` or `*const c_void`. Keep the shared lint configuration compatible with the MSRV; these defaults are enforced by the pinned compiler and warning gate. See the [1.98 release notes](https://doc.rust-lang.org/releases.html#version-1980-2026-08-20).
+
 ---
 
 ## 23. Edition 2024 and Modern Idioms
@@ -1055,7 +1177,9 @@ These may be used unconditionally under the declared MSRV.
 
 - Rust 1.96: `core::range` additions, `assert_matches!`/`debug_assert_matches!`, `NonZero` range iteration.
 - Rust 1.97: Cargo warning policy, v0 symbol mangling by default, and new integer bit-position/width APIs.
-- Rust 1.97.1: LLVM miscompilation fix. Required for production pins; see Section 1.
+- Rust 1.97.1: LLVM miscompilation fix, retained in the newer production pin.
+- Rust 1.98: `NumBuffer`/integer `format_into`; floating-point `algebraic_*`; atomic mutable-view APIs; `str::substr_range`/slice `subslice_range`; `strip_circumfix`; endian-specific UTF-16 decoding; `NonZero::from_str_radix`.
+- Rust 1.98.1: vtable miscompilation fix; replaces 1.98.0 for production builds under `RPS-009` and `RPS-010`.
 
 Using a later API requires raising `rust-version` to that release or newer.
 
@@ -1065,6 +1189,7 @@ Compiler upgrades change more than diagnostics. These recent, concrete examples 
 
 - **1.93** removed an unsound internal `Copy` specialization in the standard library. Some standard APIs now call `Clone::clone` where they previously performed a bitwise copy, which can regress copy-heavy code.
 - **1.96** optimized `BTreeMap::append`, which can now panic for element types with an incorrect `Ord` implementation that previously went unnoticed.
+- **1.98** tightened `repr(transparent)` field eligibility and `transmute` size checks; recheck unsafe layout assumptions. Derived `PartialOrd` has a new fast path when `Ord` is also derived; validate comparison contracts. Some ambiguous glob imports now fail, and rustfmt discovers modules inside `cfg_select!`; review compiler and formatting changes during the upgrade. [Compatibility notes](https://doc.rust-lang.org/releases.html#version-1980-2026-08-20).
 - **1.92** began emitting unwind tables by default under `panic = "abort"` on Linux so that backtraces work, changing binary size.
 - **1.90** made `lld` the default linker on `x86_64-unknown-linux-gnu`.
 - The bundled LLVM moved repeatedly across this range. Auto-vectorization, inlining, and layout decisions can differ between adjacent releases for identical source.
@@ -1081,7 +1206,9 @@ Apply this checklist to every PR that changes a hot or adversarial path.
 
 - [ ] Objective and workload are explicit.
 - [ ] Baseline and candidate use the same compiler, flags, hardware, data, and observability.
+- [ ] Source/lockfile identities and package/target/feature selections are recorded; intentional differences are identified.
 - [ ] Throughput/tail latency, CPU, allocations, and memory are reported as relevant.
+- [ ] Load generation matches the arrival model, includes queueing/failures, and is not generator-limited (`RPS-310`).
 - [ ] Overload/backpressure behavior is tested.
 - [ ] A regression benchmark remains in-tree when practical.
 - [ ] Startup and first-request cost are measured when initialization was deferred or added.
@@ -1101,6 +1228,7 @@ Apply this checklist to every PR that changes a hot or adversarial path.
 - [ ] Iterator/materialization choices were verified rather than assumed.
 - [ ] Chunked/SIMD paths handle tails and all target feature checks.
 - [ ] Floating-point and overflow semantics are explicit.
+- [ ] `algebraic_*` use has an accepted numeric contract and measured benefit (`RPS-309`).
 - [ ] Dynamic dispatch is outside inner loops where static specialization matters.
 - [ ] Inlining/monomorphization changes include code-size consideration.
 - [ ] Bounds checks were removed by safe means and verified, not assumed away.
@@ -1108,13 +1236,14 @@ Apply this checklist to every PR that changes a hot or adversarial path.
 
 ### Concurrency and async
 
-- [ ] Threads, tasks, queues, and in-flight work are bounded.
+- [ ] Threads, tasks, queues, payload bytes, and retained results fit explicit memory and latency budgets.
 - [ ] Work granularity exceeds scheduling/synchronization overhead.
 - [ ] Atomic orderings and happens-before relationships are documented.
 - [ ] No blocking mutex is held across `.await`.
 - [ ] Large values and guards are not retained across `.await` without need.
-- [ ] Cancellation and timeout behavior is safe.
-- [ ] No single future polls for a long stretch without yielding.
+- [ ] Deadlines include queueing, and cancellation/shutdown behavior accounts for work continuing after caller timeout.
+- [ ] Concurrency permits remain held until underlying work ends.
+- [ ] No single future polls for a long stretch without yielding, including with continuously ready input.
 - [ ] False sharing, oversubscription, and NUMA effects are considered where relevant.
 
 ### I/O and observability
@@ -1133,6 +1262,7 @@ Apply this checklist to every PR that changes a hot or adversarial path.
 - [ ] FFI ownership, representation, panic, length, and batching contracts are explicit.
 - [ ] Miri/sanitizer/fuzz/target coverage is appropriate.
 - [ ] Production profile, CPU target, allocator, and compiler pin match the benchmark.
+- [ ] Assertion/overflow/panic and dependency settings match production; PGO has recorded provenance and separate validation workloads.
 - [ ] The compiler pin includes the latest correctness point release for its minor version.
 - [ ] Symbols/build IDs remain available for production diagnosis.
 
@@ -1145,9 +1275,18 @@ Apply this checklist to every PR that changes a hot or adversarial path.
 
 **Objective:**
 **Hot path:**
+**Baseline/candidate source revisions and local changes:**
+**Baseline/candidate lockfile identities and archived locations:**
 **Workload/data version:**
 **Compiler/target/CPU:**
+**Cargo package/target selection, features, and default-feature policy:**
 **Build profile and flags:**
+**Assertion/overflow/panic settings and dependency profile overrides:**
+**PGO profile identity, provenance, training commands/data (or N/A):**
+**Validation workloads distinct from PGO training (or N/A):**
+**Arrival model, latency boundary, and coordinated-omission handling (or N/A):**
+**Scheduled/issued/completed load, timeouts/rejections/dropped arrivals, generator capacity:**
+**Queue count/byte limits, payload/result bounds, and deadlines:**
 
 | Metric | Baseline | Candidate | Delta |
 |---|---:|---:|---:|
@@ -1171,6 +1310,8 @@ Apply this checklist to every PR that changes a hot or adversarial path.
 
 ### CI sketch
 
+This is a steps-only sketch: supply the CI provider's runner and checkout setup for every job. Production jobs run from the workspace root with the committed `rust-toolchain.toml` pin shown in Section 1; provision that toolchain and its Clippy/rustfmt components before these commands. Update the MSRV job when adopting newer APIs.
+
 ```yaml
 jobs:
   msrv:
@@ -1178,7 +1319,7 @@ jobs:
       - run: rustup toolchain install 1.95.0 --profile minimal
       - run: cargo +1.95.0 test --workspace
 
-  # Optimization-dependent defects appear in release builds. Non-blocking.
+  # Optimization-dependent defects may require release settings. Non-blocking.
   beta-release-tests:
     continue-on-error: true
     steps:
@@ -1198,10 +1339,10 @@ jobs:
   # Run performance gates on a dedicated runner, not a shared generic VM.
   benchmark:
     steps:
-      - run: cargo bench --workspace
+      - run: cargo bench --locked --workspace
 ```
 
-Adapt the feature and target matrix to real products; do not mechanically use incompatible feature combinations.
+Adapt the feature and target matrix to real products; do not mechanically use incompatible feature combinations. If production builds one package at a time, replace the benchmark job's `--workspace` with the corresponding package/target/feature selection to avoid changing dependency features (`RPS-269`).
 
 ### Production profile experiment matrix
 
@@ -1229,9 +1370,16 @@ Primary and authoritative references should be checked when changing toolchain p
 - Rust 1.96 release: <https://blog.rust-lang.org/2026/05/28/Rust-1.96.0/>
 - Rust 1.97 release: <https://blog.rust-lang.org/2026/07/09/Rust-1.97.0/>
 - Rust 1.97.1 release: <https://blog.rust-lang.org/2026/07/16/Rust-1.97.1/>
+- Rust 1.98 release: <https://blog.rust-lang.org/2026/08/20/Rust-1.98.0/>
+- Rust 1.98.1 release: <https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/>
 - Rust release notes: <https://doc.rust-lang.org/stable/releases.html>
 - Rust 2024 Edition Guide: <https://doc.rust-lang.org/edition-guide/rust-2024/>
 - Cargo profiles: <https://doc.rust-lang.org/cargo/reference/profiles.html>
+- Cargo feature resolution: <https://doc.rust-lang.org/cargo/reference/resolver.html#features>
+- Cargo rustflags precedence: <https://doc.rust-lang.org/cargo/reference/config.html#buildrustflags>
+- Tokio cooperative scheduling: <https://docs.rs/tokio/latest/tokio/task/coop/index.html>
+- Tokio blocking-task lifecycle: <https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html>
+- Load generation and coordinated omission: <https://github.com/giltene/wrk2#wrk2>
 - rustc code-generation options: <https://doc.rust-lang.org/rustc/codegen-options/>
 - rustc profile-guided optimization: <https://doc.rust-lang.org/rustc/profile-guided-optimization.html>
 - Cargo build-performance guide: <https://doc.rust-lang.org/stable/cargo/guide/build-performance.html>
@@ -1243,6 +1391,26 @@ Primary and authoritative references should be checked when changing toolchain p
 ---
 
 ## Changelog
+
+### v3.3 — September 29, 2026
+
+- Clarified yielding on ready futures, cancellation versus completion, and concurrency-permit lifetime for blocking work.
+- Made queue, payload, result-memory, and deadline budgets explicit; documented the batch example's memory limits and added a streaming consumer helper.
+- Added `RPS-310` for arrival models, coordinated omission, queueing, failures, and load-generator capacity.
+- Corrected `RPS-288` to require shipped assertion, overflow, panic, and dependency-profile settings in production benchmarks.
+- Extended benchmark provenance to source/lockfile and Cargo selections, and corrected workspace feature-unification guidance.
+- Added a PGO build/train/merge/rebuild template, profile provenance, and separate validation requirements.
+- Updated the review checklist, performance change record, and references. Existing rule IDs remain unchanged; the next new ID is `RPS-311`.
+
+### v3.2 — September 29, 2026
+
+- Reviewed through Rust 1.98.1 and updated the production pin for the 1.98.0 vtable miscompilation fix; retained Rust 1.95 / Edition 2024 compatibility.
+- Clarified that the MSRV job checks compatibility, that passing benchmarks cannot exclude compiler defects, and that production pins must move across minor releases when needed for a correctness fix.
+- Added `RPS-308` for measured adoption of buffered integer formatting and `RPS-309` for explicit numeric contracts when using algebraic floating-point methods.
+- Added atomic mutable-view guidance and the MSRV boundary for the documented `ManuallyDrop<Box<_>>` fix.
+- Corrected comparison-trait requirements and added Rust 1.98 layout, comparison, import, formatting, and FFI diagnostic upgrade notes.
+- Updated the stable API catalogue, confirmed portable SIMD remains unstable, and clarified CI sketch setup and toolchain selection.
+- Existing rule identifiers remain unchanged; no identifiers were retired.
 
 ### v3.1 — August 5, 2026
 
