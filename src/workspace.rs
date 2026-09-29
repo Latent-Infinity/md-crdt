@@ -344,7 +344,10 @@ impl<'de> Deserialize<'de> for DescriptorCursor {
             ));
         }
         let mut bytes = Vec::with_capacity(Self::WIRE_BYTES);
-        for pair in encoded.as_bytes().chunks_exact(2) {
+        // The length check above makes the byte count exactly `WIRE_BYTES * 2`, so
+        // the tail of `as_chunks` is empty and dropping it loses nothing.
+        let (pairs, _) = encoded.as_bytes().as_chunks::<2>();
+        for pair in pairs {
             let text = std::str::from_utf8(pair)
                 .map_err(|_| serde::de::Error::custom("invalid descriptor cursor encoding"))?;
             bytes.push(

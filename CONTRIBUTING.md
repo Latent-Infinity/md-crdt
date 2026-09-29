@@ -10,8 +10,8 @@ This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDU
 
 ### Prerequisites
 
-- Rust 1.97.1. `rust-toolchain.toml` pins it, so `rustup` installs it for you.
-  The pin is deliberate: 1.97.1 carries an LLVM miscompilation fix that 1.87
+- Rust 1.98.1. `rust-toolchain.toml` pins it, so `rustup` installs it for you.
+  The pin is deliberate: 1.98.1 carries an LLVM miscompilation fix that 1.87
   through 1.97.0 lack. Do not build release artifacts on an unpinned `stable`.
 - Edition 2024; the declared MSRV is 1.95, which CI checks separately.
 - [just](https://github.com/casey/just) command runner (optional but recommended)
