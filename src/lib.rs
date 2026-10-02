@@ -145,3 +145,6 @@ pub use filesync::{
     MatchType, ParsedBlock, Score, Vault, VaultError, VaultSession, fingerprint_document,
     match_blocks, parsed_blocks_from_doc,
 };
+
+/// Resource budgets for externally supplied Markdown.
+pub mod limits;

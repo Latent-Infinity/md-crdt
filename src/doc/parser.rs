@@ -3,6 +3,13 @@ use super::*;
 pub struct Parser;
 
 impl Parser {
+    /// Parse externally supplied source after validating byte and nesting budgets.
+    pub fn try_parse(text: &str) -> Result<Document, crate::limits::InputLimitError> {
+        crate::limits::validate_markdown(text)?;
+        Ok(Self::parse(text))
+    }
+
+    /// Parse trusted, prevalidated source. Use `try_parse` at external boundaries.
     pub fn parse(text: &str) -> Document {
         let source_lines = source_lines(text);
         let lines: Vec<&str> = source_lines.iter().map(|line| line.text).collect();

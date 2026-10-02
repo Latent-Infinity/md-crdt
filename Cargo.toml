@@ -89,15 +89,16 @@ perf_trace = []
 [[bench]]
 name = "performance"
 harness = false
+required-features = ["filesync"]
 
 [profile.release]
-opt-level = 3              # Not yet compared against 2 (RPS-253); see docs/rust-standards-conformance.md
-lto = "fat"                # Not yet compared against thin (RPS-253)
+opt-level = 3              # Compared against 2; see docs/rust-standards-conformance.md
+lto = "fat"                # Compared against thin (RPS-253)
 codegen-units = 1          # Single codegen unit for maximum optimization
 panic = "abort"            # Final binary only; consumers of the library choose their own (RPS-127, RPS-128)
 debug = 1                  # Line tables keep crashes and profiles attributable (RPS-254)
 strip = "none"             # Never strip the only copy of symbols (RPS-255)
-overflow-checks = false    # Explicit release decision (RPS-263): wrap silently; not yet benchmarked
+overflow-checks = false    # Explicit release decision (RPS-263): preserve wrapping; benchmark recorded
 
 [profile.profiling]
 inherits = "release"

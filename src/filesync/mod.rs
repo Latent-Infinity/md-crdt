@@ -74,6 +74,8 @@ pub(crate) fn normalize_rel(path: &Path) -> Result<PathBuf, VaultError> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
+    #[error(transparent)]
+    InputLimit(#[from] crate::limits::InputLimitError),
     #[error("Path does not exist: {0}")]
     PathDoesNotExist(PathBuf),
     #[error("path already exists: {0}")]
@@ -339,8 +341,8 @@ impl Vault {
     pub fn flush(&self) -> Result<(), VaultError> {
         self.init()?;
         for file in self.files() {
-            let content = fs::read_to_string(&file)?;
-            let doc = Parser::parse(&content);
+            let content = crate::limits::read_markdown_file(&file)?;
+            let doc = Parser::try_parse(&content)?;
             let state = LastFlushedState {
                 content_hash: hash_string(&content),
                 blocks: fingerprint_document(&doc),
@@ -358,7 +360,7 @@ impl Vault {
         self.init()?;
         let mut changed = false;
         for file in self.files() {
-            let content = fs::read_to_string(&file)?;
+            let content = crate::limits::read_markdown_file(&file)?;
             let content_hash = hash_string(&content);
             let storage = Storage::open(self.state_path_for(&file))?;
             match storage.read_snapshot() {

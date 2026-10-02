@@ -1,4 +1,4 @@
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use md_crdt::core::{OpId, Sequence, SequenceOp, StateVector};
 use md_crdt::doc::{
     Block, BlockKind, ColumnAlignment, ColumnDef, Document, EquivalenceMode, Parser, TextUnit,
@@ -13,6 +13,7 @@ use md_crdt::{
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fs;
+use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;

@@ -2784,7 +2784,7 @@ fn longest_increasing_ids(items: &[(BlockId, usize)]) -> BTreeSet<BlockId> {
     stationary
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "filesync"))]
 mod projection_tests {
     use super::*;
     use crate::doc::Parser;

@@ -126,7 +126,7 @@ impl VaultSession {
                 self.ingest_file_unchecked(&rel)?;
             }
             Some(baseline) => {
-                let disk_markdown = fs::read_to_string(&path)?;
+                let disk_markdown = crate::limits::read_markdown_file(&path)?;
                 let session_markdown = self
                     .docs
                     .get(&rel)
@@ -600,13 +600,16 @@ impl VaultSession {
             .expect("revision check opened the session")
             .document()
             .serialize(crate::doc::EquivalenceMode::Exact);
-        let prior = fs::read(&path).ok();
+        let prior = crate::limits::read_markdown_file(&path)
+            .ok()
+            .map(String::into_bytes);
         let changed = prior.as_deref() != Some(markdown.as_bytes());
         if changed {
+            crate::limits::validate_markdown(&markdown)?;
             atomic_write_markdown(&path, markdown.as_bytes(), PublishControl::default())?;
         }
 
-        let parsed = Parser::parse(&markdown);
+        let parsed = Parser::try_parse(&markdown)?;
         self.revision_cache.remove(&rel);
         let session = self.docs.get_mut(&rel).expect("session remains open");
         session.document_mut().adopt_source_from(&parsed);
@@ -651,6 +654,7 @@ impl VaultSession {
         if path.exists() {
             return Err(VaultError::PathAlreadyExists(path));
         }
+        crate::limits::validate_markdown(markdown)?;
         atomic_write_markdown(&path, markdown.as_bytes(), PublishControl::default())?;
         self.open_document(rel)
     }
@@ -770,7 +774,9 @@ impl VaultSession {
                 .document()
                 .serialize(crate::doc::EquivalenceMode::Exact);
             let path = self.vault.path.join(&rel);
-            let changed = fs::read(&path).ok().as_deref() != Some(markdown.as_bytes());
+            crate::limits::validate_markdown(&markdown)?;
+            let changed =
+                crate::limits::read_markdown_file(&path).ok().as_deref() != Some(markdown.as_str());
             prepared.push(PreparedExport {
                 rel,
                 document_id: request.document_id,
@@ -854,7 +860,7 @@ impl VaultSession {
     ) -> Result<Vec<crate::ExportOutcome>, VaultError> {
         let mut outcomes = Vec::with_capacity(prepared.len());
         for export in prepared {
-            let parsed = Parser::parse(&export.markdown);
+            let parsed = Parser::try_parse(&export.markdown)?;
             self.revision_cache.remove(&export.rel);
             let session = self
                 .docs
@@ -1035,7 +1041,7 @@ impl VaultSession {
         if !abs.exists() {
             return Err(VaultError::PathDoesNotExist(abs));
         }
-        let content = fs::read_to_string(&abs)?;
+        let content = crate::limits::read_markdown_file(&abs)?;
         let content_hash = hash_string(&content);
         let entry_state = self.vault.export_state(&rel)?;
         self.session_mut(&rel)?;
@@ -1063,7 +1069,7 @@ impl VaultSession {
         {
             let needs_source = !self.session_mut(&rel)?.document().has_source_state();
             if needs_source {
-                let parsed = Parser::parse(&content);
+                let parsed = Parser::try_parse(&content)?;
                 self.session_mut(&rel)?
                     .document_mut()
                     .adopt_source_from(&parsed);
@@ -1090,7 +1096,7 @@ impl VaultSession {
             });
         }
 
-        let parsed = Parser::parse(&content);
+        let parsed = Parser::try_parse(&content)?;
         // Re-ingest is a state transition, not a stream of best-effort edits.
         // Build it against an isolated copy so a late validation failure cannot
         // leave the live session holding only the prefix applied before the
@@ -1521,7 +1527,7 @@ fn recover_pending_transactions(vault: &Vault) -> Result<RecoveryReport, VaultEr
     journals.sort();
     let mut report = RecoveryReport::default();
     for path in journals {
-        let bytes = fs::read(&path)?;
+        let bytes = crate::limits::read_file_bounded(&path, 4 * 1024 * 1024)?;
         let journal: DurableJournal =
             serde_json::from_slice(&bytes).map_err(|_| VaultError::Serialization)?;
         match journal {
@@ -2089,7 +2095,8 @@ fn parse_identity<T>(path: &Path) -> Result<T, VaultError>
 where
     T: PersistentIdentity,
 {
-    let value = fs::read_to_string(path)?;
+    let value = String::from_utf8(crate::limits::read_file_bounded(path, 128)?)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     value
         .trim()
         .parse()
@@ -2163,7 +2170,7 @@ fn summarize_session_transition(
 }
 
 fn disk_fingerprint(path: &Path) -> Result<Option<DiskFingerprint>, VaultError> {
-    match fs::read(path) {
+    match crate::limits::read_file_bounded(path, crate::limits::MAX_MARKDOWN_BYTES) {
         Ok(bytes) => Ok(Some(DiskFingerprint(hash_bytes(&bytes)))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
@@ -2235,7 +2242,7 @@ fn sync_directory(_path: &Path) -> std::io::Result<()> {
 fn load_or_create_peer_id(vault: &Vault) -> Result<PeerId, VaultError> {
     let path = VaultSession::peer_id_path(vault);
     if path.exists() {
-        let raw = fs::read_to_string(&path)?;
+        let raw = crate::limits::read_markdown_file(&path)?;
         let trimmed = raw.trim();
         let peer: PeerId = trimmed
             .parse()
@@ -2717,7 +2724,7 @@ fn apply_paragraph_text_diff(
     if old_g == new_g && mark_semantics(&current_marks) == mark_semantics(&desired_marks) {
         return Ok(0);
     }
-    let steps = lcs_steps(&old_g, &new_g);
+    let steps = lcs_steps(&old_g, &new_g)?;
     let old_to_new: HashMap<usize, usize> = steps
         .iter()
         .filter_map(|step| match step {

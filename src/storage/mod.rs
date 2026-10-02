@@ -10,6 +10,11 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+// Bound disk artifacts before decoding or allocating their declared collections.
+fn read_artifact(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
+    crate::limits::read_file_bounded(path.as_ref(), 512 * 1024 * 1024)
+}
+
 const SUPERBLOCK_A: &str = "superblock_a";
 const SUPERBLOCK_B: &str = "superblock_b";
 const LEGACY_SEGMENT_FILE: &str = "segment";
@@ -154,7 +159,7 @@ impl Storage {
         let mut last_corruption = "decode";
 
         for slot in STORAGE_SLOTS {
-            let bytes = match fs::read(self.root.join(slot.superblock)) {
+            let bytes = match read_artifact(self.root.join(slot.superblock)) {
                 Ok(bytes) => bytes,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(StorageError::Io(error)),
@@ -169,7 +174,7 @@ impl Storage {
 
         candidates.sort_by_key(|(_, metadata)| std::cmp::Reverse(metadata.generation));
         for (slot, metadata) in candidates {
-            let segment = match fs::read(self.root.join(slot.segment)) {
+            let segment = match read_artifact(self.root.join(slot.segment)) {
                 Ok(segment) => segment,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     last_corruption = "missing segment";
@@ -284,7 +289,7 @@ impl Storage {
         paths
             .into_iter()
             .map(|(_, path)| {
-                let bytes = fs::read(&path)?;
+                let bytes = read_artifact(&path)?;
                 decode_op_segment(&path, &bytes)
             })
             .collect()
@@ -351,7 +356,7 @@ impl Storage {
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let bytes = fs::read(path)?;
+        let bytes = read_artifact(path)?;
         let archived = rkyv::access::<rkyv::Archived<Vec<u64>>, rkyv::rancor::Error>(&bytes)
             .map_err(|_| StorageError::Corrupt("decode"))?;
         Ok(archived.iter().map(|v| (*v).into()).collect())
@@ -359,7 +364,7 @@ impl Storage {
 }
 
 fn read_slot_generation(root: &Path, slot: StorageSlot) -> Result<Option<u64>, StorageError> {
-    match fs::read(root.join(slot.superblock)) {
+    match read_artifact(root.join(slot.superblock)) {
         Ok(bytes) => match decode_superblock(&bytes) {
             Ok(metadata) => Ok(Some(metadata.generation)),
             Err(StorageError::Corrupt(_)) => Ok(None),

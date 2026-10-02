@@ -17,7 +17,20 @@ pub enum GraphemeStep {
 }
 
 /// Classic LCS dynamic program on grapheme slices (equality by string).
-pub fn lcs_steps(old: &[&str], new: &[&str]) -> Vec<GraphemeStep> {
+pub fn lcs_steps(
+    old: &[&str],
+    new: &[&str],
+) -> Result<Vec<GraphemeStep>, crate::limits::InputLimitError> {
+    // RPS-028: reject before allocating the quadratic table; callers stage
+    // ingestion on an isolated session, so refusal preserves live identities.
+    if old
+        .len()
+        .saturating_add(1)
+        .saturating_mul(new.len().saturating_add(1))
+        > 4_000_000
+    {
+        return Err(crate::limits::InputLimitError::DiffWork);
+    }
     let n = old.len();
     let m = new.len();
     let mut dp = vec![vec![0u32; m + 1]; n + 1];
@@ -51,7 +64,7 @@ pub fn lcs_steps(old: &[&str], new: &[&str]) -> Vec<GraphemeStep> {
         }
     }
     steps.reverse();
-    steps
+    Ok(steps)
 }
 
 /// Split `s` into grapheme clusters (same segmentation as paragraph units).
@@ -89,9 +102,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn oversized_alignment_is_refused_before_allocation() {
+        let text = vec!["x"; 2000];
+        assert_eq!(
+            lcs_steps(&text, &text),
+            Err(crate::limits::InputLimitError::DiffWork)
+        );
+    }
+
+    #[test]
     fn lcs_identical() {
         let a = ["a", "b", "c"];
-        let steps = lcs_steps(&a, &a);
+        let steps = lcs_steps(&a, &a).unwrap();
         assert!(
             steps
                 .iter()
@@ -104,7 +126,7 @@ mod tests {
     fn lcs_insert_middle() {
         let old = ["a", "b"];
         let new = ["a", "x", "b"];
-        let steps = lcs_steps(&old, &new);
+        let steps = lcs_steps(&old, &new).unwrap();
         assert_eq!(
             steps,
             vec![
@@ -119,7 +141,7 @@ mod tests {
     fn lcs_replace_all() {
         let old = ["a"];
         let new = ["b"];
-        let steps = lcs_steps(&old, &new);
+        let steps = lcs_steps(&old, &new).unwrap();
         assert!(matches!(steps[0], GraphemeStep::Delete { old: 0 }));
         assert!(matches!(steps[1], GraphemeStep::Insert { new: 0 }));
     }

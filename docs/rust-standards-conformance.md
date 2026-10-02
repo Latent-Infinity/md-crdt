@@ -1,94 +1,97 @@
 # Rust standards conformance — md-crdt
 
-Governing standard: [`rust-code-standards.md`](./rust-code-standards.md),
-High-Performance Rust Coding Standards **v3.3**, vendored verbatim. That file is
-a copy; it is not edited here. This file records what *this* repository decided,
-where it deviates, and what is not yet met. Cite rule identifiers (`RPS-NNN`),
-not section numbers.
+Governing source: `Software-Standards/Rust Code Standards.md`, High-Performance
+Rust Coding Standards v3.3 (September 29, 2026). Vendored standards are copied
+verbatim; project decisions are recorded here. Reviewed October 2, 2026.
 
-Last reviewed: 2026-09-29.
+## Configuration and enforcement
 
-## Declared configuration
+- Edition 2024, MSRV 1.95, production pin 1.99.0 (`RPS-001`–`RPS-009`).
+- Workspace lint inheritance includes performance/suspicious lints, ownership
+  checks and async guard checks. The new compiler's Clippy runs with warnings
+  denied; no renamed or unknown lint is suppressed (`RPS-289`, `RPS-299`).
+- CI runs formatting, pinned Clippy/tests, explicit MSRV tests with `--locked`,
+  release-mode tests, and dependency licenses/advisories (`RPS-290`–`RPS-296`).
+- Scheduled/manual fuzz jobs use cargo-fuzz 0.13.2 and nightly-2026-10-01 with
+  AddressSanitizer, fixed input/time/RSS limits, and preserved failure artifacts.
+  Beta release tests are explicitly non-blocking. Nightly is tooling only.
+- Public external Markdown boundaries validate bytes, lexical nesting and inline
+  syntax work before parsing. Storage reads and alignment tables have allocation
+  limits. `Parser::parse` remains a trusted-input API; external callers use
+  `try_parse` (`RPS-028`, `RPS-049`, `RPS-203`).
 
-| Setting | Value | Rule |
-| --- | --- | --- |
-| Edition | 2024 | `RPS-001` |
-| `rust-version` (MSRV) | 1.95 | `RPS-002`, `RPS-003` |
-| Toolchain pin | 1.98.1 (`rust-toolchain.toml`) | `RPS-005`, `RPS-009` |
-| Release profile | `opt-level = 3`, fat LTO, `codegen-units = 1`, `panic = "abort"`, `debug = 1`, `strip = "none"`, `overflow-checks = false`; `profiling` profile adds `debug = 2` | `RPS-254`, `RPS-255`, `RPS-263` |
-| Lint baseline | workspace `[lints]`, inherited by every member; excluded workspaces (`fuzz/`, `md-crdt-yrs-bench/`) carry their own copy since they inherit nothing | §22 |
-| Clippy thresholds | `clippy.toml` | §22 |
-| Feature configurations verified | `--no-default-features`, `storage`, `filesync`, `--all-features`, default — all build warning-free | `RPS-291` |
-| `unsafe` | none in the library or the FFI crate | §18 |
+## Performance evidence and reproduction
 
-`rust-version` and the pin answer different questions: the MSRV is the oldest
-compiler a consumer may use, the pin is the exact compiler that built the
-artifact under measurement. Only the pin is meaningful for a performance claim.
+Compiler upgrades require the complete benchmark suite, allocation probes and
+binary-size comparison (`RPS-262`, `RPS-307`). The host measurement runner is
+`md-mcp/tools/measure_rust_upgrade.py`; it records both repositories' source-file
+hashes, dirty-tree identity, lockfiles, exact compilers, activated features,
+production profiles, commands, Criterion confidence estimates and raw logs.
+It also measures three independent MCP process runs and independent-arrival
+load, including scheduling delay, errors, disconnections and uncompleted work
+(`RPS-017`, `RPS-018`, `RPS-310`).
 
-**The pin is a correctness decision, not a preference.** Rust 1.97.1 carried the
-fix for an LLVM miscompilation present from 1.87 through 1.97.0; the pin is now
-1.98.1, which also fixes the 1.98.0 vtable miscompilation (`RPS-009`,
-`RPS-010`). Compiler upgrades require re-running benchmarks, allocation
-profiles and binary-size checks (`RPS-307`); that has not been done for the
-1.97.1 → 1.98.1 move. Any artifact
-built by a compiler in that range is exposed, and no benchmark detects it,
-because the benchmark is built by the same compiler. This repository declared
-1.85 and built on unpinned `stable` before 2026-08-05, so published 0.3.0
-artifacts are in the affected range.
+Run from md-mcp, without concurrent builds or load:
 
-**MSRV raise is consumer-visible.** This crate publishes to crates.io, so 1.85
-to 1.95 would break a consumer pinned below 1.95. Taken deliberately: `RPS-003`
-requires 1.95, and the crate currently has no known downstream consumers.
+```sh
+python3 tools/measure_rust_upgrade.py --md-crdt ../md-crdt --output /tmp/rust-upgrade-evidence
+```
 
-## Verification
+Do not treat a smoke run as timing evidence, or compare a library benchmark
+profile directly to a host binary's timings. The compiler comparison retains
+identical source and profile settings within each project. Benchmarks are
+manual controlled-host measurements; shared CI never gates wall-clock deltas.
+Keep the generated report and logs with the release record. A dedicated runner
+can invoke the same command; provisioning and runner ownership are operational
+configuration, not a property a repository can assert (`RPS-022`, `RPS-025`,
+`RPS-297`).
 
-| Gate | Command | Rule |
-| --- | --- | --- |
-| Format | `just fmt` | `RPS-290` |
-| Lints | `just lint` | `RPS-290` |
-| Tests (pin) | `just test` | `RPS-293` |
-| Differential / oracle | `just differential-test` | `RPS-295` |
-| Aggregate | `just check` | — |
-| Benchmarks | `just bench` (`benches/performance.rs`) | `RPS-020` |
+## Scope and continuing review
 
-CI (`.github/workflows/ci.yml`) runs the blocking gate on the **pinned** 1.98.1
-compiler rather than on `stable`, because lint sets and diagnostics change
-across releases and a blocking gate on a moving compiler is not reproducible
-(`RPS-289`). A separate job checks the declared 1.95 MSRV (`RPS-004`), and the
-scheduled job exercises current `stable` non-blocking (`RPS-006`).
+Safe Rust remains the product baseline. Benchmark allocator probes have local
+SAFETY explanations; the sanitizer fuzz gate targets externally driven parsing,
+mutation and decoding. Miri is not a substitute for those system tests.
 
-## Open gaps
+Duplicate development/proc-macro dependency versions are reviewed rather than
+force-unified across incompatible APIs (`RPS-268`). The consumer chooses its
+release profile; library manifests cannot impose one on downstream hosts.
+Performance reports must identify the actual package, features and profile.
 
-Recorded rather than hidden.
+No MUST-rule exception is approved by this document. A future waiver requires
+measurements, tradeoffs, an owner and review date from the governing standard.
 
-| Gap | Rule | Status |
-| --- | --- | --- |
-| Benchmarks run on shared GitHub runners, with no dedicated host or tracked history | `RPS-022`, `RPS-025`, `RPS-297` | **Open.** No wall-clock regression is gated, which is the correct conservative choice; the cost is that regressions are found by hand |
-| Competitive results (`md-crdt-yrs-bench`) have no committed multi-run report | `RPS-017`, `RPS-023` | **Open.** The committed benchmark methodology forbids citing quick, dry-run, dirty-tree, or single-run results; no workload has a committed citable baseline yet |
-| Release-profile choices not benchmarked | `RPS-253`, `RPS-263`, `RPS-307` | **Open.** `opt-level` 2 vs 3, thin vs fat LTO and `overflow-checks` are declared explicitly but have no committed comparison. `strip` was changed from `true` to `"none"` and `debug = 1` added so shipped binaries stay attributable (`RPS-254`, `RPS-255`) |
-| MSRV job only runs `cargo check`, without `--locked` | `RPS-004`, `RPS-293` | **Open.** The standard requires tests on the MSRV |
-| No beta release-mode job | `RPS-013` | **Open** |
-| Duplicate semver-incompatible dependencies (`getrandom` 0.3/0.4, others) | `RPS-268` | **Open, low impact.** All arrive via dev-dependencies or proc-macros |
-| `#[inline(always)]` on `perf_trace`-off stubs in `src/perf.rs` | `RPS-148` | **Accepted.** Empty or constant bodies; no codegen evidence recorded |
-| No root dependency-policy configuration | `RPS-296` | **Open.** `cargo deny check advisories` is green, but there is no root `deny.toml`; license policy therefore is not enforced and a default `cargo deny check licenses` rejects the dependency graph rather than representing an approved allowlist |
-| Fuzz targets exist but run in no gate | `RPS-295` | **Open.** `fuzz/` has corpora and artifacts; nothing invokes it on push or schedule. It now declares Edition 2024, MSRV 1.95 and the lint baseline, so it is at least governed once wired up |
-| No feature matrix in the gate | `RPS-291` | **Partly closed.** The 32 `dead_code` warnings a reduced-feature build used to surface are fixed: the projection and descriptor machinery is implementation of the `filesync`-backed workspace API and is now gated behind that feature, so it no longer compiles into builds that cannot reach it. Verified clean across `--no-default-features`, `storage`, `filesync`, `--all-features` and default. **Still open:** nothing in CI walks that matrix, so a future regression would go unnoticed until someone builds a reduced configuration by hand. `cargo hack --feature-powerset` in the scheduled job would close it |
-| No Miri or sanitizer job | `RPS-295` | **Partly mitigated.** The library and FFI crate contain no `unsafe`, so the classes Miri catches are largely unreachable; the differential/oracle suite covers semantics |
-| Release-mode tests not run separately | `RPS-294` | **Open.** Relevant here: snapshot and codec behaviour is layout- and optimization-adjacent |
-| The scheduled job is named `nightly-differential-test` but installs `stable` | — | **Cosmetic.** Left as-is; renaming a job can break required-check configuration. Its behaviour is correct under `RPS-006` |
 
-## Exceptions
+## Library-specific controls
 
-None. No performance MUST rule is currently waived. An exception requires the
-record described in the standard's §0: affected module, workload and hardware,
-baseline and candidate measurements, tradeoffs, owner, review date, and why the
-exception is preferable.
+CI covers minimal, storage, filesync, default, sequence_incremental and all-feature
+configurations. Feature-dependent tests/doctests are enabled with their APIs;
+the workspace benchmark declares `required-features = ["filesync"]`.
 
-## Re-sync procedure
+The release profile uses opt-level 3, fat LTO, one codegen unit, abort-on-panic,
+line-table debug info, unstripped symbols and explicit wrapping overflow.
+The benchmark profile retains its declared debug setting. Profile experiments
+must be reported separately from the compiler-only comparison.
 
-1. Copy the upstream standard over `rust-code-standards.md`, keeping its header.
-2. Update the header's version, hash, and date.
-3. Re-read the changelog for retired or added identifiers and update this file's
-   gap and exception tables.
-4. Re-evaluate the lint set (`RPS-299`): lints get added, renamed, and moved
-   between groups, and a silently dropped lint is an unenforced rule.
+`lcs_steps` returns a typed work-limit error before allocating a quadratic table.
+Ingestion builds a candidate session, so a late work-budget refusal does not
+partially change the live session. Regression tests exercise this rollback.
+The unmeasured `inline(always)` directives on disabled performance counters were
+replaced by ordinary `inline`; no speed claim is made for that change.
+
+## Recorded audit closure
+
+The [Rust 1.99.0 measurement record](../../md-mcp/docs/performance/rust-1.99.0.md) preserves compiler, allocation,
+binary-size, overload and release-profile results, including unfavorable results.
+It documents the manual-host choice for `RPS-297` and the separate, uncited Yrs
+research scope. Dedicated CI hardware is not claimed to exist.
+
+| Rule group | Evidence / disposition |
+| --- | --- |
+| Toolchain and MSRV | Pinned 1.99.0; CI tests 1.95 and production; no MSRV increase needed |
+| Input work and memory | Bounded external Markdown, frames, artifact reads and diff tables; refusal/rollback tests |
+| Async and cancellation | Host admission before blocking work; permit retained through cancellation; transport request limit |
+| Feature and quality gates | Explicit feature matrix, Clippy, docs, optimized tests, license/advisory policy |
+| Fuzz and sanitizer coverage | Scheduled ASan fuzz jobs and local smoke runs of all targets |
+| Performance provenance | Committed measurements and reproduction commands; no uncontrolled CI timing gate |
+| Dependency coherence | Exact Git revision checked outside the local Cargo path override |
+| Unsafe optimizations, custom allocators, SIMD/PGO | Not introduced; no performance claim requires these techniques |

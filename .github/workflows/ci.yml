@@ -71,16 +71,13 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # The declared floor must be built, or it is a claim rather than a contract
-    # (RPS-004). Checking rather than testing keeps this job cheap; the pinned
-    # job above is what proves behaviour.
     - name: Install Rust
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: "1.95.0"
 
-    - name: Check against the declared MSRV
-      run: cargo check --workspace --all-targets
+    - name: Test against the declared MSRV
+      run: cargo +1.95.0 test --workspace --locked
 
   nightly-differential-test:
     if: github.event_name == 'schedule'
@@ -117,3 +114,58 @@ jobs:
       env:
         PROPTEST_CASES: 1000000
       run: just test
+
+  features:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flags: ["--no-default-features", "--no-default-features --features storage", "--no-default-features --features filesync", "", "--features sequence_incremental", "--all-features"]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.99.0 --profile minimal --component clippy
+      - run: cargo +1.99.0 clippy --locked --all-targets ${{ matrix.flags }} -- -D warnings
+      - run: cargo +1.99.0 test --locked ${{ matrix.flags }}
+
+  release-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.99.0 --profile minimal
+      - run: cargo +1.99.0 test --workspace --release --locked
+
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.99.0 --profile minimal
+      - run: cargo +1.99.0 install cargo-deny --version 0.19.1 --locked
+      - run: cargo +1.99.0 deny check licenses advisories
+
+  fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parser, apply_changes, decode_changes, merge_convergence, decode_binary_wire]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install nightly-2026-10-01 --profile minimal
+      - run: cargo +nightly-2026-10-01 install cargo-fuzz --version 0.13.2 --locked
+      - run: cargo +nightly-2026-10-01 fuzz run ${{ matrix.target }} -- -max_total_time=120 -max_len=65536 -rss_limit_mb=2048
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz/artifacts
+
+  beta-release:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install beta --profile minimal
+      - run: cargo +beta test --workspace --release --locked

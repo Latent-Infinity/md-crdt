@@ -110,6 +110,8 @@ assert_eq!(
 Manage independent collaborative sessions for multiple files in one vault:
 
 ```rust,no_run
+# #[cfg(feature = "filesync")]
+# {
 use md_crdt::filesync::VaultSession;
 
 let mut vault = VaultSession::open("./notes")?;
@@ -125,6 +127,7 @@ for path in ["projects/alpha.md", "journal/2026-07-13.md"] {
 // Each path has an independent document and operation log. save_all_state writes
 // the open snapshots beneath .mdcrdt/sessions/; it does not publish Markdown.
 vault.save_all_state()?;
+# }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -134,6 +137,8 @@ stable peer ID, but their CRDT state, clocks, and snapshots remain independent.
 Open, edit, and durably publish one Markdown document with explicit stale-state checks:
 
 ```rust,no_run
+# #[cfg(feature = "filesync")]
+# {
 use md_crdt::filesync::VaultSession;
 
 let mut vault = VaultSession::open("./notes")?;
@@ -156,6 +161,7 @@ let outcome = vault.export_markdown(
 )?;
 
 assert_eq!(outcome.document_id, opened.document_id);
+# }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -178,6 +184,8 @@ commit is completed when the vault reopens. `create_markdown`, `rename_markdown`
 Before accepting disk as authoritative, inspect the metadata-only state without opening a session:
 
 ```rust,no_run
+# #[cfg(feature = "filesync")]
+# {
 use md_crdt::{ExportState, filesync::VaultSession};
 
 let mut vault = VaultSession::open("./notes")?;
@@ -186,6 +194,7 @@ if vault.export_state("projects/alpha.md")? == ExportState::Unexported
 {
     // Export, preserve, or ask the user before accepting disk.
 }
+# }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -194,6 +203,8 @@ if vault.export_state("projects/alpha.md")? == ExportState::Unexported
 Exchange one path with another vault using the same host-provided transport boundary:
 
 ```rust,no_run
+# #[cfg(feature = "filesync")]
+# {
 # use md_crdt::{ValidationLimits, filesync::VaultSession};
 # let mut local = VaultSession::open("./notes")?;
 # let mut remote = VaultSession::open("./notes-copy")?;
@@ -204,6 +215,7 @@ remote.apply_remote(
     changes,
     &ValidationLimits::default(),
 )?;
+# }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -262,7 +274,7 @@ snapshots or send changes over a network.
 
 **Development**
 
-The workspace uses the exact Rust 1.97.1 toolchain in `rust-toolchain.toml`;
+The workspace uses the exact Rust 1.99.0 toolchain in `rust-toolchain.toml`;
 its declared consumer MSRV is 1.95.
 
 Install `just` (optional but recommended):
@@ -292,3 +304,18 @@ The suite includes the initial public-text and sync workloads plus large-paste a
 **License**
 
 MIT. See `LICENSE`.
+
+
+### External input budgets
+
+Use `Parser::try_parse` / `ReadDocument::try_parse` for external source; `parse`
+is the trusted, prevalidated API. Vault reads and creation validate 4 MiB source,
+64 leading quote markers and 256 leading whitespace bytes per nonempty line.
+Lexical nesting limits also apply inside fences. Ingestion's `lcs_steps` now
+returns a `Result` and refuses a table above 4,000,000 cells before allocation.
+A refused ingest leaves the existing session intact; it does not overwrite disk.
+
+External source validation also caps nested square brackets at 64 and inline
+syntax delimiter bytes (`*`, `_`, `~`, brackets and backticks) at 16,384 between blank source lines, including literals. The sum of
+paragraph byte lengths times delimiter counts is capped at 64 Mi work units. Storage artifact reads are capped at 512 MiB and
+transaction-journal reads at 4 MiB before decoding. Identity metadata is capped at 128 bytes.

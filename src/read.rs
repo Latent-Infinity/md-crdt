@@ -115,6 +115,13 @@ pub enum ReadBlockKind {
 }
 
 impl ReadDocument {
+    /// Parse external Markdown with byte and nesting limits before allocation.
+    pub fn try_parse(markdown: &str) -> Result<Self, crate::limits::InputLimitError> {
+        Ok(Self {
+            document: Parser::try_parse(markdown)?,
+        })
+    }
+
     /// Parse Markdown for read-only querying.
     ///
     /// Pure: touches no file system, no clock, and no peer registry.

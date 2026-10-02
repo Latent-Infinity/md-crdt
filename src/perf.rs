@@ -1,7 +1,7 @@
 //! Optional performance counters for hot-path attribution.
 //!
 //! Enabled with Cargo feature `perf_trace`. When disabled, [`timed`] is an
-//! always-inlined pass-through with no atomic traffic.
+//! inlinable pass-through with no atomic traffic.
 
 use std::time::Instant;
 
@@ -133,26 +133,26 @@ mod active {
 mod inactive {
     use super::{PerfSnapshot, Span};
 
-    #[inline(always)]
+    #[inline]
     pub fn set_enabled(_enabled: bool) {}
 
-    #[inline(always)]
+    #[inline]
     pub fn is_enabled() -> bool {
         false
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn reset() {}
 
-    #[inline(always)]
+    #[inline]
     pub fn snapshot() -> PerfSnapshot {
         PerfSnapshot::default()
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn record(_span: Span, _nanos: u64) {}
 
-    #[inline(always)]
+    #[inline]
     pub fn timed<T>(_span: Span, f: impl FnOnce() -> T) -> T {
         f()
     }

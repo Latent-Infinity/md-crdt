@@ -1,6 +1,6 @@
-# Production pin. 1.98.1 is current stable and is newer than 1.97.1, the release
+# Production pin. 1.99.0 is current stable and is newer than 1.97.1, the release
 # that fixed the LLVM miscompilation present in 1.87 through 1.97.0.
 [toolchain]
-channel = "1.98.1"
+channel = "1.99.0"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
