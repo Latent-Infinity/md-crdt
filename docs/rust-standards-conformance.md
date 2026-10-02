@@ -4,15 +4,27 @@ Governing source: `Software-Standards/Rust Code Standards.md`, High-Performance
 Rust Coding Standards v3.3 (September 29, 2026). Vendored standards are copied
 verbatim; project decisions are recorded here. Reviewed October 2, 2026.
 
+## Current automation policy
+
+At the user's request on October 2, 2026, the GitHub `CI` workflow is disabled
+until explicitly re-enabled. Local verification remains required. CI enforcement
+of `RPS-004`, `RPS-290` and `RPS-293`, and scheduled fuzz/beta runs, is temporarily
+suspended by this project decision; workflow definitions remain available.
+Revisit this suspension when the user requests CI again.
+
+Benchmark CI and a dedicated runner are not project requirements. Continue manual
+compiler/profile measurements when relevant; runner provisioning is not an open
+action item (`RPS-022`, `RPS-025`, `RPS-297`).
+
 ## Configuration and enforcement
 
 - Edition 2024, MSRV 1.95, production pin 1.99.0 (`RPS-001`–`RPS-009`).
 - Workspace lint inheritance includes performance/suspicious lints, ownership
   checks and async guard checks. The new compiler's Clippy runs with warnings
   denied; no renamed or unknown lint is suppressed (`RPS-289`, `RPS-299`).
-- CI runs formatting, pinned Clippy/tests, explicit MSRV tests with `--locked`,
+- The paused CI workflow defines formatting, pinned Clippy/tests, explicit MSRV tests with `--locked`,
   release-mode tests, and dependency licenses/advisories (`RPS-290`–`RPS-296`).
-- Scheduled/manual fuzz jobs use cargo-fuzz 0.13.2 and nightly-2026-10-01 with
+- The paused scheduled/manual fuzz jobs use cargo-fuzz 0.13.2 and nightly-2026-10-01 with
   AddressSanitizer, fixed input/time/RSS limits, and preserved failure artifacts.
   Beta release tests are explicitly non-blocking. Nightly is tooling only.
 - Public external Markdown boundaries validate bytes, lexical nesting and inline
@@ -41,10 +53,9 @@ Do not treat a smoke run as timing evidence, or compare a library benchmark
 profile directly to a host binary's timings. The compiler comparison retains
 identical source and profile settings within each project. Benchmarks are
 manual controlled-host measurements; shared CI never gates wall-clock deltas.
-Keep the generated report and logs with the release record. A dedicated runner
-can invoke the same command; provisioning and runner ownership are operational
-configuration, not a property a repository can assert (`RPS-022`, `RPS-025`,
-`RPS-297`).
+Keep the generated report and logs with the release record. Manual measurements
+are the selected project workflow; no dedicated benchmark runner is required
+(`RPS-022`, `RPS-025`, `RPS-297`).
 
 ## Scope and continuing review
 
@@ -57,13 +68,13 @@ force-unified across incompatible APIs (`RPS-268`). The consumer chooses its
 release profile; library manifests cannot impose one on downstream hosts.
 Performance reports must identify the actual package, features and profile.
 
-No MUST-rule exception is approved by this document. A future waiver requires
+The user-directed CI suspension is recorded above. Any additional waiver requires
 measurements, tradeoffs, an owner and review date from the governing standard.
 
 
 ## Library-specific controls
 
-CI covers minimal, storage, filesync, default, sequence_incremental and all-feature
+The paused CI feature matrix covers minimal, storage, filesync, default, sequence_incremental and all-feature
 configurations. Feature-dependent tests/doctests are enabled with their APIs;
 the workspace benchmark declares `required-features = ["filesync"]`.
 
@@ -87,7 +98,7 @@ research scope. Dedicated CI hardware is not claimed to exist.
 
 | Rule group | Evidence / disposition |
 | --- | --- |
-| Toolchain and MSRV | Pinned 1.99.0; CI tests 1.95 and production; no MSRV increase needed |
+| Toolchain and MSRV | Pinned 1.99.0; Local tests cover 1.95 and production; CI paused; no MSRV increase needed |
 | Input work and memory | Bounded external Markdown, frames, artifact reads and diff tables; refusal/rollback tests |
 | Async and cancellation | Host admission before blocking work; permit retained through cancellation; transport request limit |
 | Feature and quality gates | Explicit feature matrix, Clippy, docs, optimized tests, license/advisory policy |

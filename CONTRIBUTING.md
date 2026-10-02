@@ -13,7 +13,7 @@ This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDU
 - Rust 1.99.0. `rust-toolchain.toml` pins it, so `rustup` installs it for you.
   The pin is deliberate: 1.99.0 carries an LLVM miscompilation fix that 1.87
   through 1.97.0 lack. Do not build release artifacts on an unpinned `stable`.
-- Edition 2024; the declared MSRV is 1.95, which CI checks separately.
+- Edition 2024; the declared MSRV is 1.95, which must be tested separately locally.
 - [just](https://github.com/casey/just) command runner (optional but recommended)
 
 ### Building
@@ -136,7 +136,7 @@ Fixes #42
 - Keep PRs focused on a single change
 - Include tests for new functionality
 - Update CHANGELOG.md for user-facing changes
-- Ensure CI passes before requesting review
+- Run the local quality checks before requesting review; GitHub CI is paused.
 
 ### Review Process
 
@@ -256,6 +256,8 @@ Rust 1.99.0 is the production pin; Rust 1.95 remains the supported floor.
 Run tests on both, including `cargo +1.95.0 test --workspace --locked` and
 `cargo test --workspace --release --locked`. Fuzzing runs on the pinned
 `nightly-2026-10-01` tooling compiler with AddressSanitizer; production stays stable.
-CI runs bounded fuzz jobs weekly/on demand and beta release tests non-blocking.
+GitHub CI is paused at the user's request. Run required verification locally;
+benchmark CI is not required. The retained workflow defines bounded fuzz jobs
+and non-blocking beta release tests for possible future reactivation.
 Compiler upgrades require the measurement record described in
 `docs/rust-standards-conformance.md`, not merely passing tests.
