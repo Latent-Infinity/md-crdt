@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "clean_worktree": true,
   "git_commit": "0123456789abcdef0123456789abcdef01234567",
   "root_lockfile_sha256": "aaaabbbbccccddddeeeeffff0000111122223333444455556666777788889999",
@@ -26,6 +26,19 @@
   "batch_policy": "LargeInput",
   "timestamp_utc": "2026-08-04T00:00:00Z",
   "output_dir": "md-crdt-yrs-bench/report-out/example",
+  "build_context": {
+    "profile": "bench",
+    "manifest_profiles": {
+      "Cargo.toml": {"release": {"opt-level": 3, "lto": "fat", "codegen-units": 1}},
+      "md-crdt-yrs-bench/Cargo.toml": {"bench": {"debug": true}}
+    },
+    "environment": {},
+    "cargo_configs": [],
+    "resolved_features": [
+      {"package": "path+file:///example/md-crdt#0.4.0", "features": []},
+      {"package": "registry+https://github.com/rust-lang/crates.io-index#yrs@0.27.3", "features": []}
+    ]
+  },
   "invocations": [
     {
       "index": 0,

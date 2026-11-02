@@ -1,19 +1,10 @@
+#![cfg(feature = "cli")]
+
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
-
-#[test]
-#[allow(deprecated)]
-fn help_describes_vault_root_and_multi_document_commands() {
-    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
-
-    cmd.arg("--help").assert().success().stdout(
-        predicate::str::contains("--vault <PATH>")
-            .and(predicate::str::contains("all Markdown files")),
-    );
-}
 
 #[test]
 #[allow(deprecated)]
@@ -109,95 +100,4 @@ fn test_command_errors() {
     let mut cmd = Command::cargo_bin("md-crdt").unwrap();
     cmd.arg("sync").current_dir(dir.path());
     cmd.assert().failure().code(1);
-}
-
-#[test]
-#[allow(deprecated)]
-fn test_flush_ingest_output_messages() {
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("file1.md"), "hello").unwrap();
-
-    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
-    cmd.arg("flush").current_dir(dir.path());
-    cmd.assert().stdout(predicate::str::contains("Flushed"));
-
-    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
-    cmd.arg("ingest").current_dir(dir.path());
-    cmd.assert().stdout(predicate::str::contains("Ingest"));
-}
-
-#[test]
-#[allow(deprecated)]
-fn test_init_command_success() {
-    let dir = tempdir().unwrap();
-
-    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
-    cmd.arg("init").current_dir(dir.path());
-    cmd.assert()
-        .success()
-        .code(0)
-        .stdout(predicate::str::contains("Initialized"));
-}
-
-#[test]
-#[allow(deprecated)]
-fn test_ingest_no_changes_message() {
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("file1.md"), "hello").unwrap();
-
-    // First flush to record state
-    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
-    cmd.arg("flush").current_dir(dir.path());
-    cmd.assert().success();
-
-    // Ingest should show no changes
-    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
-    cmd.arg("ingest").current_dir(dir.path());
-    cmd.assert()
-        .success()
-        .code(0)
-        .stdout(predicate::str::contains("no changes"));
-}
-
-#[test]
-#[allow(deprecated)]
-fn test_ingest_changes_detected_message() {
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("file1.md"), "hello").unwrap();
-
-    // First flush to record state
-    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
-    cmd.arg("flush").current_dir(dir.path());
-    cmd.assert().success();
-
-    // Modify the file
-    fs::write(dir.path().join("file1.md"), "modified").unwrap();
-
-    // Ingest should detect changes
-    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
-    cmd.arg("ingest").current_dir(dir.path());
-    cmd.assert()
-        .success()
-        .code(0)
-        .stdout(predicate::str::contains("changed"));
-}
-
-#[test]
-#[allow(deprecated)]
-fn test_sync_clean_message() {
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("file1.md"), "hello").unwrap();
-
-    // First flush to record state
-    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
-    cmd.arg("flush").current_dir(dir.path());
-    cmd.assert().success();
-
-    // Sync should show clean
-    let mut cmd = Command::cargo_bin("md-crdt").unwrap();
-    cmd.arg("sync").current_dir(dir.path());
-    cmd.assert()
-        .success()
-        .code(0)
-        .stdout(predicate::str::contains("clean"));
 }

@@ -3,10 +3,12 @@
 //! This module provides a block-based document model for markdown content,
 //! with support for collaborative editing operations.
 
+use crate::core::causal::{CausalCandidate, apply_write};
 use crate::core::mark::{Anchor, MarkIntervalId, MarkKind, MarkSet, MarkValue};
 use crate::core::{OpId, Sequence, SequenceOp, StateVector};
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
@@ -18,12 +20,18 @@ mod parser;
 mod serialize;
 mod source;
 pub mod text;
+mod topology;
+pub use topology::{
+    BlockMove, BlockPlacement, BlockTopology, ItemPlacement, LogicalContainer, LogicalTarget,
+    SubtreeDeletion,
+};
 
 pub(crate) use source::DocumentSource;
 
 pub use frontmatter::{Frontmatter, FrontmatterError};
 pub use inline::{InlineLink, inline_links};
 pub use parser::Parser;
+pub(crate) use parser::is_fence_close;
 use serialize::{
     grapheme_offset_to_byte, is_grapheme_boundary, normalize_structural, serialize_block,
 };
@@ -50,18 +58,25 @@ pub struct Document {
     block_index: RwLock<Option<CachedBlockIndex>>,
 }
 
+// Public IndexedBlocks values may be swapped/replaced without going through Document.
+// Unique generations make those changes visible even when both caches were warm.
+static NEXT_BLOCK_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 /// Top-level block sequence that invalidates the document index on mutation.
 #[derive(Debug)]
 pub struct IndexedBlocks {
     sequence: Sequence<Block>,
     generation: u64,
+    /// Placement authority follows the owned tree through public swaps/replacement.
+    pub(crate) block_topology: BlockTopology,
 }
 
 impl IndexedBlocks {
     fn new(sequence: Sequence<Block>) -> Self {
         Self {
             sequence,
-            generation: 0,
+            generation: NEXT_BLOCK_GENERATION.fetch_add(1, Ordering::Relaxed),
+            block_topology: BlockTopology::default(),
         }
     }
 
@@ -72,13 +87,17 @@ impl IndexedBlocks {
 
 impl Clone for IndexedBlocks {
     fn clone(&self) -> Self {
-        Self::new(self.sequence.clone())
+        Self {
+            sequence: self.sequence.clone(),
+            generation: NEXT_BLOCK_GENERATION.fetch_add(1, Ordering::Relaxed),
+            block_topology: self.block_topology.clone(),
+        }
     }
 }
 
 impl PartialEq for IndexedBlocks {
     fn eq(&self, other: &Self) -> bool {
-        self.sequence == other.sequence
+        self.sequence == other.sequence && self.block_topology == other.block_topology
     }
 }
 
@@ -94,7 +113,7 @@ impl Deref for IndexedBlocks {
 
 impl DerefMut for IndexedBlocks {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = NEXT_BLOCK_GENERATION.fetch_add(1, Ordering::Relaxed);
         &mut self.sequence
     }
 }
@@ -111,10 +130,23 @@ struct BlockPath {
     elem_id: OpId,
 }
 
+impl BlockPath {
+    fn root_elem(&self) -> OpId {
+        self.containers
+            .first()
+            .map_or(self.elem_id, |container| match container {
+                BlockContainerPath::BlockQuote(root)
+                | BlockContainerPath::ListItem { list: root, .. } => *root,
+            })
+    }
+}
+
 #[derive(Debug, Default)]
 struct BlockIndex {
     by_block_id: HashMap<BlockId, BlockPath>,
     by_elem_id: HashMap<OpId, BlockPath>,
+    by_item_id: HashMap<BlockId, (OpId, OpId)>,
+    by_item_elem_id: HashMap<OpId, (OpId, OpId)>,
 }
 
 #[derive(Debug)]
@@ -152,6 +184,7 @@ pub struct Block {
     pub kind_op: OpId,
     /// Causal frontier observed by the winning kind-specific replacement.
     pub kind_observed: StateVector,
+    pub kind_conflicts: Vec<CausalCandidate<BlockKindValue>>,
     pub kind: BlockKind,
     pub marks: MarkSet,
 }
@@ -251,6 +284,34 @@ pub enum BlockKind {
     },
 }
 
+/// Kind-register payload only: text sequences and container children stay in
+/// the materialized block, never in concurrent metadata history.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BlockKindValue {
+    Text(crate::codec::TextBlockKindWire),
+    ListStyle(ListStyle),
+    CodeFence {
+        style: CodeFenceStyle,
+        info: Option<String>,
+        text: String,
+    },
+    RawBlock {
+        raw: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Placement {
+    pub after: Option<OpId>,
+    pub right_origin: Option<OpId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ListItemPlacement {
+    pub list_id: BlockId,
+    pub placement: Placement,
+}
+
 /// One list item; children are typically paragraphs and nested lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListItem {
@@ -259,7 +320,9 @@ pub struct ListItem {
     pub task: Option<TaskState>,
     pub task_op: OpId,
     pub task_observed: StateVector,
+    pub task_conflicts: Vec<CausalCandidate<Option<TaskState>>>,
     pub placement_observed: StateVector,
+    pub placement_conflicts: Vec<CausalCandidate<ListItemPlacement>>,
     pub children: Sequence<Block>,
 }
 
@@ -367,6 +430,14 @@ fn index_block_sequence(
                     let Some(item) = item_element.value.as_ref() else {
                         continue;
                     };
+                    index
+                        .by_item_id
+                        .entry(item.id)
+                        .or_insert((element.id, item_element.id));
+                    index
+                        .by_item_elem_id
+                        .entry(item.elem_id)
+                        .or_insert((element.id, item_element.id));
                     let mut nested = containers.to_vec();
                     nested.push(BlockContainerPath::ListItem {
                         list: element.id,
@@ -492,7 +563,9 @@ pub struct TableColumn {
     pub deleted: crate::core::LwwRegister<bool>,
     pub alignment: crate::core::LwwRegister<ColumnAlignment>,
     pub alignment_observed: StateVector,
+    pub alignment_conflicts: Vec<CausalCandidate<ColumnAlignment>>,
     pub placement_observed: StateVector,
+    pub placement_conflicts: Vec<CausalCandidate<Placement>>,
 }
 
 #[derive(
@@ -508,6 +581,7 @@ pub struct TableCell {
     pub value: CellContent,
     pub op_id: OpId,
     pub observed: StateVector,
+    pub conflicts: Vec<CausalCandidate<CellContent>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -534,32 +608,23 @@ impl TableCell {
             value,
             op_id,
             observed,
+            conflicts: Vec::new(),
         }
     }
 
     pub fn set(&mut self, value: CellContent, op_id: OpId, observed: StateVector) {
-        let incoming_observed_current =
-            observed.get(self.op_id.peer).unwrap_or(0) >= self.op_id.counter;
-        let current_observed_incoming = self.observed.get(op_id.peer).unwrap_or(0) >= op_id.counter;
-        if incoming_observed_current || (!current_observed_incoming && op_id >= self.op_id) {
-            self.value = value;
-            self.op_id = op_id;
-            self.observed = observed;
-        }
+        apply_write(
+            &mut self.value,
+            &mut self.op_id,
+            &mut self.observed,
+            &mut self.conflicts,
+            CausalCandidate {
+                value,
+                op_id,
+                observed,
+            },
+        );
     }
-}
-
-fn causal_write_wins(
-    current_id: OpId,
-    current_observed: &StateVector,
-    incoming_id: OpId,
-    incoming_observed: &StateVector,
-) -> bool {
-    let incoming_observed_current =
-        incoming_observed.get(current_id.peer).unwrap_or(0) >= current_id.counter;
-    let current_observed_incoming =
-        current_observed.get(incoming_id.peer).unwrap_or(0) >= incoming_id.counter;
-    incoming_observed_current || (!current_observed_incoming && incoming_id >= current_id)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -581,6 +646,7 @@ pub struct TableRow {
     pub elem_id: OpId,
     pub deleted: crate::core::LwwRegister<bool>,
     pub placement_observed: StateVector,
+    pub placement_conflicts: Vec<CausalCandidate<Placement>>,
 }
 
 impl Table {
@@ -616,7 +682,9 @@ impl Table {
             deleted: crate::core::LwwRegister::new(false, op_id),
             alignment: crate::core::LwwRegister::new(alignment, op_id),
             alignment_observed: StateVector::new(),
+            alignment_conflicts: Vec::new(),
             placement_observed: StateVector::new(),
+            placement_conflicts: Vec::new(),
         };
         self.columns.insert(after, column, op_id);
         self.set_cell(self.header_row_id(), column_id, header, op_id);
@@ -635,6 +703,7 @@ impl Table {
             elem_id: op_id,
             deleted: crate::core::LwwRegister::new(false, op_id),
             placement_observed: StateVector::new(),
+            placement_conflicts: Vec::new(),
         };
         self.rows.insert(after, row, op_id);
         for (column_id, value) in cells {
@@ -674,10 +743,14 @@ impl Table {
         observed: StateVector,
     ) {
         let address = CellAddress { row_id, column_id };
-        self.cells
-            .entry(address)
-            .and_modify(|cell| cell.set(value.clone(), op_id, observed.clone()))
-            .or_insert_with(|| TableCell::new(value, op_id, observed));
+        match self.cells.entry(address) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().set(value, op_id, observed);
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(TableCell::new(value, op_id, observed));
+            }
+        }
     }
 
     pub fn cell_value(&self, row_id: RowId, column_id: ColumnId) -> Option<&str> {
@@ -689,14 +762,39 @@ impl Table {
     }
 
     pub fn row_cells(&self, row_id: RowId) -> Vec<CellContent> {
-        self.columns_in_order()
-            .into_iter()
+        let live = self.row_is_live(row_id);
+        self.columns
+            .iter()
             .map(|column| {
-                self.cell_value(row_id, column.id)
-                    .unwrap_or_default()
-                    .to_string()
+                if live {
+                    self.cells
+                        .get(&CellAddress {
+                            row_id,
+                            column_id: column.id,
+                        })
+                        .map_or("", |cell| cell.value.as_str())
+                        .to_string()
+                } else {
+                    String::new()
+                }
             })
             .collect()
+    }
+
+    /// Borrow cells after the caller has resolved a live row and column order.
+    pub(crate) fn row_values<'a>(
+        &'a self,
+        row_id: RowId,
+        columns: &'a [&'a TableColumn],
+    ) -> impl Iterator<Item = &'a str> {
+        columns.iter().map(move |column| {
+            self.cells
+                .get(&CellAddress {
+                    row_id,
+                    column_id: column.id,
+                })
+                .map_or("", |cell| cell.value.as_str())
+        })
     }
 
     pub fn columns_in_order(&self) -> Vec<TableColumn> {
@@ -723,7 +821,7 @@ impl Table {
         op_id: OpId,
         observed: StateVector,
     ) {
-        let Some(mut updated) = self.column_by_id(column_id).cloned() else {
+        let Some(placement) = self.column_by_id(column_id).map(|column| column.elem_id) else {
             self.pending_column_alignments.push(PendingColumnAlignment {
                 column_id,
                 alignment,
@@ -732,16 +830,24 @@ impl Table {
             });
             return;
         };
-        let current_id = updated.alignment.op_id();
-        let incoming_observed_current =
-            observed.get(current_id.peer).unwrap_or(0) >= current_id.counter;
-        let current_observed_incoming =
-            updated.alignment_observed.get(op_id.peer).unwrap_or(0) >= op_id.counter;
-        if incoming_observed_current || (!current_observed_incoming && op_id >= current_id) {
-            updated.alignment = crate::core::LwwRegister::new(alignment, op_id);
-            updated.alignment_observed = observed;
-            self.columns.update_value(updated.elem_id, updated);
-        }
+        let column = self
+            .columns
+            .value_mut(placement)
+            .expect("resolved live column");
+        let mut value = column.alignment.get();
+        let mut winner = column.alignment.op_id();
+        apply_write(
+            &mut value,
+            &mut winner,
+            &mut column.alignment_observed,
+            &mut column.alignment_conflicts,
+            CausalCandidate {
+                value: alignment,
+                op_id,
+                observed,
+            },
+        );
+        column.alignment = crate::core::LwwRegister::new(value, winner);
     }
 
     fn row_is_live(&self, row_id: RowId) -> bool {
@@ -777,6 +883,7 @@ impl Table {
                     elem_id: id,
                     deleted: crate::core::LwwRegister::new(true, id),
                     placement_observed: observed,
+                    placement_conflicts: Vec::new(),
                 };
                 self.rows.apply(SequenceOp::Insert {
                     after,
@@ -788,37 +895,69 @@ impl Table {
             }
             return false;
         };
-        let already_moved = block_id_from_op(row.elem_id) != row.id;
-        let incoming_observed_current =
-            observed.get(row.elem_id.peer).unwrap_or(0) >= row.elem_id.counter;
-        let current_observed_incoming =
-            row.placement_observed.get(id.peer).unwrap_or(0) >= id.counter;
-        if already_moved
-            && !incoming_observed_current
-            && (current_observed_incoming || row.elem_id >= id)
-        {
-            if self.rows.get_element(&id).is_none() {
-                row.elem_id = id;
-                self.rows.apply(SequenceOp::Insert {
-                    after,
-                    id,
-                    value: row,
-                    right_origin,
-                });
-                self.rows.delete(id, id);
-            }
-            return false;
+        let old = row.elem_id;
+        let element = self
+            .rows
+            .get_element(&old)
+            .expect("live row placement exists");
+        let mut placement = Placement {
+            after: element.after,
+            right_origin: element.right_origin,
+        };
+        let changed = if block_id_from_op(old) == row.id {
+            // Creation is an implicit prerequisite, never a competing move.
+            placement = Placement {
+                after,
+                right_origin,
+            };
+            row.elem_id = id;
+            row.placement_observed = observed;
+            true
+        } else {
+            apply_write(
+                &mut placement,
+                &mut row.elem_id,
+                &mut row.placement_observed,
+                &mut row.placement_conflicts,
+                CausalCandidate {
+                    value: Placement {
+                        after,
+                        right_origin,
+                    },
+                    op_id: id,
+                    observed,
+                },
+            )
+        };
+        if row.elem_id != id && self.rows.get_element(&id).is_none() {
+            self.rows.apply(SequenceOp::Insert {
+                after,
+                id,
+                right_origin,
+                value: TableRow {
+                    id: row_id,
+                    elem_id: id,
+                    deleted: crate::core::LwwRegister::new(false, id),
+                    placement_observed: StateVector::new(),
+                    placement_conflicts: Vec::new(),
+                },
+            });
+            self.rows.delete(id, id);
         }
-        self.rows.delete(row.elem_id, id);
-        row.elem_id = id;
-        row.placement_observed = observed;
-        self.rows.apply(SequenceOp::Insert {
-            after,
-            id,
-            value: row,
-            right_origin,
-        });
-        true
+        if changed {
+            self.rows.delete(old, id);
+        }
+        if self.rows.get_element(&row.elem_id).is_some() {
+            self.rows.update_value(row.elem_id, row);
+        } else {
+            self.rows.apply(SequenceOp::Insert {
+                after: placement.after,
+                id: row.elem_id,
+                right_origin: placement.right_origin,
+                value: row,
+            });
+        }
+        changed
     }
 
     pub fn rows_in_order(&self) -> Vec<TableRow> {
@@ -857,7 +996,9 @@ impl Table {
                     deleted: crate::core::LwwRegister::new(true, id),
                     alignment: crate::core::LwwRegister::new(ColumnAlignment::Left, id),
                     alignment_observed: StateVector::new(),
+                    alignment_conflicts: Vec::new(),
                     placement_observed: observed,
+                    placement_conflicts: Vec::new(),
                 };
                 self.columns.apply(SequenceOp::Insert {
                     after,
@@ -869,37 +1010,71 @@ impl Table {
             }
             return false;
         };
-        let already_moved = block_id_from_op(column.elem_id) != column.id;
-        let incoming_observed_current =
-            observed.get(column.elem_id.peer).unwrap_or(0) >= column.elem_id.counter;
-        let current_observed_incoming =
-            column.placement_observed.get(id.peer).unwrap_or(0) >= id.counter;
-        if already_moved
-            && !incoming_observed_current
-            && (current_observed_incoming || column.elem_id >= id)
-        {
-            if self.columns.get_element(&id).is_none() {
-                column.elem_id = id;
-                self.columns.apply(SequenceOp::Insert {
-                    after,
-                    id,
-                    value: column,
-                    right_origin,
-                });
-                self.columns.delete(id, id);
-            }
-            return false;
+        let old = column.elem_id;
+        let element = self
+            .columns
+            .get_element(&old)
+            .expect("live column placement exists");
+        let mut placement = Placement {
+            after: element.after,
+            right_origin: element.right_origin,
+        };
+        let changed = if block_id_from_op(old) == column.id {
+            placement = Placement {
+                after,
+                right_origin,
+            };
+            column.elem_id = id;
+            column.placement_observed = observed;
+            true
+        } else {
+            apply_write(
+                &mut placement,
+                &mut column.elem_id,
+                &mut column.placement_observed,
+                &mut column.placement_conflicts,
+                CausalCandidate {
+                    value: Placement {
+                        after,
+                        right_origin,
+                    },
+                    op_id: id,
+                    observed,
+                },
+            )
+        };
+        if column.elem_id != id && self.columns.get_element(&id).is_none() {
+            self.columns.apply(SequenceOp::Insert {
+                after,
+                id,
+                right_origin,
+                value: TableColumn {
+                    id: column_id,
+                    elem_id: id,
+                    deleted: crate::core::LwwRegister::new(false, id),
+                    alignment: crate::core::LwwRegister::new(ColumnAlignment::Default, id),
+                    alignment_observed: StateVector::new(),
+                    alignment_conflicts: Vec::new(),
+                    placement_observed: StateVector::new(),
+                    placement_conflicts: Vec::new(),
+                },
+            });
+            self.columns.delete(id, id);
         }
-        self.columns.delete(column.elem_id, id);
-        column.elem_id = id;
-        column.placement_observed = observed;
-        self.columns.apply(SequenceOp::Insert {
-            after,
-            id,
-            value: column,
-            right_origin,
-        });
-        true
+        if changed {
+            self.columns.delete(old, id);
+        }
+        if self.columns.get_element(&column.elem_id).is_some() {
+            self.columns.update_value(column.elem_id, column);
+        } else {
+            self.columns.apply(SequenceOp::Insert {
+                after: placement.after,
+                id: column.elem_id,
+                right_origin: placement.right_origin,
+                value: column,
+            });
+        }
+        changed
     }
 
     pub(crate) fn resolve_pending_row_moves(&mut self, row_id: RowId) {
@@ -1032,13 +1207,6 @@ impl Document {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn rebuild_block_index(&self) {
-        let generation = self.blocks.generation();
-        let mut index = BlockIndex::default();
-        index_block_sequence(&self.blocks, &[], &mut index);
-        *self.block_index_write() = Some(CachedBlockIndex { generation, index });
-    }
-
     fn ensure_block_index(&self) {
         let generation = self.blocks.generation();
         if self
@@ -1048,7 +1216,17 @@ impl Document {
         {
             return;
         }
-        self.rebuild_block_index();
+        // Recheck under the publication lock: concurrent first readers build once.
+        let mut cached = self.block_index_write();
+        if cached
+            .as_ref()
+            .is_some_and(|cached| cached.generation == generation)
+        {
+            return;
+        }
+        let mut index = BlockIndex::default();
+        index_block_sequence(&self.blocks, &[], &mut index);
+        *cached = Some(CachedBlockIndex { generation, index });
     }
 
     /// Resolve a stable block id to its sequence element id in O(1) average time.
@@ -1074,18 +1252,77 @@ impl Document {
         self.source.is_some()
     }
 
+    /// Render Exact bytes and refresh their source ranges without reparsing CRDT data.
+    #[cfg(feature = "filesync")]
+    pub(crate) fn refresh_source_metadata(&mut self) {
+        let source_structured = self
+            .source
+            .as_ref()
+            .filter(|source| {
+                source.frontmatter_matches(self.frontmatter.as_ref())
+                    || self
+                        .frontmatter
+                        .as_ref()
+                        .is_some_and(|frontmatter| source.blocks_frontmatter_edit(frontmatter))
+            })
+            .map_or_else(
+                || {
+                    self.frontmatter
+                        .as_ref()
+                        .is_none_or(Frontmatter::is_structured)
+                },
+                DocumentSource::frontmatter_is_structured,
+            );
+        let (markdown, spans) = if let Some(source) = &self.source {
+            let replacement = self
+                .frontmatter
+                .as_ref()
+                .and_then(|frontmatter| source.frontmatter_replacement(frontmatter));
+            source.render_with_ranges(&self.blocks, replacement.as_deref())
+        } else {
+            let mut output = String::new();
+            if let Some(frontmatter) = &self.frontmatter {
+                output.push_str("---\n");
+                output.push_str(&frontmatter.render());
+                output.push_str("\n---\n\n");
+            }
+            let mut spans = Vec::new();
+            for (index, block) in self.blocks.iter().enumerate() {
+                if index > 0 {
+                    output.push_str("\n\n");
+                }
+                let start = output.len();
+                output.push_str(&serialize_block(block));
+                spans.push((block.id, start, output.len()));
+            }
+            (output, spans)
+        };
+        let mut source = DocumentSource::from_rendered(markdown, spans, &self.blocks);
+        source.record_frontmatter(self.frontmatter.as_ref(), source_structured);
+        self.source = Some(source);
+    }
+
     pub(crate) fn source_region_bytes(&self, block_id: BlockId) -> Option<usize> {
         self.source.as_ref()?.region_body_bytes(block_id)
     }
 
     #[cfg(feature = "filesync")]
     pub(crate) fn projection_exact_region(&self, block_id: BlockId) -> Option<(BlockId, String)> {
-        let root_id = self
-            .source
-            .as_ref()
-            .and_then(|source| source.root_for_block(block_id))
-            .or_else(|| projection_root(self.blocks(), block_id))?;
-        let root = self.blocks().iter().find(|block| block.id == root_id)?;
+        self.ensure_block_index();
+        let root_elem = self.block_index_read().as_ref().and_then(|cache| {
+            cache
+                .index
+                .by_block_id
+                .get(&block_id)
+                .map(BlockPath::root_elem)
+        });
+        let root = root_elem
+            .and_then(|elem| self.blocks.get_element(&elem)?.value.as_ref())
+            // List-item identities are not block-index entries.
+            .or_else(|| {
+                projection_root(self.blocks(), block_id).and_then(|id| self.find_block_by_id(id))
+            })?;
+        let root_id = root.id;
         let markdown = self
             .source
             .as_ref()
@@ -1117,18 +1354,40 @@ impl Document {
             return false;
         }
         self.source = source.adopt_for(&current);
+        if let Some(source) = &mut self.source {
+            source.record_frontmatter(
+                self.frontmatter.as_ref(),
+                parsed
+                    .frontmatter
+                    .as_ref()
+                    .is_none_or(Frontmatter::is_structured),
+            );
+        }
         self.source.is_some()
     }
 
-    fn mark_source_block_dirty(&mut self, block_id: BlockId) {
-        if let Some(source) = &mut self.source {
-            source.mark_block_dirty(block_id);
-        }
-    }
-
     fn mark_source_elem_dirty(&mut self, elem_id: OpId) {
+        if self.source.is_none() {
+            return;
+        }
+        self.ensure_block_index();
+        let identities = self.block_index_read().as_ref().and_then(|cache| {
+            let path = cache.index.by_elem_id.get(&elem_id)?;
+            let block = block_at_path(&self.blocks, path)?;
+            let root = self
+                .blocks
+                .get_element(&path.root_elem())?
+                .value
+                .as_ref()?
+                .id;
+            Some((block.id, root))
+        });
         if let Some(source) = &mut self.source {
             source.mark_elem_dirty(elem_id);
+            if let Some((block, root)) = identities {
+                source.mark_block_dirty(block);
+                source.mark_root_dirty(root);
+            }
         }
     }
 
@@ -1145,14 +1404,70 @@ impl Document {
             .index
             .by_elem_id
             .get(&elem_id)
-            .cloned();
-        if let Some(path) = path
-            && let Some(block) = block_at_path(&self.blocks, &path)
-            && block.elem_id == elem_id
-        {
-            return Some(block);
+            .cloned()?;
+        block_at_path(&self.blocks, &path).filter(|block| block.elem_id == elem_id)
+    }
+
+    /// Find a list item by its `elem_id` anywhere in the tree.
+    pub fn find_list_item(&self, elem_id: OpId) -> Option<&ListItem> {
+        self.ensure_block_index();
+        let cached = self.block_index_read();
+        let index = &cached.as_ref()?.index;
+        let (list_elem, item_elem) = index.by_item_elem_id.get(&elem_id)?;
+        let path = index.by_elem_id.get(list_elem)?;
+        let block = block_at_path(&self.blocks, path)?;
+        let BlockKind::List { items, .. } = &block.kind else {
+            return None;
+        };
+        items
+            .get_element(item_elem)?
+            .value
+            .as_ref()
+            .filter(|item| item.elem_id == elem_id)
+    }
+
+    /// Find a list item by stable logical identity anywhere in the tree.
+    pub fn find_list_item_by_id(&self, item_id: BlockId) -> Option<&ListItem> {
+        self.ensure_block_index();
+        let cached = self.block_index_read();
+        let index = &cached.as_ref()?.index;
+        let (list_elem, item_elem) = index.by_item_id.get(&item_id)?;
+        let path = index.by_elem_id.get(list_elem)?;
+        let block = block_at_path(&self.blocks, path)?;
+        let BlockKind::List { items, .. } = &block.kind else {
+            return None;
+        };
+        items
+            .get_element(item_elem)?
+            .value
+            .as_ref()
+            .filter(|item| item.id == item_id)
+    }
+    /// Whether a live block is inside this item's subtree.
+    pub(crate) fn list_item_contains_block(&self, item_id: BlockId, block_id: BlockId) -> bool {
+        fn contains(sequence: &Sequence<Block>, id: BlockId) -> bool {
+            sequence.iter().any(|block| {
+                block.id == id
+                    || match &block.kind {
+                        BlockKind::BlockQuote { children } => contains(children, id),
+                        BlockKind::List { items, .. } => {
+                            items.iter().any(|item| contains(&item.children, id))
+                        }
+                        _ => false,
+                    }
+            })
         }
-        self.rebuild_block_index();
+        self.find_list_item_by_id(item_id)
+            .is_some_and(|item| contains(&item.children, block_id))
+    }
+
+    /// Internal content-only access: callers must not change block identity or children.
+    pub(crate) fn with_block_content_mut<R>(
+        &mut self,
+        elem_id: OpId,
+        f: impl FnOnce(&mut Block) -> R,
+    ) -> Option<R> {
+        self.find_block(elem_id)?;
         let path = self
             .block_index_read()
             .as_ref()?
@@ -1160,63 +1475,8 @@ impl Document {
             .by_elem_id
             .get(&elem_id)
             .cloned()?;
-        block_at_path(&self.blocks, &path).filter(|block| block.elem_id == elem_id)
-    }
-
-    /// Find a list item by its `elem_id` anywhere in the tree.
-    pub fn find_list_item(&self, elem_id: OpId) -> Option<&ListItem> {
-        fn walk(seq: &Sequence<Block>, id: OpId) -> Option<&ListItem> {
-            for e in seq.iter_all() {
-                if let Some(b) = e.value.as_ref() {
-                    if let BlockKind::List { items, .. } = &b.kind {
-                        for ie in items.iter_all() {
-                            if let Some(item) = ie.value.as_ref() {
-                                if item.elem_id == id {
-                                    return Some(item);
-                                }
-                                if let Some(f) = walk(&item.children, id) {
-                                    return Some(f);
-                                }
-                            }
-                        }
-                    } else if let BlockKind::BlockQuote { children } = &b.kind
-                        && let Some(f) = walk(children, id)
-                    {
-                        return Some(f);
-                    }
-                }
-            }
-            None
-        }
-        walk(&self.blocks, elem_id)
-    }
-
-    /// Find a list item by stable logical identity anywhere in the tree.
-    pub fn find_list_item_by_id(&self, item_id: BlockId) -> Option<&ListItem> {
-        fn walk(sequence: &Sequence<Block>, item_id: BlockId) -> Option<&ListItem> {
-            for block in sequence.iter() {
-                match &block.kind {
-                    BlockKind::List { items, .. } => {
-                        for item in items.iter() {
-                            if item.id == item_id {
-                                return Some(item);
-                            }
-                            if let Some(found) = walk(&item.children, item_id) {
-                                return Some(found);
-                            }
-                        }
-                    }
-                    BlockKind::BlockQuote { children } => {
-                        if let Some(found) = walk(children, item_id) {
-                            return Some(found);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            None
-        }
-        walk(&self.blocks, item_id)
+        self.mark_source_elem_dirty(elem_id);
+        block_at_path_mut(&mut self.blocks.sequence, &path.containers, path.elem_id).map(f)
     }
 
     /// Mutate a block by `elem_id` anywhere in the tree. Returns `None` if not found.
@@ -1237,71 +1497,43 @@ impl Document {
         block_at_path_mut(&mut self.blocks, &path.containers, path.elem_id).map(f)
     }
 
-    /// Apply `f` to the children of the container with `container_elem` (a blockquote block
-    /// or a list item), searching the whole tree. `None` if no such container exists.
+    /// Apply `f` to the children of a blockquote or list item through its indexed path.
+    /// Returns `None` if the container is not present in the tree.
     fn with_container_children_mut<R>(
         &mut self,
         container_elem: OpId,
         f: impl FnOnce(&mut Sequence<Block>) -> R,
     ) -> Option<R> {
-        fn walk<R, F: FnOnce(&mut Sequence<Block>) -> R>(
-            seq: &mut Sequence<Block>,
-            target: OpId,
-            f: &mut Option<F>,
-        ) -> Option<R> {
-            for bid in seq.ids() {
-                if seq.value_mut(bid).is_some_and(|b| {
-                    b.elem_id == target && matches!(b.kind, BlockKind::BlockQuote { .. })
-                }) {
-                    let func = f.take()?;
-                    return seq.value_mut(bid).and_then(|b| match &mut b.kind {
-                        BlockKind::BlockQuote { children } => Some(func(children)),
-                        _ => None,
-                    });
+        let container = self.logical_container(container_elem)?;
+        let container_elem = self.resolve_container_elem(container_elem)?;
+        self.ensure_block_index();
+        let (path, item_elem) = {
+            let cached = self.block_index_read();
+            let index = &cached.as_ref()?.index;
+            match container {
+                LogicalContainer::Block(id) => (index.by_block_id.get(&id)?.clone(), None),
+                LogicalContainer::Item(id) => {
+                    let (list_elem, item_elem) = index.by_item_id.get(&id)?;
+                    (index.by_elem_id.get(list_elem)?.clone(), Some(*item_elem))
                 }
-                let has_item = seq.value_mut(bid).is_some_and(|b| match &b.kind {
-                    BlockKind::List { items, .. } => items.iter().any(|it| it.elem_id == target),
-                    _ => false,
-                });
-                if has_item {
-                    let func = f.take()?;
-                    if let Some(b) = seq.value_mut(bid)
-                        && let BlockKind::List { items, .. } = &mut b.kind
-                    {
-                        for iid in items.ids() {
-                            if items.value_mut(iid).is_some_and(|it| it.elem_id == target) {
-                                return items.value_mut(iid).map(|it| func(&mut it.children));
-                            }
-                        }
-                    }
+            }
+        };
+        // Release the index guard before taking conservative structural mutable access.
+        let block = block_at_path_mut(&mut self.blocks, &path.containers, path.elem_id)?;
+        match item_elem {
+            None if block.elem_id == container_elem => match &mut block.kind {
+                BlockKind::BlockQuote { children } => Some(f(children)),
+                _ => None,
+            },
+            Some(item_elem) => {
+                let BlockKind::List { items, .. } = &mut block.kind else {
                     return None;
-                }
+                };
+                let item = items.value_mut(item_elem)?;
+                (item.elem_id == container_elem).then(|| f(&mut item.children))
             }
-            for bid in seq.ids() {
-                if let Some(b) = seq.value_mut(bid) {
-                    match &mut b.kind {
-                        BlockKind::BlockQuote { children } => {
-                            if let Some(r) = walk(children, target, f) {
-                                return Some(r);
-                            }
-                        }
-                        BlockKind::List { items, .. } => {
-                            for iid in items.ids() {
-                                if let Some(item) = items.value_mut(iid)
-                                    && let Some(r) = walk(&mut item.children, target, f)
-                                {
-                                    return Some(r);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            None
+            None => None,
         }
-        let mut f = Some(f);
-        walk(&mut self.blocks, container_elem, &mut f)
     }
 
     /// Insert a block into `parent`'s children (top-level when `parent` is `None`).
@@ -1314,10 +1546,32 @@ impl Document {
         value: Block,
         right_origin: Option<OpId>,
     ) -> bool {
+        if let Some(element) = parent
+            && (self.logical_container(element).is_none()
+                || (self.resolve_container_elem(element).is_some()
+                    && self.container_children(parent).is_none()))
+        {
+            return false;
+        }
+        self.record_block_placement(&value, parent, id, after, right_origin);
+        if self.blocks.block_topology.deleted.contains(&value.id) {
+            self.initialize_placement_roots();
+            return false;
+        }
+        let parent = match parent {
+            Some(parent) => Some(match self.resolve_container_elem(parent) {
+                Some(current) => current,
+                None => {
+                    self.initialize_placement_roots();
+                    return false;
+                }
+            }),
+            None => None,
+        };
         if let Some(parent) = parent {
             self.mark_source_elem_dirty(parent);
         }
-        match parent {
+        let inserted = match parent {
             None => {
                 self.blocks.apply(SequenceOp::Insert {
                     after,
@@ -1337,15 +1591,35 @@ impl Document {
                     });
                 })
                 .is_some(),
-        }
+        };
+        self.initialize_placement_roots();
+        inserted
     }
 
     /// Delete a block from `parent`'s children (top-level when `parent` is `None`).
     pub fn delete_block_at(&mut self, parent: Option<OpId>, target: OpId, id: OpId) -> bool {
+        let parent = match parent {
+            Some(element) => match self.resolve_container_elem(element) {
+                Some(current) => Some(current),
+                None => return false,
+            },
+            None => None,
+        };
+        if let Some(block_id) = self
+            .container_children(parent)
+            .and_then(|children| children.get_element(&target))
+            .and_then(|element| element.value.as_ref())
+            .map(|block| block.id)
+        {
+            self.capture_block_topology();
+            let captured = self.logical_subtree(LogicalContainer::Block(block_id));
+            self.blocks.block_topology.direct_deleted.extend(captured);
+            self.blocks.block_topology.recompute_deletions();
+        }
         if let Some(parent) = parent {
             self.mark_source_elem_dirty(parent);
         }
-        match parent {
+        let applied = match parent {
             None => {
                 self.blocks.apply(SequenceOp::Delete { target, id });
                 true
@@ -1355,7 +1629,13 @@ impl Document {
                     children.apply(SequenceOp::Delete { target, id });
                 })
                 .is_some(),
+        };
+        if !self.blocks.block_topology.moves.is_empty()
+            || !self.blocks.block_topology.item_moves.is_empty()
+        {
+            self.project_block_topology();
         }
+        applied
     }
 
     /// The children sequence of a container (top-level when `parent` is `None`); `None`
@@ -1364,6 +1644,7 @@ impl Document {
         match parent {
             None => Some(&self.blocks),
             Some(p) => {
+                let p = self.resolve_container_elem(p)?;
                 if let Some(Block {
                     kind: BlockKind::BlockQuote { children },
                     ..
@@ -1404,36 +1685,21 @@ impl Document {
 
     /// Current list and sequence placement for one logical list item.
     pub fn list_item_placement(&self, item_id: BlockId) -> Option<(BlockId, OpId, OpId)> {
-        fn walk(sequence: &Sequence<Block>, item_id: BlockId) -> Option<(BlockId, OpId, OpId)> {
-            for block in sequence.iter() {
-                match &block.kind {
-                    BlockKind::List { items, .. } => {
-                        if let Some(placement) = items.iter_all().find_map(|element| {
-                            element
-                                .value
-                                .as_ref()
-                                .filter(|item| item.id == item_id)
-                                .map(|_| element.id)
-                        }) {
-                            return Some((block.id, block.elem_id, placement));
-                        }
-                        for item in items.iter() {
-                            if let Some(found) = walk(&item.children, item_id) {
-                                return Some(found);
-                            }
-                        }
-                    }
-                    BlockKind::BlockQuote { children } => {
-                        if let Some(found) = walk(children, item_id) {
-                            return Some(found);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            None
-        }
-        walk(&self.blocks, item_id)
+        self.ensure_block_index();
+        let cached = self.block_index_read();
+        let index = &cached.as_ref()?.index;
+        let (list_elem, item_elem) = index.by_item_id.get(&item_id)?;
+        let path = index.by_elem_id.get(list_elem)?;
+        let block = block_at_path(&self.blocks, path)?;
+        let BlockKind::List { items, .. } = &block.kind else {
+            return None;
+        };
+        items
+            .get_element(item_elem)?
+            .value
+            .as_ref()
+            .filter(|item| item.id == item_id)?;
+        Some((block.id, block.elem_id, *item_elem))
     }
 
     pub fn compute_list_item_right_origin(
@@ -1444,222 +1710,11 @@ impl Document {
         self.list_items(list_id)?.compute_right_origin(after)
     }
 
-    pub(crate) fn insert_list_item_at(
-        &mut self,
-        list_elem: OpId,
-        after: Option<OpId>,
-        id: OpId,
-        right_origin: Option<OpId>,
-        task: Option<TaskState>,
-    ) -> bool {
-        let item_id = block_id_from_op(id);
-        let inserted = self
-            .with_block_mut(list_elem, |block| {
-                let BlockKind::List { items, .. } = &mut block.kind else {
-                    return false;
-                };
-                items.apply(SequenceOp::Insert {
-                    after,
-                    id,
-                    value: ListItem {
-                        id: item_id,
-                        elem_id: id,
-                        task,
-                        task_op: id,
-                        task_observed: StateVector::new(),
-                        placement_observed: StateVector::new(),
-                        children: Sequence::new(),
-                    },
-                    right_origin,
-                });
-                true
-            })
-            .unwrap_or(false);
-        if inserted {
-            self.resolve_pending_list_item_moves(item_id);
-        }
-        inserted
-    }
-
-    pub(crate) fn delete_list_item_at(
-        &mut self,
-        list_elem: OpId,
-        item_id: BlockId,
-        target: OpId,
-        id: OpId,
-    ) -> bool {
-        let (list_elem, target) = self
-            .list_item_placement(item_id)
-            .map(|(_, current_list, placement)| (current_list, placement))
-            .unwrap_or((list_elem, target));
-        self.with_block_mut(list_elem, |block| {
-            let BlockKind::List { items, .. } = &mut block.kind else {
-                return false;
-            };
-            if let Some(element) = items.get_element(&target)
-                && element
-                    .value
-                    .as_ref()
-                    .is_some_and(|item| item.id != item_id)
-            {
-                return false;
-            }
-            items.apply(SequenceOp::Delete { target, id });
-            true
-        })
-        .unwrap_or(false)
-    }
-
     pub(crate) fn move_list_item_at(&mut self, movement: &PendingListItemMove) -> bool {
-        let Some(item) = self.find_list_item_by_id(movement.item_id).cloned() else {
-            let deleted_target = self
-                .find_block(movement.from_list_elem)
-                .and_then(|block| match &block.kind {
-                    BlockKind::List { items, .. } => items.get_element(&movement.target),
-                    _ => None,
-                })
-                .is_some_and(|element| element.value.is_none());
-            if !deleted_target {
-                return self.with_block_mut(movement.from_list_elem, |block| {
-                    let BlockKind::List { pending_moves, .. } = &mut block.kind else {
-                        return false;
-                    };
-                    if !pending_moves
-                        .iter()
-                        .any(|pending| pending.id == movement.id)
-                    {
-                        pending_moves.push(movement.clone());
-                    }
-                    true
-                }) == Some(true);
-            }
-            return self.with_block_mut(movement.to_list_elem, |block| {
-                let BlockKind::List { items, .. } = &mut block.kind else {
-                    return false;
-                };
-                items.apply(SequenceOp::Insert {
-                    after: movement.after,
-                    id: movement.id,
-                    value: ListItem {
-                        id: movement.item_id,
-                        elem_id: movement.id,
-                        task: None,
-                        task_op: movement.id,
-                        task_observed: StateVector::new(),
-                        placement_observed: movement.observed.clone(),
-                        children: Sequence::new(),
-                    },
-                    right_origin: movement.right_origin,
-                });
-                items.apply(SequenceOp::Delete {
-                    target: movement.id,
-                    id: movement.id,
-                });
-                true
-            }) == Some(true);
-        };
-        let current_placement = self
-            .list_item_placement(movement.item_id)
-            .map_or(movement.target, |(_, _, placement)| placement);
-        let already_moved = block_id_from_op(current_placement) != movement.item_id;
-        if already_moved
-            && !causal_write_wins(
-                current_placement,
-                &item.placement_observed,
-                movement.id,
-                &movement.observed,
-            )
-        {
-            if self
-                .find_block(movement.to_list_elem)
-                .and_then(|block| match &block.kind {
-                    BlockKind::List { items, .. } => items.get_element(&movement.id),
-                    _ => None,
-                })
-                .is_none()
-            {
-                let mut tombstone = item;
-                tombstone.placement_observed = movement.observed.clone();
-                let _ = self.with_block_mut(movement.to_list_elem, |block| {
-                    let BlockKind::List { items, .. } = &mut block.kind else {
-                        return;
-                    };
-                    items.apply(SequenceOp::Insert {
-                        after: movement.after,
-                        id: movement.id,
-                        value: tombstone,
-                        right_origin: movement.right_origin,
-                    });
-                    items.apply(SequenceOp::Delete {
-                        target: movement.id,
-                        id: movement.id,
-                    });
-                });
-            }
+        if self.list_item_contains_block(movement.item_id, movement.list_id) {
             return false;
         }
-        let current = current_placement;
-        let current_list_elem = self
-            .list_containing_item(movement.item_id)
-            .map_or(movement.from_list_elem, |(_, elem)| elem);
-        let deleted = self.with_block_mut(current_list_elem, |block| {
-            let BlockKind::List { items, .. } = &mut block.kind else {
-                return false;
-            };
-            if items.get_element(&current).is_none() {
-                return false;
-            }
-            items.apply(SequenceOp::Delete {
-                target: current,
-                id: movement.id,
-            });
-            true
-        });
-        if deleted != Some(true) {
-            return false;
-        }
-        let mut item = item;
-        item.placement_observed = movement.observed.clone();
-        self.with_block_mut(movement.to_list_elem, |block| {
-            let BlockKind::List { items, .. } = &mut block.kind else {
-                return false;
-            };
-            items.apply(SequenceOp::Insert {
-                after: movement.after,
-                id: movement.id,
-                value: item,
-                right_origin: movement.right_origin,
-            });
-            true
-        }) == Some(true)
-    }
-
-    fn resolve_pending_list_item_moves(&mut self, item_id: BlockId) {
-        let Some((_, list_elem)) = self.list_containing_item(item_id) else {
-            return;
-        };
-        let mut pending = self
-            .with_block_mut(list_elem, |block| {
-                let BlockKind::List { pending_moves, .. } = &mut block.kind else {
-                    return Vec::new();
-                };
-                let mut retained = Vec::new();
-                let mut matching = Vec::new();
-                for movement in std::mem::take(pending_moves) {
-                    if movement.item_id == item_id {
-                        matching.push(movement);
-                    } else {
-                        retained.push(movement);
-                    }
-                }
-                *pending_moves = retained;
-                matching
-            })
-            .unwrap_or_default();
-        pending.sort_by_key(|movement| movement.id);
-        for movement in pending {
-            self.move_list_item_at(&movement);
-        }
+        self.apply_item_movement(movement)
     }
 
     pub(crate) fn set_list_style(
@@ -1669,17 +1724,11 @@ impl Document {
         id: OpId,
         observed: StateVector,
     ) -> bool {
-        self.with_block_mut(block_elem, |block| {
-            let BlockKind::List { style: current, .. } = &mut block.kind else {
-                return false;
-            };
-            if !causal_write_wins(block.kind_op, &block.kind_observed, id, &observed) {
+        self.with_block_content_mut(block_elem, |block| {
+            if !matches!(block.kind, BlockKind::List { .. }) {
                 return false;
             }
-            *current = style;
-            block.kind_op = id;
-            block.kind_observed = observed;
-            true
+            block.set_kind_value(BlockKindValue::ListStyle(style), id, observed)
         })
         .unwrap_or(false)
     }
@@ -1694,20 +1743,24 @@ impl Document {
         let Some((_, list_elem, placement)) = self.list_item_placement(item_id) else {
             return false;
         };
-        self.with_block_mut(list_elem, |block| {
+        self.with_block_content_mut(list_elem, |block| {
             let BlockKind::List { items, .. } = &mut block.kind else {
                 return false;
             };
             let Some(item) = items.value_mut(placement).filter(|item| item.id == item_id) else {
                 return false;
             };
-            if !causal_write_wins(item.task_op, &item.task_observed, id, &observed) {
-                return false;
-            }
-            item.task = task;
-            item.task_op = id;
-            item.task_observed = observed;
-            true
+            apply_write(
+                &mut item.task,
+                &mut item.task_op,
+                &mut item.task_observed,
+                &mut item.task_conflicts,
+                CausalCandidate {
+                    value: task,
+                    op_id: id,
+                    observed,
+                },
+            )
         })
         .unwrap_or(false)
     }
@@ -1721,16 +1774,15 @@ impl Document {
         id: OpId,
         observed: StateVector,
     ) -> bool {
-        self.with_block_mut(block_elem, |block| {
-            if !causal_write_wins(block.kind_op, &block.kind_observed, id, &observed)
-                || !matches!(block.kind, BlockKind::CodeFence { .. })
-            {
+        self.with_block_content_mut(block_elem, |block| {
+            if !matches!(block.kind, BlockKind::CodeFence { .. }) {
                 return false;
             }
-            block.kind = BlockKind::CodeFence { style, info, text };
-            block.kind_op = id;
-            block.kind_observed = observed;
-            true
+            block.set_kind_value(
+                BlockKindValue::CodeFence { style, info, text },
+                id,
+                observed,
+            )
         })
         .unwrap_or(false)
     }
@@ -1742,25 +1794,14 @@ impl Document {
         id: OpId,
         observed: StateVector,
     ) -> bool {
-        self.with_block_mut(block_elem, |block| {
-            if !causal_write_wins(block.kind_op, &block.kind_observed, id, &observed) {
+        self.with_block_content_mut(block_elem, |block| {
+            if !matches!(
+                block.kind,
+                BlockKind::Paragraph { .. } | BlockKind::Heading { .. }
+            ) {
                 return false;
             }
-            let text = match &mut block.kind {
-                BlockKind::Paragraph { text } | BlockKind::Heading { text, .. } => {
-                    std::mem::replace(text, Sequence::new())
-                }
-                _ => return false,
-            };
-            block.kind = match kind {
-                crate::codec::TextBlockKindWire::Paragraph => BlockKind::Paragraph { text },
-                crate::codec::TextBlockKindWire::Heading { level } => {
-                    BlockKind::Heading { level, text }
-                }
-            };
-            block.kind_op = id;
-            block.kind_observed = observed;
-            true
+            block.set_kind_value(BlockKindValue::Text(kind), id, observed)
         })
         .unwrap_or(false)
     }
@@ -1772,16 +1813,11 @@ impl Document {
         id: OpId,
         observed: StateVector,
     ) -> bool {
-        self.with_block_mut(block_elem, |block| {
-            if !causal_write_wins(block.kind_op, &block.kind_observed, id, &observed)
-                || !matches!(block.kind, BlockKind::RawBlock { .. })
-            {
+        self.with_block_content_mut(block_elem, |block| {
+            if !matches!(block.kind, BlockKind::RawBlock { .. }) {
                 return false;
             }
-            block.kind = BlockKind::RawBlock { raw };
-            block.kind_op = id;
-            block.kind_observed = observed;
-            true
+            block.set_kind_value(BlockKindValue::RawBlock { raw }, id, observed)
         })
         .unwrap_or(false)
     }
@@ -1823,102 +1859,12 @@ impl Document {
             .is_some_and(|block| contains(block, candidate))
     }
 
-    /// Apply an atomic identity-preserving placement change. Returns false when a newer
-    /// concurrent move already won or any prerequisite is missing/invalid.
-    pub(crate) fn move_blocks_at(
-        &mut self,
-        to_parent: Option<OpId>,
-        moves: &[crate::codec::MovedBlockWire],
-        move_id: OpId,
-    ) -> bool {
-        if moves.is_empty() || self.container_children(to_parent).is_none() {
-            return false;
-        }
-        let mut prepared = Vec::with_capacity(moves.len());
-        let mut loses = false;
-        for moved in moves {
-            let Some(block) = self.find_block_by_id(moved.block_id).cloned() else {
-                prepared.push((
-                    Block {
-                        id: moved.block_id,
-                        elem_id: moved.id,
-                        kind_op: moved.id,
-                        kind_observed: StateVector::new(),
-                        kind: BlockKind::RawBlock { raw: String::new() },
-                        marks: MarkSet::new(),
-                    },
-                    None,
-                ));
-                loses = true;
-                continue;
-            };
-            if to_parent.is_some_and(|parent| self.block_contains_container(block.id, parent)) {
-                return false;
-            }
-            let already_moved = block_id_from_op(block.elem_id) != block.id;
-            if already_moved && block.elem_id >= moved.id {
-                loses = true;
-            }
-            let Some(parent) = self.block_parent(block.id) else {
-                return false;
-            };
-            prepared.push((block, Some(parent)));
-        }
-        if loses {
-            // Materialize then tombstone losing concurrent placements so every replica has
-            // the same RGA history, not merely the same visible order.
-            for ((mut block, _), moved) in prepared.into_iter().zip(moves) {
-                if self
-                    .container_children(to_parent)
-                    .is_some_and(|children| children.get_element(&moved.id).is_some())
-                {
-                    continue;
-                }
-                block.elem_id = moved.id;
-                self.insert_block_at(to_parent, moved.after, moved.id, block, moved.right_origin);
-                self.delete_block_at(to_parent, moved.id, move_id);
-            }
-            return false;
-        }
-        for (block, parent) in &prepared {
-            self.delete_block_at(
-                parent.expect("winning moves have a source"),
-                block.elem_id,
-                move_id,
-            );
-        }
-        for ((mut block, _), moved) in prepared.into_iter().zip(moves) {
-            block.elem_id = moved.id;
-            self.insert_block_at(to_parent, moved.after, moved.id, block, moved.right_origin);
-        }
-        true
-    }
-
     /// Find a block by its stable `BlockId` anywhere in the tree.
     pub fn find_block_by_id(&self, block_id: BlockId) -> Option<&Block> {
         self.ensure_block_index();
-        let path = self
-            .block_index_read()
-            .as_ref()?
-            .index
-            .by_block_id
-            .get(&block_id)
-            .cloned();
-        if let Some(path) = path
-            && let Some(block) = block_at_path(&self.blocks, &path)
-            && block.id == block_id
-        {
-            return Some(block);
-        }
-        self.rebuild_block_index();
-        let path = self
-            .block_index_read()
-            .as_ref()?
-            .index
-            .by_block_id
-            .get(&block_id)
-            .cloned()?;
-        block_at_path(&self.blocks, &path).filter(|block| block.id == block_id)
+        let cached = self.block_index_read();
+        let path = cached.as_ref()?.index.by_block_id.get(&block_id)?;
+        block_at_path(&self.blocks, path).filter(|block| block.id == block_id)
     }
 
     pub fn insert_text(
@@ -1932,26 +1878,25 @@ impl Document {
             .block_elem_id(block_id)
             .ok_or(EditError::BlockNotFound)?;
 
-        // Get element via O(1) lookup and clone block for modification
-        let Some(existing) = self.blocks.get_element(&elem_id) else {
-            return Err(EditError::BlockNotFound);
-        };
-        let Some(block) = existing.value.as_ref() else {
-            return Err(EditError::BlockNotFound);
-        };
-
-        let mut updated = block.clone();
-        let Some(body) = block_text_seq_mut(&mut updated.kind) else {
-            return Err(EditError::InvalidOffset);
-        };
-
+        let block = self.find_block(elem_id).ok_or(EditError::BlockNotFound)?;
+        let body = block_text_seq(&block.kind).ok_or(EditError::InvalidOffset)?;
         let visible = paragraph_visible_string(body);
         let byte_offset =
             grapheme_offset_to_byte(&visible, grapheme_offset).ok_or(EditError::InvalidOffset)?;
-        insert_graphemes(body, grapheme_offset, text, op_id).ok_or(EditError::InvalidOffset)?;
-
-        self.blocks.update_value(elem_id, updated);
-        self.mark_source_block_dirty(block_id);
+        let count = grapheme_count(text);
+        if count > 0 && op_id.counter.checked_add((count - 1) as u64).is_none() {
+            return Err(EditError::InvalidOffset);
+        }
+        self.with_block_content_mut(elem_id, |block| {
+            insert_graphemes(
+                block_text_seq_mut(&mut block.kind).expect("validated text block"),
+                grapheme_offset,
+                text,
+                op_id,
+            )
+            .expect("validated offset and counter span");
+        })
+        .ok_or(EditError::BlockNotFound)?;
 
         Ok(vec![EditOp::InsertText(InsertTextRun {
             block_id,
@@ -1969,27 +1914,11 @@ impl Document {
     ) -> Result<(), EditError> {
         match op {
             EditOp::InsertText(run) => {
-                // Find block's elem_id by block_id
                 let elem_id = self
-                    .blocks
-                    .iter_asc()
-                    .find(|block| block.id == run.block_id)
-                    .map(|block| block.elem_id)
+                    .block_elem_id(run.block_id)
                     .ok_or(EditError::BlockNotFound)?;
-
-                // Get element via O(1) lookup and clone block for modification
-                let Some(existing) = self.blocks.get_element(&elem_id) else {
-                    return Err(EditError::BlockNotFound);
-                };
-                let Some(block) = existing.value.as_ref() else {
-                    return Err(EditError::BlockNotFound);
-                };
-
-                let mut updated = block.clone();
-                let Some(body) = block_text_seq_mut(&mut updated.kind) else {
-                    return Err(EditError::InvalidOffset);
-                };
-
+                let block = self.find_block(elem_id).ok_or(EditError::BlockNotFound)?;
+                let body = block_text_seq(&block.kind).ok_or(EditError::InvalidOffset)?;
                 let visible = paragraph_visible_string(body);
                 let byte_offset = run.byte_offset;
                 if byte_offset > visible.len() {
@@ -2001,13 +1930,22 @@ impl Document {
                 if validate_grapheme_boundaries && !is_grapheme_boundary(&visible, byte_offset) {
                     return Err(EditError::InvalidGraphemeBoundary);
                 }
-                // Prefer grapheme_offset on the run; fall back to byte→grapheme map.
-                let g_off = run.grapheme_offset;
-                insert_graphemes(body, g_off, &run.text, run.op_id)
-                    .ok_or(EditError::InvalidOffset)?;
-
-                self.blocks.update_value(elem_id, updated);
-                self.mark_source_block_dirty(run.block_id);
+                let count = grapheme_count(&run.text);
+                if run.grapheme_offset > body.len_visible()
+                    || (count > 0 && run.op_id.counter.checked_add((count - 1) as u64).is_none())
+                {
+                    return Err(EditError::InvalidOffset);
+                }
+                self.with_block_content_mut(elem_id, |block| {
+                    insert_graphemes(
+                        block_text_seq_mut(&mut block.kind).expect("validated text block"),
+                        run.grapheme_offset,
+                        &run.text,
+                        run.op_id,
+                    )
+                    .expect("validated offset and counter span");
+                })
+                .ok_or(EditError::BlockNotFound)?;
                 Ok(())
             }
             EditOp::SetMark {
@@ -2022,18 +1960,12 @@ impl Document {
                 let elem_id = self
                     .block_elem_id(block_id)
                     .ok_or(EditError::BlockNotFound)?;
-                let Some(existing) = self.blocks.get_element(&elem_id) else {
-                    return Err(EditError::BlockNotFound);
-                };
-                let Some(block) = existing.value.as_ref() else {
-                    return Err(EditError::BlockNotFound);
-                };
-                let mut updated = block.clone();
-                updated
-                    .marks
-                    .set_mark(interval_id, kind, start, end, attrs, op_id);
-                self.blocks.update_value(elem_id, updated);
-                self.mark_source_block_dirty(block_id);
+                self.with_block_content_mut(elem_id, |block| {
+                    block
+                        .marks
+                        .set_mark(interval_id, kind, start, end, attrs, op_id);
+                })
+                .ok_or(EditError::BlockNotFound)?;
                 Ok(())
             }
             EditOp::RemoveMark {
@@ -2045,16 +1977,10 @@ impl Document {
                 let elem_id = self
                     .block_elem_id(block_id)
                     .ok_or(EditError::BlockNotFound)?;
-                let Some(existing) = self.blocks.get_element(&elem_id) else {
-                    return Err(EditError::BlockNotFound);
-                };
-                let Some(block) = existing.value.as_ref() else {
-                    return Err(EditError::BlockNotFound);
-                };
-                let mut updated = block.clone();
-                updated.marks.remove_mark(interval_id, observed, op_id);
-                self.blocks.update_value(elem_id, updated);
-                self.mark_source_block_dirty(block_id);
+                self.with_block_content_mut(elem_id, |block| {
+                    block.marks.remove_mark(interval_id, observed, op_id);
+                })
+                .ok_or(EditError::BlockNotFound)?;
                 Ok(())
             }
         }
@@ -2099,17 +2025,16 @@ impl Document {
             .block_elem_id(block_id)
             .ok_or(EditError::BlockNotFound)?;
 
-        let Some(existing) = self.blocks.get_element(&elem_id) else {
-            return Err(EditError::BlockNotFound);
-        };
-        let Some(block) = existing.value.as_ref() else {
-            return Err(EditError::BlockNotFound);
-        };
+        let block = self.find_block(elem_id).ok_or(EditError::BlockNotFound)?;
 
         if block.marks.interval(&interval_id).is_none() {
             return Err(EditError::InvalidOffset);
         }
 
+        // A split can allocate two interval ids after the removal operation.
+        if remove_id.counter.checked_add(2).is_none() {
+            return Err(EditError::InvalidOffset);
+        }
         // Anchors are ordered by visible position, so pass the text body's element order.
         let element_order = block_text_seq(&block.kind)
             .map(paragraph_visible_ids)
@@ -2120,17 +2045,19 @@ impl Document {
             remove_start,
             remove_end,
             OpId {
-                counter: remove_id.counter.saturating_add(1),
+                counter: remove_id.counter + 1,
                 peer: remove_id.peer,
             },
             &element_order,
         );
 
-        let mut updated = block.clone();
         let mut ops = Vec::new();
-        updated
-            .marks
-            .remove_mark(interval_id, observed.clone(), remove_id);
+        self.with_block_content_mut(elem_id, |block| {
+            block
+                .marks
+                .remove_mark(interval_id, observed.clone(), remove_id);
+        })
+        .ok_or(EditError::BlockNotFound)?;
         ops.push(EditOp::RemoveMark {
             block_id,
             interval_id,
@@ -2144,14 +2071,17 @@ impl Document {
                 .iter()
                 .map(|(k, reg)| (k.clone(), reg.get()))
                 .collect();
-            updated.marks.set_mark(
-                interval.id,
-                interval.kind.clone(),
-                interval.start,
-                interval.end,
-                attrs.clone(),
-                interval.op_id,
-            );
+            self.with_block_content_mut(elem_id, |block| {
+                block.marks.set_mark(
+                    interval.id,
+                    interval.kind.clone(),
+                    interval.start,
+                    interval.end,
+                    attrs.clone(),
+                    interval.op_id,
+                );
+            })
+            .expect("validated block remains present");
             ops.push(EditOp::SetMark {
                 block_id,
                 interval_id: interval.id,
@@ -2163,8 +2093,6 @@ impl Document {
             });
         }
 
-        self.blocks.update_value(elem_id, updated);
-        self.mark_source_block_dirty(block_id);
         Ok(ops)
     }
 
@@ -2236,14 +2164,28 @@ impl Document {
         self.frontmatter.as_ref()?.get(key)
     }
 
+    pub(crate) fn validate_frontmatter_edit(&self) -> Result<(), FrontmatterError> {
+        if let Some(frontmatter) = &self.frontmatter
+            && (!frontmatter.is_structured()
+                || self
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.blocks_frontmatter_edit(frontmatter)))
+        {
+            return Err(FrontmatterError::Opaque);
+        }
+        Ok(())
+    }
+
     pub fn set_frontmatter_field(
         &mut self,
         key: String,
         value: Option<String>,
         op_id: OpId,
     ) -> Result<(), FrontmatterError> {
+        self.validate_frontmatter_edit()?;
         self.frontmatter
-            .get_or_insert_with(Frontmatter::empty)
+            .get_or_insert_with(Frontmatter::without_base)
             .set(key, value, op_id)
     }
 
@@ -2263,8 +2205,7 @@ impl Document {
             let replacement = self
                 .frontmatter
                 .as_ref()
-                .filter(|frontmatter| frontmatter.is_dirty())
-                .map(Frontmatter::render);
+                .and_then(|frontmatter| source.frontmatter_replacement(frontmatter));
             return source.render_with_frontmatter(&self.blocks, replacement.as_deref());
         }
 
@@ -2297,12 +2238,77 @@ impl Default for Document {
 }
 
 impl Block {
+    fn set_kind_value(
+        &mut self,
+        value: BlockKindValue,
+        op_id: OpId,
+        observed: StateVector,
+    ) -> bool {
+        use crate::codec::TextBlockKindWire;
+        let mut current = match &mut self.kind {
+            BlockKind::Paragraph { .. } => BlockKindValue::Text(TextBlockKindWire::Paragraph),
+            BlockKind::Heading { level, .. } => {
+                BlockKindValue::Text(TextBlockKindWire::Heading { level: *level })
+            }
+            BlockKind::List { style, .. } => BlockKindValue::ListStyle(*style),
+            BlockKind::CodeFence { style, info, text } => BlockKindValue::CodeFence {
+                style: *style,
+                info: std::mem::take(info),
+                text: std::mem::take(text),
+            },
+            BlockKind::RawBlock { raw } => BlockKindValue::RawBlock {
+                raw: std::mem::take(raw),
+            },
+            _ => return false,
+        };
+        let changed = apply_write(
+            &mut current,
+            &mut self.kind_op,
+            &mut self.kind_observed,
+            &mut self.kind_conflicts,
+            CausalCandidate {
+                value,
+                op_id,
+                observed,
+            },
+        );
+        match (current, &mut self.kind) {
+            (BlockKindValue::ListStyle(value), BlockKind::List { style, .. }) => *style = value,
+            (
+                BlockKindValue::CodeFence {
+                    style: value,
+                    info: new_info,
+                    text: new_text,
+                },
+                BlockKind::CodeFence { style, info, text },
+            ) => {
+                *style = value;
+                *info = new_info;
+                *text = new_text;
+            }
+            (BlockKindValue::RawBlock { raw: value }, BlockKind::RawBlock { raw }) => *raw = value,
+            (
+                BlockKindValue::Text(value),
+                BlockKind::Paragraph { text } | BlockKind::Heading { text, .. },
+            ) => {
+                let text = std::mem::replace(text, Sequence::new());
+                self.kind = match value {
+                    TextBlockKindWire::Paragraph => BlockKind::Paragraph { text },
+                    TextBlockKindWire::Heading { level } => BlockKind::Heading { level, text },
+                };
+            }
+            _ => unreachable!("kind register candidates belong to the same block family"),
+        }
+        changed
+    }
+
     pub fn new(kind: BlockKind, insert_id: OpId) -> Self {
         Self {
             id: block_id_from_op(insert_id),
             elem_id: insert_id,
             kind_op: insert_id,
             kind_observed: StateVector::new(),
+            kind_conflicts: Vec::new(),
             kind,
             marks: MarkSet::new(),
         }

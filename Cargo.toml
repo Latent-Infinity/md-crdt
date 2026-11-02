@@ -43,16 +43,16 @@ workspace = true
 [[bin]]
 name = "md-crdt"
 path = "src/bin/md-crdt.rs"
-required-features = ["filesync"]
+required-features = ["cli"]
 
 [dependencies]
 # Core dependencies
 serde = { version = "1.0.228", features = ["derive", "rc"] }
-clap = { version = "4.5.56", features = ["derive"] }
+clap = { version = "4.5.56", features = ["derive"], optional = true }
 serde_json = "1.0.149"
 thiserror = "2.0"
 unicode-segmentation = "1.12.0"
-uuid = { version = "1.17.0", features = ["serde", "v4"] }
+uuid = { version = "1.17.0", features = ["serde"] }
 miniz_oxide = "0.8.9"
 rapidhash = { version = "4.5", default-features = false }
 
@@ -62,7 +62,6 @@ crc32fast = { version = "1.5.0", optional = true }
 
 # Optional dependencies for filesync feature
 walkdir = { version = "2.5.0", optional = true }
-tracing = { version = "0.1", optional = true }
 
 # Optional dependency for heap profiling
 dhat = { version = "0.3.3", optional = true }
@@ -78,9 +77,10 @@ serde_json = "1.0.149"
 tempfile = "3.24.0"
 
 [features]
-default = ["storage", "filesync"]
+default = ["storage", "filesync", "cli"]
 storage = ["dep:rkyv", "dep:crc32fast"]
-filesync = ["storage", "dep:walkdir", "dep:tracing"]
+filesync = ["storage", "dep:walkdir", "uuid/v4"]
+cli = ["filesync", "dep:clap"]
 dhat-heap = ["dhat"]
 sequence_incremental = []
 # Opt-in atomic hot-path counters (zero cost when off; no extra dependencies).
@@ -91,6 +91,19 @@ name = "performance"
 harness = false
 required-features = ["filesync"]
 
+[[bench]]
+name = "council_performance"
+harness = false
+required-features = ["filesync"]
+
+[[example]]
+name = "debug_ordering_workload"
+required-features = ["filesync", "sequence_incremental"]
+
+[[bench]]
+name = "filesync_diff"
+harness = false
+required-features = ["filesync"]
 [profile.release]
 opt-level = 3              # Compared against 2; see docs/rust-standards-conformance.md
 lto = "fat"                # Compared against thin (RPS-253)

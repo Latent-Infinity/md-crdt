@@ -2,9 +2,15 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.3.x   | :white_check_mark: |
+| Version | Security support |
+| ------- | ---------------- |
+| 0.3.x | Declared supported |
+| 0.4.x | Support commitment not declared |
+
+The package currently identifies itself as 0.4.0. That version does not by itself
+extend the 0.3.x security-support commitment above. Contact
+**security@latentinfinity.com** to confirm support before relying on a release
+outside the explicitly supported line.
 
 ## Reporting a Vulnerability
 

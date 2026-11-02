@@ -8,20 +8,6 @@ use md_crdt::core::{OpId, SequenceOp, StateVector};
 use md_crdt::doc::{Block, BlockKind, Document, SerializeConfig};
 use uuid::Uuid;
 
-/// Create a simple paragraph block with the given text
-#[allow(dead_code)]
-fn para_block(text: &str, peer: u64, counter: u64) -> Block {
-    let elem_id = OpId { counter, peer };
-    Block {
-        id: Uuid::new_v4(),
-        elem_id,
-        kind_op: elem_id,
-        kind_observed: StateVector::new(),
-        kind: BlockKind::paragraph(text, elem_id),
-        marks: MarkSet::new(),
-    }
-}
-
 /// Create a block with a fixed UUID for deterministic testing
 fn para_block_fixed(text: &str, peer: u64, counter: u64, uuid_seed: u128) -> Block {
     let elem_id = OpId { counter, peer };
@@ -30,6 +16,7 @@ fn para_block_fixed(text: &str, peer: u64, counter: u64, uuid_seed: u128) -> Blo
         elem_id,
         kind_op: elem_id,
         kind_observed: StateVector::new(),
+        kind_conflicts: Vec::new(),
         kind: BlockKind::paragraph(text, elem_id),
         marks: MarkSet::new(),
     }

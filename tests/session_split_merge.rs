@@ -1,10 +1,12 @@
 use md_crdt::codec::{DocOp, JsonOpCodec, OpBody, OpCodec};
+use md_crdt::core::mark::{MarkInterval, MarkKind, MarkValue};
 use md_crdt::doc::{
-    BlockId, BlockKind, EquivalenceMode, block_id_from_op, paragraph_visible_ids,
+    BlockId, BlockKind, EquivalenceMode, block_id_from_op, block_text_seq, paragraph_visible_ids,
     paragraph_visible_string,
 };
-use md_crdt::session::{CollaborativeDocument, SessionError};
+use md_crdt::session::{CollaborativeDocument, SessionError, SessionSnapshot};
 use md_crdt::sync::{ChangeMessage, Operation, ValidationLimits};
+use std::collections::BTreeMap;
 
 fn exchange(from: &CollaborativeDocument, to: &mut CollaborativeDocument) {
     let message = from.encode_changes_since(&to.state_vector()).unwrap();
@@ -278,4 +280,172 @@ fn concurrent_splits_of_same_block_converge() {
     assert_eq!(a.state_vector(), b.state_vector());
     // The original block keeps only the common prefix; both suffixes survive as siblings.
     assert_eq!(paragraph(&a, id).0, "al");
+}
+
+fn restore(session: &CollaborativeDocument) -> CollaborativeDocument {
+    let bytes = session.save_snapshot().unwrap().to_bytes().unwrap();
+    CollaborativeDocument::restore_from_snapshot(SessionSnapshot::from_bytes(&bytes).unwrap())
+        .unwrap()
+}
+
+fn assert_merged_interval(
+    session: &CollaborativeDocument,
+    block_id: BlockId,
+    original: &MarkInterval,
+    range: std::ops::Range<usize>,
+    active: bool,
+) {
+    let block = session.document().find_block_by_id(block_id).unwrap();
+    let text = block_text_seq(&block.kind).unwrap();
+    let ids = paragraph_visible_ids(text);
+    let mut expected = original.clone();
+    expected.start.elem_id = ids[range.start];
+    expected.end.elem_id = ids[range.end - 1];
+    assert_eq!(block.marks.interval(&original.id), Some(&expected));
+    assert_eq!(block.marks.is_active(&original.id), active);
+    let resolved: Vec<_> = block
+        .marks
+        .resolved_intervals_in_sequence(text)
+        .into_iter()
+        .filter(|(interval, _, _)| interval.id == original.id)
+        .map(|(_, start, end)| (start, end))
+        .collect();
+    let expected_ranges = if active {
+        vec![(range.start, range.end)]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(resolved, expected_ranges);
+}
+
+#[test]
+fn split_merge_preserves_suffix_crossing_and_retained_mark_ranges() {
+    let link_attrs = BTreeMap::from([
+        ("href".into(), MarkValue::String("target".into())),
+        ("title".into(), MarkValue::String("kept".into())),
+        ("custom".into(), MarkValue::Bool(true)),
+    ]);
+    for (kind, range, attrs, markdown) in [
+        (MarkKind::Bold, 1..3, BTreeMap::new(), "a**bc**"),
+        (MarkKind::Link, 1..3, link_attrs, "a[bc](target)"),
+        (MarkKind::Bold, 0..2, BTreeMap::new(), "**ab**c"),
+        (MarkKind::Bold, 0..1, BTreeMap::new(), "**a**bc"),
+    ] {
+        let mut local = CollaborativeDocument::new(21);
+        let mut remote = CollaborativeDocument::new(22);
+        let mut late_replay = CollaborativeDocument::new(23);
+        let elem = local.insert_paragraph(None, "abc").unwrap();
+        let block_id = block_id_from_op(elem);
+        let mark_id = local
+            .set_mark(block_id, range.clone(), kind, attrs)
+            .unwrap();
+        let original = local
+            .document()
+            .find_block_by_id(block_id)
+            .unwrap()
+            .marks
+            .interval(&mark_id)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            local.document().serialize(EquivalenceMode::Structural),
+            markdown
+        );
+        exchange(&local, &mut remote);
+        let suffix = local.split_block(block_id, 1).unwrap();
+        exchange(&local, &mut remote);
+        let mut restored_split = restore(&local);
+
+        local
+            .merge_blocks(block_id, block_id_from_op(suffix))
+            .unwrap();
+        restored_split
+            .merge_blocks(block_id, block_id_from_op(suffix))
+            .unwrap();
+        exchange(&local, &mut remote);
+        exchange(&local, &mut late_replay);
+        let restored_merged = restore(&local);
+
+        for session in [
+            &local,
+            &remote,
+            &late_replay,
+            &restored_split,
+            &restored_merged,
+        ] {
+            assert_eq!(
+                session.document().serialize(EquivalenceMode::Structural),
+                markdown
+            );
+            assert_eq!(paragraph(session, block_id), paragraph(&local, block_id));
+            assert_merged_interval(session, block_id, &original, range.clone(), true);
+            assert_eq!(session.state_vector(), local.state_vector());
+        }
+    }
+}
+
+#[test]
+fn split_merge_keeps_right_only_marks_and_removal_history() {
+    let mut local = CollaborativeDocument::new(24);
+    let mut remote = CollaborativeDocument::new(25);
+    let elem = local.insert_paragraph(None, "abc").unwrap();
+    let block_id = block_id_from_op(elem);
+    let removed_id = local
+        .set_mark(block_id, 1..3, MarkKind::Bold, BTreeMap::new())
+        .unwrap();
+    let removed_interval = local
+        .document()
+        .find_block_by_id(block_id)
+        .unwrap()
+        .marks
+        .interval(&removed_id)
+        .unwrap()
+        .clone();
+    let suffix = local.split_block(block_id, 1).unwrap();
+    let suffix_id = block_id_from_op(suffix);
+    local.remove_mark(suffix_id, removed_id).unwrap();
+    let link_id = local
+        .set_mark(
+            suffix_id,
+            0..2,
+            MarkKind::Link,
+            BTreeMap::from([
+                ("href".into(), MarkValue::String("target".into())),
+                ("custom".into(), MarkValue::Bool(false)),
+            ]),
+        )
+        .unwrap();
+    let link_interval = local
+        .document()
+        .find_block_by_id(suffix_id)
+        .unwrap()
+        .marks
+        .interval(&link_id)
+        .unwrap()
+        .clone();
+    assert!(
+        local
+            .document()
+            .find_block_by_id(block_id)
+            .unwrap()
+            .marks
+            .is_active(&removed_id)
+    );
+    exchange(&local, &mut remote);
+    let mut restored_split = restore(&local);
+    local.merge_blocks(block_id, suffix_id).unwrap();
+    restored_split.merge_blocks(block_id, suffix_id).unwrap();
+    exchange(&local, &mut remote);
+    let restored_merged = restore(&local);
+
+    for session in [&local, &remote, &restored_split, &restored_merged] {
+        assert_eq!(
+            session.document().serialize(EquivalenceMode::Structural),
+            "a[bc](target)"
+        );
+        assert_merged_interval(session, block_id, &removed_interval, 1..3, false);
+        assert_merged_interval(session, block_id, &link_interval, 1..3, true);
+        assert_eq!(paragraph(session, block_id), paragraph(&local, block_id));
+        assert_eq!(session.state_vector(), local.state_vector());
+    }
 }

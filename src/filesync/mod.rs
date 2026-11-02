@@ -14,7 +14,7 @@ pub use diff::{GraphemeStep, graphemes_of, lcs_steps};
 use crate::doc::{Block, BlockId, BlockKind, Document, Parser, paragraph_visible_string};
 use crate::storage::Storage;
 use rkyv::{Archive, Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -95,9 +95,18 @@ pub enum VaultError {
     #[error("session not open for path: {0}")]
     SessionNotOpen(PathBuf),
     #[error("session snapshot: {0}")]
-    Snapshot(String),
+    Snapshot(#[from] crate::session::SnapshotError),
     #[error("session: {0}")]
-    Session(String),
+    Session(#[from] crate::session::SessionError),
+    #[error("persisted operation segment codec: {0}")]
+    SegmentCodec(#[source] serde_json::Error),
+    #[error("ingest matching exceeds {resource} budget ({limit})")]
+    IngestMatchLimit {
+        resource: &'static str,
+        limit: usize,
+    },
+    #[error("invalid recovery journal path or relationship: {0}")]
+    InvalidJournal(PathBuf),
     #[error("unsupported block kind during ingest: {0}")]
     UnsupportedIngestBlock(&'static str),
     #[error(transparent)]
@@ -112,7 +121,11 @@ pub enum VaultError {
     #[error("duplicate document path in one batch: {0}")]
     DuplicateDocumentBatch(PathBuf),
     #[error("transaction requires recovery from {journal}: {cause}")]
-    RecoverableTransaction { journal: PathBuf, cause: String },
+    RecoverableTransaction {
+        journal: PathBuf,
+        #[source]
+        cause: Box<VaultError>,
+    },
     #[error(transparent)]
     RebaseRequired(#[from] crate::RebaseRequired),
     #[error("stale document revision: expected {expected}, actual {actual}")]
@@ -391,7 +404,7 @@ impl Vault {
         old_state: &LastFlushedState,
         new_blocks: &[ParsedBlock],
         config: &MatchConfig,
-    ) -> BlockMapping {
+    ) -> Result<BlockMapping, VaultError> {
         match_blocks(old_state, new_blocks, config)
     }
 
@@ -698,50 +711,240 @@ pub(crate) fn block_content(kind: &BlockKind) -> String {
 }
 
 fn table_fingerprint_content(table: &crate::doc::Table) -> String {
-    let mut parts = Vec::new();
-    parts.push("table".to_string());
-    parts.push(table.row_cells(table.header_row_id()).join("|"));
-    for row in table.rows.iter() {
-        parts.push(table.row_cells(row.id).join("|"));
+    let columns: Vec<_> = table.columns.iter().collect();
+    let mut content = String::from("table");
+    for row_id in std::iter::once(table.header_row_id()).chain(table.rows.iter().map(|row| row.id))
+    {
+        content.push('\n');
+        for (index, value) in table.row_values(row_id, &columns).enumerate() {
+            if index > 0 {
+                content.push('|');
+            }
+            content.push_str(value);
+        }
     }
-    parts.join("\n")
+    content
 }
 
 pub fn match_blocks(
     old_state: &LastFlushedState,
     new_parsed: &[ParsedBlock],
     config: &MatchConfig,
-) -> BlockMapping {
+) -> Result<BlockMapping, VaultError> {
+    // Resolve mutually unique fingerprints before considering fuzzy pairs.
+    // Duplicate fingerprints still use the scored, deterministic assignment.
+    // Bound indexing/scoring work and candidate memory independently.
+    const MAX_WORK: usize = 4_000_000;
+    const MAX_EDGES: usize = 250_000;
+    let mut work = 0usize;
+    let mut charge = |amount: usize| -> Result<(), VaultError> {
+        work = work
+            .checked_add(amount)
+            .ok_or(VaultError::IngestMatchLimit {
+                resource: "scoring work",
+                limit: MAX_WORK,
+            })?;
+        if work > MAX_WORK {
+            return Err(VaultError::IngestMatchLimit {
+                resource: "scoring work",
+                limit: MAX_WORK,
+            });
+        }
+        Ok(())
+    };
+    // Admit the input-sized indexes before allocating them or hashing tokens.
+    charge(old_state.blocks.len())?;
+    charge(new_parsed.len())?;
+    for block in &old_state.blocks {
+        charge(
+            block
+                .fingerprint
+                .tokens
+                .len()
+                .saturating_add(block.container_path.len()),
+        )?;
+    }
+    for block in new_parsed {
+        charge(
+            block
+                .fingerprint
+                .tokens
+                .len()
+                .saturating_add(block.container_path.len()),
+        )?;
+    }
+
+    struct ExactCandidate {
+        new_index: usize,
+        new_count: usize,
+        old_index: usize,
+        old_count: usize,
+    }
+    let mut exact: HashMap<&[u64], ExactCandidate> = HashMap::new();
+    for (index, block) in new_parsed.iter().enumerate() {
+        charge(block.fingerprint.tokens.len().saturating_add(1))?;
+        exact
+            .entry(&block.fingerprint.tokens)
+            .and_modify(|candidate| candidate.new_count += 1)
+            .or_insert(ExactCandidate {
+                new_index: index,
+                new_count: 1,
+                old_index: 0,
+                old_count: 0,
+            });
+    }
+    for (index, block) in old_state.blocks.iter().enumerate() {
+        charge(block.fingerprint.tokens.len().saturating_add(1))?;
+        if let Some(candidate) = exact.get_mut(block.fingerprint.tokens.as_slice()) {
+            candidate.old_index = index;
+            candidate.old_count += 1;
+        }
+    }
+
+    let mut matched_old = vec![false; old_state.blocks.len()];
+    let mut matched_new = vec![false; new_parsed.len()];
+    let mut matches = Vec::new();
+    for candidate in exact.into_values() {
+        if candidate.old_count != 1 || candidate.new_count != 1 {
+            continue;
+        }
+        let old_idx = candidate.old_index;
+        let new_idx = candidate.new_index;
+        let old = &old_state.blocks[old_idx];
+        let new = &new_parsed[new_idx];
+        charge(
+            old.fingerprint
+                .tokens
+                .len()
+                .saturating_add(new.fingerprint.tokens.len())
+                .saturating_add(old.container_path.len())
+                .saturating_add(new.container_path.len())
+                .saturating_add(1),
+        )?;
+        if !compatible_containers(&old.container_path, &new.container_path) {
+            continue;
+        }
+        let score = compute_score(old, new, old_idx, new_idx, old_state.blocks.len());
+        if score < config.min_match_score {
+            continue;
+        }
+        if matches.len() == MAX_EDGES {
+            return Err(VaultError::IngestMatchLimit {
+                resource: "candidate edges",
+                limit: MAX_EDGES,
+            });
+        }
+        matched_old[old_idx] = true;
+        matched_new[new_idx] = true;
+        matches.push((old_idx, new_idx, score));
+    }
+
+    // Only unmatched blocks enter postings. With a low score floor even
+    // zero-overlap pairs can qualify, so retain the full unmatched index.
+    let mut postings: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut unmatched_new = Vec::new();
+    let mut empty_new = Vec::new();
+    for (index, block) in new_parsed.iter().enumerate() {
+        if matched_new[index] {
+            continue;
+        }
+        charge(block.fingerprint.tokens.len().saturating_add(1))?;
+        unmatched_new.push(index);
+        if config.min_match_score.0 > 4000 {
+            if block.fingerprint.tokens.is_empty() {
+                empty_new.push(index);
+            }
+            for token in &block.fingerprint.tokens {
+                postings.entry(*token).or_default().push(index);
+            }
+        }
+    }
+
     let mut edges = Vec::new();
+    let mut candidates = Vec::new();
+    let mut candidate_seen = vec![false; new_parsed.len()];
     for (old_idx, old) in old_state.blocks.iter().enumerate() {
-        for (new_idx, new) in new_parsed.iter().enumerate() {
+        if matched_old[old_idx] {
+            continue;
+        }
+        charge(old.fingerprint.tokens.len().saturating_add(1))?;
+        let mut add_candidates = |indices: &[usize]| -> Result<(), VaultError> {
+            charge(indices.len())?;
+            for &index in indices {
+                if candidate_seen[index] {
+                    continue;
+                }
+                if candidates.len() == MAX_EDGES {
+                    return Err(VaultError::IngestMatchLimit {
+                        resource: "candidate edges",
+                        limit: MAX_EDGES,
+                    });
+                }
+                candidate_seen[index] = true;
+                candidates.push(index);
+            }
+            Ok(())
+        };
+        if config.min_match_score.0 <= 4000 {
+            add_candidates(&unmatched_new)?;
+        } else if old.fingerprint.tokens.is_empty() {
+            // Empty fingerprints have full similarity but no token postings.
+            add_candidates(&empty_new)?;
+        } else {
+            for token in &old.fingerprint.tokens {
+                if let Some(indices) = postings.get(token) {
+                    add_candidates(indices)?;
+                }
+            }
+        }
+        for new_idx in candidates.drain(..) {
+            candidate_seen[new_idx] = false;
+            let new = &new_parsed[new_idx];
+            charge(
+                old.fingerprint
+                    .tokens
+                    .len()
+                    .saturating_add(new.fingerprint.tokens.len())
+                    .saturating_add(old.container_path.len())
+                    .saturating_add(new.container_path.len())
+                    .saturating_add(1),
+            )?;
             if !compatible_containers(&old.container_path, &new.container_path) {
                 continue;
             }
             let score = compute_score(old, new, old_idx, new_idx, old_state.blocks.len());
             if score >= config.min_match_score {
+                if edges.len() + matches.len() == MAX_EDGES {
+                    return Err(VaultError::IngestMatchLimit {
+                        resource: "candidate edges",
+                        limit: MAX_EDGES,
+                    });
+                }
                 edges.push((score, old_idx, new_idx));
             }
         }
     }
 
-    edges.sort_by(|a, b| {
+    edges.sort_unstable_by(|a, b| {
         b.0.cmp(&a.0)
             .then_with(|| a.1.cmp(&b.1))
             .then_with(|| a.2.cmp(&b.2))
     });
-
-    let mut matched_old = HashSet::new();
-    let mut matched_new = HashSet::new();
-    let mut matches = Vec::new();
     for (score, old_idx, new_idx) in edges {
-        if matched_old.contains(&old_idx) || matched_new.contains(&new_idx) {
+        if matched_old[old_idx] || matched_new[new_idx] {
             continue;
         }
-        matched_old.insert(old_idx);
-        matched_new.insert(new_idx);
+        matched_old[old_idx] = true;
+        matched_new[new_idx] = true;
         matches.push((old_idx, new_idx, score));
     }
+    // Preserve the score/old/new order used to choose probable copy sources,
+    // independently of the exact index's randomized iteration order.
+    matches.sort_unstable_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.cmp(&b.1))
+    });
 
     let mut result = BlockMapping::default();
     for (old_idx, new_idx, score) in &matches {
@@ -761,28 +964,34 @@ pub fn match_blocks(
     }
 
     for (old_idx, old) in old_state.blocks.iter().enumerate() {
-        if !matched_old.contains(&old_idx) {
+        if !matched_old[old_idx] {
             result.removed.push(old.block_id);
         }
     }
 
     for (new_idx, new_block) in new_parsed.iter().enumerate() {
-        if matched_new.contains(&new_idx) {
+        if matched_new[new_idx] {
             continue;
         }
-        let copy_source = result.matched.iter().find_map(|matched| {
-            let old = old_state
-                .blocks
-                .iter()
-                .find(|b| b.block_id == matched.old_id)?;
+        let mut copy_source = None;
+        // `matches` retains precisely the score/old/new tie-breaking order.
+        // Reuse its old index instead of searching the full old set per match.
+        for (old_idx, _, _) in &matches {
+            let old = &old_state.blocks[*old_idx];
+            charge(
+                old.fingerprint
+                    .tokens
+                    .len()
+                    .saturating_add(new_block.fingerprint.tokens.len())
+                    .saturating_add(1),
+            )?;
             if fingerprint_similarity_int(&old.fingerprint, &new_block.fingerprint)
                 > config.copy_threshold.0
             {
-                Some(matched.old_id)
-            } else {
-                None
+                copy_source = Some(old.block_id);
+                break;
             }
-        });
+        }
         result.added.push(AddedBlock {
             id: block_id_for_unmatched_parsed(new_block, new_idx),
             new_index: new_idx,
@@ -790,7 +999,7 @@ pub fn match_blocks(
         });
     }
 
-    result
+    Ok(result)
 }
 
 /// Deterministic id for a newly observed parsed block (no create OpId yet).
@@ -845,9 +1054,9 @@ fn compute_score(
     total: usize,
 ) -> Score {
     let content_sim = fingerprint_similarity_int(&old.fingerprint, &new.fingerprint);
-    let dist = (old_idx as i64 - new_idx as i64).unsigned_abs() as u32;
-    let total_u = total.max(1) as u32;
-    let position_sim = 10000u32.saturating_sub((dist * 10000) / total_u);
+    let dist = old_idx.abs_diff(new_idx) as u128;
+    let total_u = total.max(1) as u128;
+    let position_sim = 10000u128.saturating_sub((dist * 10000) / total_u) as u32;
 
     let container_score = if old.container_path == new.container_path {
         10000
@@ -1065,7 +1274,7 @@ mod tests {
             },
         ];
 
-        let mapping = match_blocks(&old_state, &new_blocks, &MatchConfig::default());
+        let mapping = match_blocks(&old_state, &new_blocks, &MatchConfig::default()).unwrap();
         assert_eq!(mapping.matched.len(), 2);
         assert!(mapping.matched.iter().any(|m| m.old_id == block_a));
         assert!(mapping.matched.iter().any(|m| m.old_id == block_b));
@@ -1111,8 +1320,8 @@ mod tests {
             container_path: vec![],
             position: 0,
         }];
-        let m1 = match_blocks(&old_state, &new_blocks, &MatchConfig::default());
-        let m2 = match_blocks(&old_state, &new_blocks, &MatchConfig::default());
+        let m1 = match_blocks(&old_state, &new_blocks, &MatchConfig::default()).unwrap();
+        let m2 = match_blocks(&old_state, &new_blocks, &MatchConfig::default()).unwrap();
         assert_eq!(m1.added.len(), 1);
         assert_eq!(m1.added[0].id, m2.added[0].id);
     }

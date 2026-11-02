@@ -274,6 +274,125 @@ fn parsed_frontmatter_ingests_as_collaborative_lossless_state() {
 }
 
 #[test]
+fn initialized_frontmatter_preserves_adopted_crlf_source_through_refresh_and_reopen() {
+    for opaque in [false, true] {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("frontmatter.md");
+        let nested = if opaque {
+            "parent:\r\n  child: value\r\n"
+        } else {
+            ""
+        };
+        let original = format!(
+            "---\r\n# keep\r\ntitle: 'old' # title comment\r\n{nested}untouched: yes # untouched comment\r\n---\r\n\r\nbody\r\n"
+        );
+        fs::write(&path, &original).unwrap();
+        let mut vault = VaultSession::open(dir.path()).unwrap();
+        vault.ingest_all().unwrap();
+        let initialized = vault.session_mut("frontmatter.md").unwrap().state_vector();
+        assert_eq!(
+            vault
+                .session_mut("frontmatter.md")
+                .unwrap()
+                .document()
+                .serialize(EquivalenceMode::Exact),
+            original
+        );
+        vault.ingest_all().unwrap();
+        assert_eq!(
+            vault.session_mut("frontmatter.md").unwrap().state_vector(),
+            initialized
+        );
+        assert_eq!(
+            vault
+                .session_mut("frontmatter.md")
+                .unwrap()
+                .document()
+                .serialize(EquivalenceMode::Exact),
+            original
+        );
+        drop(vault);
+        let mut vault = VaultSession::open(dir.path()).unwrap();
+        assert_eq!(
+            vault
+                .session_mut("frontmatter.md")
+                .unwrap()
+                .document()
+                .serialize(EquivalenceMode::Exact),
+            original
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        if opaque {
+            continue;
+        }
+
+        // An external field edit is adopted as the next exact source baseline.
+        let external = original.replace("'old'", "'external'");
+        fs::write(&path, &external).unwrap();
+        vault.ingest_all().unwrap();
+        assert_eq!(
+            vault
+                .session_mut("frontmatter.md")
+                .unwrap()
+                .document()
+                .serialize(EquivalenceMode::Exact),
+            external
+        );
+        let refreshed = vault.session_mut("frontmatter.md").unwrap().state_vector();
+        vault.ingest_all().unwrap();
+        assert_eq!(
+            vault.session_mut("frontmatter.md").unwrap().state_vector(),
+            refreshed
+        );
+        assert_eq!(
+            vault
+                .session_mut("frontmatter.md")
+                .unwrap()
+                .document()
+                .serialize(EquivalenceMode::Exact),
+            external
+        );
+
+        // A later explicit write must invalidate that source without resetting
+        // base/register versions, while retaining comments and CRLF formatting.
+        vault
+            .session_mut("frontmatter.md")
+            .unwrap()
+            .set_frontmatter_field("title", Some("'local'".into()))
+            .unwrap();
+        let expected = original.replace("'old'", "'local'");
+        assert_eq!(
+            vault
+                .session_mut("frontmatter.md")
+                .unwrap()
+                .document()
+                .serialize(EquivalenceMode::Exact),
+            expected
+        );
+        vault.flush_document("frontmatter.md").unwrap();
+        drop(vault);
+        let mut reopened = VaultSession::open(dir.path()).unwrap();
+        assert_eq!(
+            reopened
+                .session_mut("frontmatter.md")
+                .unwrap()
+                .document()
+                .serialize(EquivalenceMode::Exact),
+            expected
+        );
+        assert_eq!(
+            reopened
+                .session_mut("frontmatter.md")
+                .unwrap()
+                .document()
+                .frontmatter_field("title"),
+            Some("'local'")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), external);
+    }
+}
+
+#[test]
 fn second_ingest_is_noop_when_file_unchanged() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.md"), "stable").unwrap();
@@ -286,6 +405,263 @@ fn second_ingest_is_noop_when_file_unchanged() {
     assert_eq!(r2.files_noop, 1);
     assert_eq!(r2.files_changed, 0);
     assert_eq!(r2.ops_emitted, 0);
+}
+
+#[test]
+fn comment_only_frontmatter_refresh_remains_exact_after_later_field_writes() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("comments.md");
+    let original =
+        "---\r\n# old header\r\ntitle: ready # old inline\r\nuntouched: yes\r\n---\r\n\r\nbody\r\n";
+    fs::write(&path, original).unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    vault.ingest_all().unwrap();
+    let before = vault.session_mut("comments.md").unwrap().state_vector();
+    let refreshed = original
+        .replace("old header", "new header")
+        .replace("old inline", "new inline");
+    fs::write(&path, &refreshed).unwrap();
+    vault.ingest_all().unwrap();
+    assert_eq!(
+        vault.session_mut("comments.md").unwrap().state_vector(),
+        before
+    );
+    assert_eq!(
+        vault
+            .session_mut("comments.md")
+            .unwrap()
+            .document()
+            .serialize(EquivalenceMode::Exact),
+        refreshed
+    );
+    vault.ingest_all().unwrap();
+    drop(vault);
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    assert_eq!(
+        vault
+            .session_mut("comments.md")
+            .unwrap()
+            .document()
+            .serialize(EquivalenceMode::Exact),
+        refreshed
+    );
+    vault
+        .session_mut("comments.md")
+        .unwrap()
+        .set_frontmatter_field("title", Some("edited".into()))
+        .unwrap();
+    let expected = refreshed.replace("title: ready", "title: edited");
+    assert_eq!(
+        vault
+            .session_mut("comments.md")
+            .unwrap()
+            .document()
+            .serialize(EquivalenceMode::Exact),
+        expected
+    );
+    vault.flush_document("comments.md").unwrap();
+    drop(vault);
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    assert_eq!(
+        vault
+            .session_mut("comments.md")
+            .unwrap()
+            .document()
+            .serialize(EquivalenceMode::Exact),
+        expected
+    );
+}
+
+#[test]
+fn external_supported_and_opaque_frontmatter_transitions_remain_source_only() {
+    for initially_opaque in [false, true] {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("transition.md");
+        let structured = "---\r\n# structured\r\ntitle: ready\r\n---\r\n\r\nbody\r\n";
+        let opaque =
+            "---\r\n# opaque\r\ntitle: ready\r\nparent:\r\n  child: value\r\n---\r\n\r\nbody\r\n";
+        let (original, changed) = if initially_opaque {
+            (opaque, structured)
+        } else {
+            (structured, opaque)
+        };
+        fs::write(&path, original).unwrap();
+        let mut vault = VaultSession::open(dir.path()).unwrap();
+        vault.ingest_all().unwrap();
+        let vector = vault.session_mut("transition.md").unwrap().state_vector();
+        for source in [changed, original] {
+            fs::write(&path, source).unwrap();
+            vault.ingest_all().unwrap();
+            assert_eq!(
+                vault.session_mut("transition.md").unwrap().state_vector(),
+                vector
+            );
+            assert_eq!(
+                vault
+                    .session_mut("transition.md")
+                    .unwrap()
+                    .document()
+                    .serialize(EquivalenceMode::Exact),
+                source
+            );
+            // Source adoption must not silently replace the replicated initializer
+            // or enable unsupported mutation of its opaque YAML.
+            assert_eq!(
+                vault
+                    .session_mut("transition.md")
+                    .unwrap()
+                    .document()
+                    .frontmatter
+                    .as_ref()
+                    .unwrap()
+                    .is_structured(),
+                !initially_opaque
+            );
+            vault.ingest_all().unwrap();
+            drop(vault);
+            vault = VaultSession::open(dir.path()).unwrap();
+            assert_eq!(
+                vault
+                    .session_mut("transition.md")
+                    .unwrap()
+                    .document()
+                    .serialize(EquivalenceMode::Exact),
+                source
+            );
+        }
+    }
+}
+
+#[test]
+fn adopted_opaque_source_rejects_local_mutation_and_retains_remote_writes() {
+    use md_crdt::doc::{Frontmatter, FrontmatterError};
+    use md_crdt::session::{CollaborativeDocument, SessionError};
+    use md_crdt::{StateVector, ValidationLimits};
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("opaque.md");
+    let structured = "---\r\n# original\r\ntitle: ready\r\n---\r\n\r\nbody\r\n";
+    let opaque = "---\r\n# opaque adopted\r\ntitle: ready\r\nparent:\r\n  child: retained\r\n---\r\n\r\nbody\r\n";
+    fs::write(&path, structured).unwrap();
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    vault.ingest_all().unwrap();
+    fs::write(&path, opaque).unwrap();
+    vault.ingest_all().unwrap();
+    let session = vault.session_mut("opaque.md").unwrap();
+    let before = session.save_snapshot().unwrap();
+    assert!(matches!(
+        session.set_frontmatter_field("title", Some("not allowed".into())),
+        Err(SessionError::Frontmatter(FrontmatterError::Opaque))
+    ));
+    assert_eq!(session.save_snapshot().unwrap(), before);
+    assert!(
+        session
+            .document()
+            .frontmatter
+            .as_ref()
+            .unwrap()
+            .is_structured()
+    );
+    let writer_peer = if session.peer() == 42 { 43 } else { 42 };
+    let mut writer = CollaborativeDocument::new(writer_peer);
+    writer
+        .set_frontmatter_field("title", Some("remote hidden".into()))
+        .unwrap();
+    session
+        .apply_remote(
+            writer.encode_changes_since(&StateVector::new()).unwrap(),
+            &ValidationLimits::default(),
+        )
+        .unwrap();
+    assert_eq!(session.document().serialize(EquivalenceMode::Exact), opaque);
+    // The global supported register does receive the write; only the source-local
+    // Exact view is opaque/read-only. This is not a replicated base transition.
+    assert_eq!(
+        session.document().frontmatter_field("title"),
+        Some("remote hidden")
+    );
+    vault.flush_document("opaque.md").unwrap();
+    drop(vault);
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    let session = vault.session_mut("opaque.md").unwrap();
+    assert_eq!(session.document().serialize(EquivalenceMode::Exact), opaque);
+    assert_eq!(
+        session.document().frontmatter_field("title"),
+        Some("remote hidden")
+    );
+    let before = session.save_snapshot().unwrap();
+    assert!(matches!(
+        session.set_frontmatter_field("title", Some("still not allowed".into())),
+        Err(SessionError::Frontmatter(FrontmatterError::Opaque))
+    ));
+    assert_eq!(session.save_snapshot().unwrap(), before);
+
+    // A new winning initializer invalidates only the source baseline, retaining
+    // the independently received explicit title write.
+    let mut fork = CollaborativeDocument::restore_from_snapshot(before).unwrap();
+    let init_peer = if writer_peer == 44 || session.peer() == 44 {
+        45
+    } else {
+        44
+    };
+    let mut initializer = CollaborativeDocument::new(init_peer);
+    for _ in 0..16 {
+        initializer.set_frontmatter_field("advance", None).unwrap();
+    }
+    initializer
+        .initialize_frontmatter(Frontmatter::parse("# new base\ntitle: seed".into()))
+        .unwrap();
+    fork.apply_remote(
+        initializer
+            .encode_changes_since(&StateVector::new())
+            .unwrap(),
+        &ValidationLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        fork.document().frontmatter_field("title"),
+        Some("remote hidden")
+    );
+    assert!(
+        fork.document()
+            .serialize(EquivalenceMode::Exact)
+            .contains("# new base")
+    );
+    assert!(
+        !fork
+            .document()
+            .serialize(EquivalenceMode::Exact)
+            .contains("child: retained")
+    );
+
+    // A genuinely parsed structured refresh may pass the internal ingress-only
+    // validation path even though the previous source baseline was opaque.
+    let adopted = "---\r\n# supported again\r\ntitle: external supported\r\n---\r\n\r\nbody\r\n";
+    fs::write(&path, adopted).unwrap();
+    vault.ingest_all().unwrap();
+    let session = vault.session_mut("opaque.md").unwrap();
+    assert_eq!(
+        session.document().serialize(EquivalenceMode::Exact),
+        adopted
+    );
+    session
+        .set_frontmatter_field("title", Some("local supported".into()))
+        .unwrap();
+    let expected = adopted.replace("external supported", "local supported");
+    assert_eq!(
+        session.document().serialize(EquivalenceMode::Exact),
+        expected
+    );
+    vault.flush_document("opaque.md").unwrap();
+    drop(vault);
+    let mut vault = VaultSession::open(dir.path()).unwrap();
+    assert_eq!(
+        vault
+            .session_mut("opaque.md")
+            .unwrap()
+            .document()
+            .serialize(EquivalenceMode::Exact),
+        expected
+    );
 }
 
 #[test]
@@ -661,4 +1037,221 @@ fn ingest_quote_inner_text_edit_preserves_quote_and_lcs_units() {
         }
         _ => panic!("quote"),
     }
+}
+
+#[test]
+fn repeated_grapheme_refresh_preserves_retained_anchors_and_projects_only_their_marks() {
+    use md_crdt::doc::paragraph_visible_ids;
+    use md_crdt::{Anchor, AnchorBias, TextPoint, TextPosition, WorkspaceTargetError};
+
+    for (initial, updated, retained_new, expected_markdown) in [
+        ("a**a**", "a", 0, "**a**"),
+        ("a**b**", "bb", 1, "b**b**"),
+        ("e\u{301}**e\u{301}**", "e\u{301}", 0, "**e\u{301}**"),
+        ("**a**b", "ba", 0, "ba"),
+    ] {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, initial).unwrap();
+        let mut vault = VaultSession::open(directory.path()).unwrap();
+        vault.ingest_all().unwrap();
+        let (block_id, old_ids) = {
+            let document = vault.session_mut("note.md").unwrap().document();
+            let block = document.blocks_in_order()[0];
+            let BlockKind::Paragraph { text } = &block.kind else {
+                panic!("paragraph expected")
+            };
+            (block.id, paragraph_visible_ids(text))
+        };
+        let point = |unit| TextPoint {
+            block_id,
+            position: TextPosition::Unit(Anchor {
+                elem_id: unit,
+                bias: AnchorBias::Before,
+            }),
+        };
+        let retained_anchor = point(old_ids[1]);
+        let deleted_anchor = point(old_ids[0]);
+        fs::write(&path, updated).unwrap();
+        vault.refresh_markdown("note.md", None, None).unwrap();
+        let document = vault.session_mut("note.md").unwrap().document();
+        let block = document.find_block_by_id(block_id).unwrap();
+        let BlockKind::Paragraph { text } = &block.kind else {
+            panic!("paragraph expected")
+        };
+        let ids = paragraph_visible_ids(text);
+        assert_eq!(paragraph_visible_string(text), updated);
+        assert_eq!(ids[retained_new], old_ids[1]);
+        assert!(!ids.contains(&old_ids[0]));
+        assert_eq!(
+            document.resolve_text_point(&retained_anchor).unwrap(),
+            retained_new
+        );
+        assert!(matches!(
+            document.resolve_text_point(&deleted_anchor),
+            Err(WorkspaceTargetError::DeletedAnchor { .. })
+        ));
+        assert_eq!(
+            document.serialize(EquivalenceMode::Structural),
+            expected_markdown
+        );
+    }
+}
+
+#[test]
+fn long_local_refresh_preserves_exact_units_marks_and_anchors() {
+    use md_crdt::doc::paragraph_visible_ids;
+    use md_crdt::{Anchor, AnchorBias, TextPoint, TextPosition, WorkspaceTargetError};
+
+    for scenario in [
+        "unique_end_substitute",
+        "unicode_middle_insert",
+        "repeated_delete",
+    ] {
+        let before = match scenario {
+            "unique_end_substitute" => (0..2_001)
+                .map(|i| char::from_u32(0xf0000 + i).unwrap())
+                .collect::<String>(),
+            "unicode_middle_insert" => ["e\u{301}", "👩\u{200d}💻", "🇺🇸", "🧑🏽\u{200d}🚀", "界"]
+                .into_iter()
+                .cycle()
+                .take(2_001)
+                .collect::<String>(),
+            "repeated_delete" => "e\u{301}".repeat(2_001),
+            _ => unreachable!(),
+        };
+        let old = md_crdt::filesync::graphemes_of(&before);
+        let initial = format!(
+            "{}**{}**{}",
+            old[..1_000].concat(),
+            old[1_000],
+            old[1_001..].concat()
+        );
+        let mut new = old.clone();
+        let (marked_new, deleted_old) = match scenario {
+            "unique_end_substitute" => {
+                new[2_000] = "§";
+                (1_000, Some(2_000))
+            }
+            "unicode_middle_insert" => {
+                new.insert(1_000, "§");
+                (1_001, None)
+            }
+            "repeated_delete" => {
+                new.remove(0);
+                (999, Some(0))
+            }
+            _ => unreachable!(),
+        };
+        let updated = new.concat();
+        let expected_markdown = format!(
+            "{}**{}**{}",
+            new[..marked_new].concat(),
+            new[marked_new],
+            new[marked_new + 1..].concat()
+        );
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("note.md");
+        fs::write(&path, initial).unwrap();
+        let mut vault = VaultSession::open(directory.path()).unwrap();
+        vault.ingest_all().unwrap();
+        let (block_id, old_ids) = {
+            let document = vault.session_mut("note.md").unwrap().document();
+            let block = document.blocks_in_order()[0];
+            let BlockKind::Paragraph { text } = &block.kind else {
+                panic!("paragraph expected")
+            };
+            (block.id, paragraph_visible_ids(text))
+        };
+        let point = |unit| TextPoint {
+            block_id,
+            position: TextPosition::Unit(Anchor {
+                elem_id: unit,
+                bias: AnchorBias::Before,
+            }),
+        };
+        fs::write(&path, &updated).unwrap();
+        vault.refresh_markdown("note.md", None, None).unwrap();
+        let document = vault.session_mut("note.md").unwrap().document();
+        assert_eq!(document.blocks_in_order().len(), 1);
+        let block = document.find_block_by_id(block_id).unwrap();
+        let BlockKind::Paragraph { text } = &block.kind else {
+            panic!("paragraph expected")
+        };
+        let ids = paragraph_visible_ids(text);
+        assert_eq!(paragraph_visible_string(text), updated);
+        match scenario {
+            "unique_end_substitute" => {
+                assert_eq!(&ids[..2_000], &old_ids[..2_000]);
+                assert!(!old_ids.contains(&ids[2_000]));
+            }
+            "unicode_middle_insert" => {
+                assert_eq!(&ids[..1_000], &old_ids[..1_000]);
+                assert!(!old_ids.contains(&ids[1_000]));
+                assert_eq!(&ids[1_001..], &old_ids[1_000..]);
+            }
+            "repeated_delete" => assert_eq!(ids, old_ids[1..]),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            document.resolve_text_point(&point(old_ids[1_000])).unwrap(),
+            marked_new
+        );
+        if let Some(deleted) = deleted_old {
+            assert!(matches!(
+                document.resolve_text_point(&point(old_ids[deleted])),
+                Err(WorkspaceTargetError::DeletedAnchor { .. })
+            ));
+        }
+        assert_eq!(
+            document.serialize(EquivalenceMode::Structural),
+            expected_markdown
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), updated);
+    }
+}
+
+#[test]
+fn dissimilar_long_refresh_refusal_preserves_live_snapshot_anchors_and_edited_disk() {
+    use md_crdt::doc::paragraph_visible_ids;
+    use md_crdt::filesync::VaultError;
+    use md_crdt::limits::InputLimitError;
+    use md_crdt::{Anchor, AnchorBias, TextPoint, TextPosition};
+
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("note.md");
+    let before = "x".repeat(5_000);
+    let edited = "y".repeat(5_000);
+    fs::write(&path, &before).unwrap();
+    let mut vault = VaultSession::open(directory.path()).unwrap();
+    vault.ingest_all().unwrap();
+    let session = vault.session_mut("note.md").unwrap();
+    let snapshot = session.save_snapshot().unwrap().to_bytes().unwrap();
+    let block = session.document().blocks_in_order()[0];
+    let BlockKind::Paragraph { text } = &block.kind else {
+        panic!("paragraph expected")
+    };
+    let anchor = TextPoint {
+        block_id: block.id,
+        position: TextPosition::Unit(Anchor {
+            elem_id: paragraph_visible_ids(text)[0],
+            bias: AnchorBias::Before,
+        }),
+    };
+    fs::write(&path, &edited).unwrap();
+    assert!(matches!(
+        vault.refresh_markdown("note.md", None, None),
+        Err(VaultError::InputLimit(InputLimitError::DiffWork))
+    ));
+    let session = vault.session_mut("note.md").unwrap();
+    assert_eq!(
+        session.save_snapshot().unwrap().to_bytes().unwrap(),
+        snapshot
+    );
+    assert_eq!(
+        session.document().serialize(EquivalenceMode::Structural),
+        before
+    );
+    assert_eq!(session.document().resolve_text_point(&anchor).unwrap(), 0);
+    assert_eq!(fs::read_to_string(&path).unwrap(), edited);
 }

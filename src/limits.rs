@@ -1,8 +1,13 @@
-//! Resource bounds applied before file ingestion or untrusted Markdown parsing.
+//! Shared resource bounds for durable sessions and untrusted Markdown ingestion.
 
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
+
+/// Durable session pending ceiling, shared by admission and snapshot validation.
+pub const MAX_DURABLE_PENDING_OPERATIONS: usize = 100_000;
+/// Durable retained raw/decoded charge ceiling (not allocator or RSS bytes).
+pub const MAX_DURABLE_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 
 /// Maximum Markdown input size (4 MiB), before CRDT expansion.
 pub const MAX_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -12,6 +17,12 @@ pub const MAX_QUOTE_DEPTH: usize = 64;
 pub const MAX_INDENT_BYTES: usize = 256;
 /// Maximum inline delimiter bytes between blank source lines, bounding mark work.
 pub const MAX_INLINE_DELIMITERS: usize = 16_384;
+/// Maximum lexical table width before allocating cell or column metadata.
+pub const MAX_TABLE_COLUMNS: usize = 1_024;
+/// Maximum consecutive table-like source rows (including header and delimiter).
+pub const MAX_TABLE_ROWS: usize = 16_384;
+/// Maximum rectangular table cells across one input, bounding expansion and work.
+pub const MAX_TABLE_CELLS: usize = 262_144;
 
 /// A source input exceeds a supported resource budget.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -19,12 +30,15 @@ pub enum InputLimitError {
     /// Source byte budget exceeded.
     #[error("Markdown exceeds the {MAX_MARKDOWN_BYTES}-byte input limit")]
     Bytes,
-    /// Quadratic text alignment would exceed the work budget.
-    #[error("text alignment exceeds the 4,000,000-cell work limit")]
+    /// Text alignment would exceed its work or allocation budget.
+    #[error("text alignment exceeds the work or allocation limit")]
     DiffWork,
     /// Inline mark parsing would exceed the source work budget.
     #[error("Markdown exceeds the inline syntax work budget")]
     InlineWork,
+    /// Table dimensions or rectangular expansion exceed the supported work budget.
+    #[error("Markdown exceeds the table expansion work budget")]
+    TableWork,
     /// Source nesting budget exceeded.
     #[error("Markdown exceeds the nesting budget at line {line}")]
     Nesting {
@@ -45,7 +59,31 @@ pub fn validate_markdown(markdown: &str) -> Result<(), InputLimitError> {
     let mut brackets = 0usize;
     let mut paragraph_bytes = 0usize;
     let mut completed_work = 0usize;
+    let mut table_width = 0usize;
+    let mut table_rows = 0usize;
+    let mut completed_table_cells = 0usize;
     for (index, line) in markdown.lines().enumerate() {
+        // Conservative lexical accounting also covers nested and fenced source.
+        // Count before semantic parsing allocates per-cell strings or CRDT nodes.
+        let pipes = line.bytes().filter(|byte| *byte == b'|').count();
+        if pipes > 0 {
+            let trimmed = line.trim();
+            let width = pipes + 1
+                - usize::from(trimmed.starts_with('|'))
+                - usize::from(trimmed.ends_with('|') && pipes > 1);
+            table_width = table_width.max(width);
+            table_rows += 1;
+            if table_width > MAX_TABLE_COLUMNS || table_rows > MAX_TABLE_ROWS {
+                return Err(InputLimitError::TableWork);
+            }
+        } else {
+            completed_table_cells += table_width * table_rows;
+            table_width = 0;
+            table_rows = 0;
+        }
+        if completed_table_cells + table_width * table_rows > MAX_TABLE_CELLS {
+            return Err(InputLimitError::TableWork);
+        }
         if line.trim().is_empty() {
             completed_work =
                 completed_work.saturating_add(paragraph_bytes.saturating_mul(delimiters));

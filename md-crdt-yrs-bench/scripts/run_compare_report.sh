@@ -100,6 +100,55 @@ else
 fi
 POWER_MODE="${COMPARE_POWER_MODE:-unknown}"
 
+# Preserve the inputs Cargo uses to resolve code generation, including inherited
+# config and environment overrides. Never copy registry credentials into reports.
+export ROOT TARGET_TRIPLE OUT_DIR
+python3 - <<'PY'
+import hashlib, json, os, subprocess, tomllib
+from pathlib import Path
+
+root = Path(os.environ["ROOT"])
+def flag_key(key):
+    return key in {"RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"} or key.startswith(("CARGO_PROFILE_", "CARGO_BUILD_", "CARGO_TARGET_"))
+environment = {key: value for key, value in os.environ.items() if flag_key(key)}
+candidates = []
+for parent in [root, *root.parents]:
+    candidates.extend([parent / ".cargo/config", parent / ".cargo/config.toml"])
+cargo_home = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")))
+candidates.extend([cargo_home / "config", cargo_home / "config.toml"])
+configs, seen = [], set()
+for path in candidates:
+    if not path.is_file() or path.resolve() in seen:
+        continue
+    seen.add(path.resolve())
+    raw = path.read_bytes()
+    data = tomllib.loads(raw.decode())
+    configs.append({
+        "path": str(path),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "settings": {key: data[key] for key in ("build", "target", "profile") if key in data},
+        "flag_environment": {key: value for key, value in data.get("env", {}).items() if flag_key(key)},
+    })
+metadata = json.loads(subprocess.check_output([
+    "cargo", "metadata", "--manifest-path", "md-crdt-yrs-bench/Cargo.toml",
+    "--locked", "--format-version", "1", "--filter-platform", os.environ["TARGET_TRIPLE"],
+], text=True))
+context = {
+    "profile": "bench",
+    "manifest_profiles": {
+        name: tomllib.loads((root / name).read_text()).get("profile", {})
+        for name in ("Cargo.toml", "md-crdt-yrs-bench/Cargo.toml")
+    },
+    "environment": environment,
+    "cargo_configs": configs,
+    "resolved_features": [
+        {"package": node["id"], "features": node["features"]}
+        for node in metadata["resolve"]["nodes"]
+    ],
+}
+(Path(os.environ["OUT_DIR"]) / "build-context.json").write_text(json.dumps(context, indent=2) + "\n")
+PY
+
 INV_FILE="$(mktemp)"
 trap 'rm -f "$INV_FILE"' EXIT
 echo '[]' >"$INV_FILE"
@@ -161,7 +210,7 @@ stamp = os.environ["STAMP"]
 timestamp = f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}T{stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]}Z"
 invocations = json.loads(Path(os.environ["INV_FILE"]).read_text())
 provenance = {
-    "schema_version": 1,
+    "schema_version": 2,
     "clean_worktree": os.environ["CLEAN_WORKTREE"] == "true",
     "git_commit": os.environ["GIT_COMMIT"],
     "root_lockfile_sha256": os.environ["ROOT_LOCK_SHA"],
@@ -188,6 +237,7 @@ provenance = {
     "batch_policy": "LargeInput",
     "timestamp_utc": timestamp,
     "output_dir": os.environ["OUT_DIR"],
+    "build_context": json.loads((Path(os.environ["OUT_DIR"]) / "build-context.json").read_text()),
     "invocations": invocations,
 }
 out = Path(os.environ["OUT_DIR"])
@@ -243,7 +293,7 @@ required = [
     "yrs_text_root", "yrs_offset_kind", "yrs_skip_gc", "md_crdt_peer_ids",
     "yrs_client_ids", "md_crdt_wire_codec", "yrs_wire_codec",
     "host_triple", "target_triple", "os", "cpu_model", "power_mode",
-    "batch_policy", "timestamp_utc", "output_dir", "invocations",
+    "batch_policy", "timestamp_utc", "output_dir", "build_context", "invocations",
 ]
 inv_required = [
     "index", "engine_order", "baseline_name", "command",
@@ -277,7 +327,10 @@ for i, inv in enumerate(invocations):
 o0, o1, o2 = (invocations[j]["engine_order"] for j in range(3))
 if o0 == o1 or o1 == o2:
     raise SystemExit("engine_order must alternate across first three runs")
-print("provenance schema ok")
+print("provenance schema ok; citable=" + str(
+    provenance["clean_worktree"] and len(invocations) >= 3
+    and all(inv["status"] == "ok" for inv in invocations)
+).lower())
 PY
 
 echo "Report complete: $OUT_DIR"

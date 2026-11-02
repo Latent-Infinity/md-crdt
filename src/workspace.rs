@@ -766,7 +766,7 @@ pub enum StructuredEditError {
     Bytes { max_bytes: usize },
     #[error("heading level must be in 1..=6")]
     HeadingLevel,
-    #[error("code fence length must be at least three and exceed marker runs in its body")]
+    #[error("code fence length must be at least three and its body cannot contain a closing fence")]
     CodeFence,
     #[error(
         "code fence info must be a single line and cannot contain backticks for backtick fences"
@@ -864,21 +864,11 @@ pub(crate) fn validate_code_fence(
     info: Option<&str>,
     text: &str,
 ) -> Result<(), StructuredEditError> {
-    let marker = match style.marker {
-        crate::doc::FenceMarker::Backtick => '`',
-        crate::doc::FenceMarker::Tilde => '~',
-    };
-    let longest = text
-        .lines()
-        .map(|line| {
-            line.trim()
-                .chars()
-                .take_while(|character| *character == marker)
-                .count()
-        })
-        .max()
-        .unwrap_or(0);
-    if style.length < 3 || usize::from(style.length) <= longest {
+    if style.length < 3
+        || text
+            .lines()
+            .any(|line| crate::doc::is_fence_close(line.trim(), style))
+    {
         return Err(StructuredEditError::CodeFence);
     }
     if info.is_some_and(|info| {
@@ -1425,10 +1415,16 @@ impl Document {
             revision,
             items: Vec::with_capacity(request.max_items.min(request.block_ids.len() - offset)),
             omitted_ids: Vec::new(),
-            continuation: projection_continuation(request_digest, offset, request.block_ids.len()),
+            continuation: None,
             bytes_used: 0,
         };
-        stabilize_projection_bytes(&mut page)?;
+        // Measure the fixed envelope once; thereafter only each new item and
+        // the small continuation/self-size fields need serialization.
+        let envelope_bytes = serialized_json_len(&page)?;
+        page.continuation =
+            projection_continuation(request_digest, offset, request.block_ids.len());
+        let mut content_bytes = 0usize;
+        stabilize_projection_bytes(&mut page, envelope_bytes, content_bytes)?;
         if page.bytes_used > request.max_bytes {
             return Err(ProjectionError::PageTooLarge {
                 block_id: request.block_ids.get(offset).copied(),
@@ -1447,25 +1443,33 @@ impl Document {
                 .map(|node| self.project_node(node, request.fields))
                 .transpose()?;
             let found = projection.is_some();
+            let added_bytes = match &projection {
+                Some(projection) => {
+                    serialized_json_len(projection)? + usize::from(!page.items.is_empty())
+                }
+                None => serialized_json_len(&block_id)? + usize::from(!page.omitted_ids.is_empty()),
+            };
             match projection {
                 Some(projection) => page.items.push(projection),
                 None => page.omitted_ids.push(block_id),
             }
+            content_bytes += added_bytes;
             index += 1;
             page.continuation =
                 projection_continuation(request_digest, index, request.block_ids.len());
-            stabilize_projection_bytes(&mut page)?;
+            stabilize_projection_bytes(&mut page, envelope_bytes, content_bytes)?;
             if page.bytes_used > request.max_bytes {
                 if found {
                     page.items.pop();
                 } else {
                     page.omitted_ids.pop();
                 }
+                content_bytes -= added_bytes;
                 index -= 1;
                 page.continuation =
                     projection_continuation(request_digest, index, request.block_ids.len());
                 let required_bytes = page.bytes_used;
-                stabilize_projection_bytes(&mut page)?;
+                stabilize_projection_bytes(&mut page, envelope_bytes, content_bytes)?;
                 if processed == 0 {
                     return Err(ProjectionError::ItemTooLarge {
                         block_id,
@@ -1478,7 +1482,7 @@ impl Document {
             processed += 1;
         }
         page.continuation = projection_continuation(request_digest, index, request.block_ids.len());
-        stabilize_projection_bytes(&mut page)?;
+        stabilize_projection_bytes(&mut page, envelope_bytes, content_bytes)?;
         Ok(page)
     }
 
@@ -2154,11 +2158,49 @@ fn projection_continuation(
 }
 
 #[cfg(feature = "filesync")]
-fn stabilize_projection_bytes(page: &mut ProjectionPage) -> Result<(), ProjectionError> {
+fn serialized_json_len(value: &impl Serialize) -> Result<usize, ProjectionError> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or_else(|| std::io::Error::other("serialized size overflow"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value).map_err(|_| ProjectionError::Serialization)?;
+    Ok(counter.0)
+}
+
+#[cfg(feature = "filesync")]
+fn stabilize_projection_bytes(
+    page: &mut ProjectionPage,
+    envelope_bytes: usize,
+    content_bytes: usize,
+) -> Result<(), ProjectionError> {
+    // The envelope was measured with empty collections, a null continuation
+    // (four bytes), and a one-digit bytes_used field.
+    let continuation_bytes = serialized_json_len(&page.continuation)?;
+    // The caller supplies the fixed envelope with a null continuation.
+    let fixed = envelope_bytes
+        .checked_add(content_bytes)
+        .and_then(|bytes| bytes.checked_sub(5))
+        .and_then(|bytes| bytes.checked_add(continuation_bytes))
+        .ok_or(ProjectionError::Serialization)?;
     for _ in 0..usize::BITS {
-        let bytes = serde_json::to_vec(page)
-            .map_err(|_| ProjectionError::Serialization)?
-            .len();
+        let digits = if page.bytes_used == 0 {
+            1
+        } else {
+            page.bytes_used.ilog10() as usize + 1
+        };
+        let bytes = fixed
+            .checked_add(digits)
+            .ok_or(ProjectionError::Serialization)?;
         if bytes == page.bytes_used {
             return Ok(());
         }
@@ -2715,26 +2757,27 @@ fn descriptor_content_changed(old: &BlockDescriptor, new: &BlockDescriptor) -> b
 
 #[cfg(feature = "filesync")]
 fn reordered_ids(before: &DocumentOutline, after: &DocumentOutline) -> BTreeSet<BlockId> {
-    let parents: BTreeSet<_> = before
-        .entries
-        .values()
-        .chain(after.entries.values())
-        .map(|entry| entry.descriptor.parent)
+    fn grouped(outline: &DocumentOutline) -> BTreeMap<Option<BlockId>, Vec<(u32, BlockId)>> {
+        let mut parents: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for entry in outline.entries.values() {
+            parents
+                .entry(entry.descriptor.parent)
+                .or_default()
+                .push((entry.descriptor.order, entry.descriptor.id));
+        }
+        parents
+    }
+    let mut before_by_parent = grouped(before);
+    let mut after_by_parent = grouped(after);
+    let parents: BTreeSet<_> = before_by_parent
+        .keys()
+        .chain(after_by_parent.keys())
+        .copied()
         .collect();
     let mut moved = BTreeSet::new();
     for parent in parents {
-        let mut old: Vec<_> = before
-            .entries
-            .values()
-            .filter(|entry| entry.descriptor.parent == parent)
-            .map(|entry| (entry.descriptor.order, entry.descriptor.id))
-            .collect();
-        let mut new: Vec<_> = after
-            .entries
-            .values()
-            .filter(|entry| entry.descriptor.parent == parent)
-            .map(|entry| (entry.descriptor.order, entry.descriptor.id))
-            .collect();
+        let mut old = before_by_parent.remove(&parent).unwrap_or_default();
+        let mut new = after_by_parent.remove(&parent).unwrap_or_default();
         old.sort_unstable();
         new.sort_unstable();
         let old_positions: BTreeMap<_, _> = old

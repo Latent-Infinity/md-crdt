@@ -36,6 +36,10 @@ path = "fuzz_targets/merge_convergence.rs"
 name = "decode_binary_wire"
 path = "fuzz_targets/decode_binary_wire.rs"
 
+[[bin]]
+name = "snapshot_restore"
+path = "fuzz_targets/snapshot_restore.rs"
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unused_must_use = "deny"

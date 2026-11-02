@@ -157,8 +157,12 @@ cargo deny --manifest-path md-crdt-yrs-bench/Cargo.toml check --config md-crdt-y
 
 ## Sub-probes and flamegraphs (md-crdt only)
 
-Optional feature `sub_probes` enables product `perf_trace` and builds exclusive-span
-attribution helpers. **Never ratio these against Yrs.**
+Optional feature `sub_probes` enables product `perf_trace` attribution helpers.
+Timers record completed closure durations without subtracting nested spans.
+Shares use the sum of recorded durations, not an exclusive partition of wall time;
+the displayed wall measurement uses a separate run. `apply_integrate` counts
+committed wire operations, including deferred effects, not expanded document nodes.
+**Never ratio these against Yrs.**
 
 ```bash
 # Print span tables for insert_middle n∈{1k,10k} and apply_remote k=100
@@ -169,7 +173,7 @@ cargo run --manifest-path md-crdt-yrs-bench/Cargo.toml --example sub_probes --fe
 # Select only one probe family (used by the flamegraph recipes)
 cargo run --manifest-path md-crdt-yrs-bench/Cargo.toml --example sub_probes --features sub_probes --release --locked -- insert
 
-# Tests for sub-probe wiring
+# Run the nested suite with attribution support enabled
 cargo test --manifest-path md-crdt-yrs-bench/Cargo.toml --features sub_probes --locked
 
 # Flamegraph (requires cargo-flamegraph; host-dependent)
@@ -217,7 +221,8 @@ Use `just bench-compare-report` (or the script). It requires a clean worktree by
 
 | File | Contents |
 | --- | --- |
-| `provenance.json` | Schema-validated sidecar (commit, lockfiles, dependencies, frozen Yrs/peer/codec settings, toolchain, host, invocations, …) |
+| `provenance.json` | V2 sidecar: successful invocations, commit/lockfiles, dependencies, frozen Yrs/peer/codec settings, toolchain/host, and build context |
+| `build-context.json` | Bench profile inputs, manifest profile tables, flag-related environment overrides, inherited Cargo configuration and resolved package features |
 | `report.md` | Human summary pointing at baselines and interpretation rules |
 
 Raw Criterion data remains under `md-crdt-yrs-bench/target/criterion/` and is **not** committed.
@@ -225,6 +230,11 @@ Report directories under `report-out/` are generated on demand and **not** commi
 
 Schema keys are defined in `src/report.rs` (`PROVENANCE_REQUIRED_KEYS`) and checked by unit tests
 against `tests/fixtures/provenance_valid.json`.
+
+Citation validation requires every invocation status to be `ok`; dry-run and failed records
+remain diagnostic artifacts only. Configuration capture omits registry credentials. The nested
+workspace's profile controls these measurements; the root profile is recorded as context, not
+silently applied. Preserve both sidecars and raw Criterion estimates when citing results.
 
 ## Layout
 

@@ -277,3 +277,40 @@ fn export_publishes_into_a_nested_subdirectory() {
     // Temp file for the subdirectory write is cleaned up.
     assert!(!dir.path().join("projects/.alpha.md.md-crdt.tmp").exists());
 }
+
+#[test]
+fn moved_block_edit_is_exact_and_exported_after_reopen() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("note.md");
+    fs::write(&path, "alpha\n\nbeta\n").unwrap();
+    let mut vault = VaultSession::open(directory.path()).unwrap();
+    vault.open_document("note.md").unwrap();
+    let beta = vault
+        .session_mut("note.md")
+        .unwrap()
+        .document()
+        .blocks_in_order()[1]
+        .id;
+    vault
+        .with_local_edit("note.md", |session| {
+            session.move_block(beta, None, None).unwrap();
+            session.insert_text(beta, 0, "X").unwrap();
+        })
+        .unwrap();
+    vault.flush_document("note.md").unwrap();
+    drop(vault);
+    let mut vault = VaultSession::open(directory.path()).unwrap();
+    let handle = vault.open_document("note.md").unwrap();
+    assert_eq!(
+        vault
+            .session_mut("note.md")
+            .unwrap()
+            .document()
+            .serialize(md_crdt::EquivalenceMode::Exact),
+        "Xbeta\n\nalpha\n",
+    );
+    vault
+        .export_markdown("note.md", &handle.revision, handle.disk_fingerprint)
+        .unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "Xbeta\n\nalpha\n");
+}

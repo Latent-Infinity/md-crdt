@@ -42,10 +42,7 @@ pub fn lower_remove_mark_range(
     }
     removed.push(interval_id);
 
-    let base = mark_set
-        .active_intervals()
-        .into_iter()
-        .find(|i| i.id == interval_id);
+    let base = mark_set.interval(&interval_id);
     let Some(interval) = base else {
         return (new_intervals, removed);
     };

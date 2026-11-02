@@ -15,7 +15,7 @@ md-crdt is a Rust library and CLI for offline-first, deterministic collaboration
 
 **Workspace Layout**
 
-- `md-crdt`: Primary library crate (modules: `core`, `doc`, `sync`; features: `storage`, `filesync`, default-off `sequence_incremental`, and diagnostic `perf_trace`) and bundled CLI binary (`src/bin/md-crdt.rs`).
+- `md-crdt`: Primary library crate (modules: `core`, `doc`, `sync`; default features: `storage`, `filesync`, `cli`; default-off `sequence_incremental` and diagnostic `perf_trace`) and bundled CLI binary (`src/bin/md-crdt.rs`).
 - `md-crdt-ffi`: Reserved workspace placeholder. It is not published and does not expose a C ABI or supported language bindings; Rust consumers should use `md-crdt` directly.
 - `md-crdt-naive-oracle`: Unpublished reference implementation used for differential testing.
 
@@ -23,10 +23,10 @@ md-crdt is a Rust library and CLI for offline-first, deterministic collaboration
 
 | Knob | Recommendation | Why |
 | --- | --- | --- |
-| Cargo features | Keep defaults (`storage` + `filesync`). Optional: `sequence_incremental` for soak/ablation; `perf_trace` for diagnostics only | Defaults match product vault path |
-| Text inserts | Prefer `insert_text` / `insert_text_batch` with the full known run, not one public call per keystroke | One envelope + chain apply; large win vs M commits |
-| Vault edits | Use `with_local_edit` when each call must be durable; use `apply_local_edit` + `flush_document` to batch N edits into one write | Product latency is dominated by snapshot I/O |
-| History growth | Call `checkpoint_history` with a modest `max_retained_ops` and accurate active-peer leases on long sessions | Shrinks snapshot/op-log RSS; omitted peers must rebase |
+| Cargo features | Defaults include `storage`, `filesync`, and `cli`. Library-only consumers can disable defaults and select `storage`/`filesync` without pulling in CLI parsing. Optional: `sequence_incremental` for ablation; `perf_trace` for diagnostics | Default CLI behavior is unchanged |
+| Text inserts | Prefer `insert_text` / `insert_text_batch` with the full known run, not one public call per keystroke | Coalesces a known run into one envelope |
+| Vault edits | Use `with_local_edit` when each call must be durable; use `apply_local_edit` + `flush_document` to batch edits | Makes the persistence boundary explicit |
+| History growth | Call `checkpoint_history` with a modest `max_retained_ops` and accurate active-peer leases on long sessions | Prunes transport payload history only; structural history remains and omitted peers must rebase |
 | Wire codec | JSON envelopes default; opt into `md_crdt_bin_v1` only when both peers agree | Binary is compact; not the snapshot format |
 | Text representation | Per-grapheme units (stable OpIds) | Run-length packing is deferred |
 
@@ -171,8 +171,10 @@ call returns. For explicit batching, `apply_local_edit` changes only the in-memo
 When several already-known text runs belong at one position, `CollaborativeDocument::insert_text_batch`
 concatenates them into one grapheme-safe wire envelope; use ordinary `insert_text` when edits must
 remain separate or may be interleaved with other operations.
-`compact_document` forces a full snapshot. Normal flushes append bounded operation segments between
-periodic full snapshots, and reopen replays those segments before exposing the document.
+`compact_document` forces a full snapshot. Normal flushes append operation segments only when
+the reader's complete replay-admission contract is provable, including dependency progress and
+retained-resource budgets; otherwise they fall back to a full snapshot. Reopen replays segments
+before reconciling the local operation clock.
 `save_all_state` flushes every open session. None of these methods publishes Markdown.
 `export_markdown` publishes one source-preserving Markdown view with revision and optional
 disk-fingerprint preconditions.
@@ -180,6 +182,26 @@ disk-fingerprint preconditions.
 fingerprints before publishing any of them, then uses a durable recovery journal so an interrupted
 commit is completed when the vault reopens. `create_markdown`, `rename_markdown`, and
 `delete_markdown` provide the corresponding identity-aware file lifecycle operations.
+
+Storage mutations require externally serialized ownership across handles and processes.
+V2 snapshots now carry checksummed operation-coverage sidecars and an `operations.manifest`;
+retired generations remain available while either snapshot slot needs them for fallback.
+After adopting this generation layout, do not reopen or write the store with an older binary
+that does not understand the manifest. The outer storage/compression framing is unchanged;
+the session JSON format is now V10.
+Close and reopen a vault after external modification of its storage artifacts.
+
+Recovery validates the entire journal set and its generated pending/backup paths before
+applying any transaction. This is local safety hardening, not a change to the trusted-peer /
+trusted-local-disk threat model. Existing file permissions are preserved during publication.
+Persistence and publication use file sync and, on Unix, directory sync around replacement.
+Recovery and fault-injection tests exercise those code paths; they do not establish behavior
+under actual power loss or guarantee a filesystem/device's persistence semantics. Directory
+sync is not implemented on non-Unix platforms.
+
+`match_blocks` and `Vault::match_blocks` return `Result<BlockMapping, VaultError>` so candidate
+work or edge-budget refusal cannot be mistaken for a successful match. `VaultError::Session`
+and `Snapshot` retain their typed causes; recoverable transactions retain a boxed `VaultError`.
 
 Before accepting disk as authoritative, inspect the metadata-only state without opening a session:
 
@@ -227,25 +249,60 @@ on the versioned `md_crdt_bin_v1` format can use `encode_json_change_message_as_
 `decode_bin_v1_change_message_to_json_payloads` for a compact binary transport; the frame is not a
 snapshot format and does not change the default session codec.
 
-Long-running hosts can bound retained operation history with `checkpoint_history`. Each checkpoint
-request names the active peers and the state vector each has acknowledged; peers omitted by the host
-are expired for that checkpoint. `encode_changes_since` returns `RebaseRequired` when a caller is
-older than the retained delta floor, while `sync_since` returns either a compact delta or a boxed V7
-session checkpoint that the lagging peer can install before incremental exchange resumes. Structural
-tombstones are retained because operation acknowledgement alone is not sufficient for causal garbage
-collection.
+Long-running hosts can prune retained transport operation payloads with `checkpoint_history`.
+Each checkpoint request names the active peers and the state vector each has acknowledged;
+peers omitted by the host are expired for that checkpoint. `encode_changes_since` returns
+`RebaseRequired` when a caller is older than the retained delta floor, while `sync_since`
+returns either a delta or a boxed V10 session checkpoint that the lagging peer can install
+before incremental exchange resumes. Checkpointing does not garbage-collect the document's
+full placement/deletion topology, creation-incarnation metadata, or structural tombstones.
+Those durable histories remain necessary for late operations and placement fallback;
+snapshot size and process RSS are not bounded by live content or `max_retained_ops`.
 
 **Agent / MCP workloads:** prefer `insert_text_batch` (or one multi-grapheme `insert_text`) over
 per-keystroke public calls; flush vault sessions with `apply_local_edit` + batched
-`flush_document` when durability can wait; and call `checkpoint_history` with a modest
-`max_retained_ops` and accurate active-peer leases on long-lived sessions so snapshot and RSS
-growth track content rather than full history. Omitted peers must rebase as described above. Text
-remains one RGA unit per grapheme by design (stable OpIds for marks and anchors); run-length
-packing is not enabled by default.
+`flush_document` when durability can wait. Use `checkpoint_history` to control retransmission
+history, not as a structural-history or RSS cap. Text remains one RGA unit per grapheme by
+design (stable OpIds for marks and anchors); run-length packing is not enabled by default.
 
-Persistence accepts only V7 session snapshots and current V2 dual-slot storage. Older or legacy
-state fails with an explicit reinitialize/re-ingest error; re-ingest the authoritative Markdown files
-instead of attempting an in-place upgrade.
+Persistence accepts only V10 session snapshots and V2 dual-slot storage with generation-aware
+operation retirement; session peers use wire V7. The required state includes full block/list-item
+placement and deletion topology, creation incarnations, causally maximal structured-register
+candidates, an independent frontmatter initializer base and field registers, and source-local
+frontmatter revision provenance. Public structured document/DTO literals must supply the required
+topology and conflict-history fields; list-item placement candidates name the destination's stable
+`BlockId`, not its current sequence element. Older peer/session formats fail closed with typed
+version/reinitialize errors; this is a clean incompatible cutover, with no legacy field defaults
+or in-place migration. Before upgrading, back up the vault and export any unexported session
+changes using a compatible older binary. Reinitialize and re-ingest authoritative Markdown only
+after preserving that state; do not discard a session whose latest edits are absent from disk.
+
+Snapshots are native JSON-backed state even when the live session uses `BinaryOpCodec` or
+another `OpCodec`. Saving normalizes applied, pending, and deferred operation payloads to JSON;
+restore and checkpoint rebase create a `CollaborativeDocument<JsonOpCodec>`. Saving does not
+change the original session's codec or retained transport payloads. Configure live transport
+agreement separately from snapshot persistence.
+
+**Structural deletion policy:** deletion captures the target and the incarnation-qualified
+descendants visible at the author's causal cut. Captured descendants die even if a concurrent
+move tries to escape the subtree. An escape completed and observed before deletion survives
+because it is no longer in the captured subtree. Unseen incoming outsiders are not absorbed
+into the deletion: unavailable destinations fall back to historical viable placements, including
+a real surviving list for list items. A late initial birth into a deleted creation origin is
+a no-op, even if it concurrently tries to escape; this is not blanket deletion of every incoming
+move. Logical UUIDs are opaque, while creation-operation origins distinguish incarnations:
+recreating a deleted identity does not revive its old moves or let old aliases address the new
+incarnation. Bodies remain owned by one document tree; topology history is metadata, not a
+hidden content archive or a synthetic fallback list.
+
+**Frontmatter concurrency:** concurrent initializers select an LWW base independently of
+per-key explicit writes and deletions. A winning initializer does not erase those field
+registers; even writes arriving before initialization survive checkpoint/restore. Opaque YAML
+rejects local structured mutation, but supported remote field writes remain durable even when
+an opaque base hides them. Adopting disk source is not semantic base replication: an opaque
+adopted Exact view can likewise hide durable remote registers and blocks local structured
+edits while that source provenance still applies. Exact source visibility is therefore not
+proof that no remote field write exists; source-local provenance is persisted across reopen.
 
 **CLI Workflows**
 Target a vault from any working directory (the default is `--vault .`):
@@ -288,8 +345,39 @@ Common commands:
 - `just fmt`
 - `just lint`
 - `just test`
+- `just feature-check` exercises the declared MSRV, minimal, storage, filesync, and incremental configurations locally; CI remains paused.
 - `just differential-test`
 - `just fuzz-quick`
+
+The optional incremental-ordering path retains a complete independent ordering
+check at every debug verification point, including tombstones. Its reference
+rebuild borrows metadata rather than constructing temporary sequences and indexes.
+Run the assertion-preserving attribution workload in the default dev profile:
+
+```sh
+cargo run --example debug_ordering_workload --features sequence_incremental,perf_trace -- default-dev 128 512
+```
+
+This diagnostic includes missing anchors, right origins, deletion, durable edits
+and replay. It does not replace or cap the full 9,999-edit regression.
+
+Vault lazy loads share snapshot selection with generation-aware operation replay.
+The proof is scoped to one externally serialized storage call, including when a
+corrupt newest snapshot requires retired operations; it is not a cross-call cache.
+Run the native recovery, editing, publication and reopen probe with:
+
+```sh
+cargo bench --bench council_performance -- --open-correctness
+```
+
+Qualified local measurements, component ablations and adverse allocator-sensitive
+regimes are recorded in [the conformance record](docs/rust-standards-conformance.md).
+
+Snapshot restore keeps its validation proof private and owned: public mutable DTOs
+validate freshly, and normalization requires full revalidation. Generic-codec saves
+borrow applied payloads until canonicalization instead of cloning a discarded
+transport log. The conformance record includes the measured deferred-restore
+transient-memory tradeoff; this is not a claim that every regime is faster or smaller.
 
 The unpublished `md-crdt-yrs-bench/` workspace provides controlled competitive measurements against exact-pinned Yrs. It is excluded from the product workspace and default quality gate:
 
@@ -311,11 +399,31 @@ MIT. See `LICENSE`.
 Use `Parser::try_parse` / `ReadDocument::try_parse` for external source; `parse`
 is the trusted, prevalidated API. Vault reads and creation validate 4 MiB source,
 64 leading quote markers and 256 leading whitespace bytes per nonempty line.
-Lexical nesting limits also apply inside fences. Ingestion's `lcs_steps` now
-returns a `Result` and refuses a table above 4,000,000 cells before allocation.
+Lexical nesting limits also apply inside fences. Ingestion's `lcs_steps` returns
+a typed work/allocation refusal. Original dense alignments retain their
+4,000,000-cell admission; additional long local edits use exact suffix trimming
+and certified banded alignment with one cumulative 4,000,000-work-unit and
+16,000,000-requested-byte budget, including output and all attempted bands.
+Repeated text retains the original backward equal-first/insert-on-tie identity
+mapping. Large dissimilar edits can still be refused; attempting a bounded
+alignment costs more than the former immediate shape refusal.
+Lexical table accounting caps width at 1,024 columns, consecutive table-like rows at 16,384
+(including header/delimiter), and aggregate rectangular expansion at 262,144 cells. These
+conservative checks also count escaped pipes and fenced source before semantic parsing.
 A refused ingest leaves the existing session intact; it does not overwrite disk.
 
 External source validation also caps nested square brackets at 64 and inline
 syntax delimiter bytes (`*`, `_`, `~`, brackets and backticks) at 16,384 between blank source lines, including literals. The sum of
 paragraph byte lengths times delimiter counts is capped at 64 Mi work units. Storage artifact reads are capped at 512 MiB and
 transaction-journal reads at 4 MiB before decoding. Identity metadata is capped at 128 bytes.
+
+`CollaborativeDocument` admission and snapshot restore enforce both hard durable ceilings:
+100,000 aggregate pending operations and 64 MiB of retained logical raw/decoded charge.
+`ValidationLimits::max_pending_buffer` and `max_retained_bytes` may tighten those limits,
+but raising them cannot override either ceiling. Both constraints must hold; large envelopes
+can exhaust the byte budget before reaching the count limit. Accounting includes nested
+sequence pending state and the normalized JSON snapshot representation; it is not a cap on
+full structural history, allocator bytes, or RSS. `max_dependency_work` defaults to 1,000,000
+work units. Work exhaustion retains accepted dependencies; a subsequent apply call can resume
+draining. Hosts must apply backpressure rather than discard operations whose prerequisites
+have not arrived.

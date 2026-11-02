@@ -558,7 +558,9 @@ fn invalid_heading_level_is_rejected_without_mutation() {
     );
     assert!(matches!(
         vault.apply_edit_batch("note.md", request),
-        Err(VaultError::Session(message)) if message.contains("heading level")
+        Err(VaultError::Session(
+            md_crdt::SessionError::InvalidHeadingLevel
+        ))
     ));
     assert_eq!(vault.revision("note.md").unwrap(), handle.revision);
 }

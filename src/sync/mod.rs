@@ -85,6 +85,7 @@ pub struct RebaseRequired {
     pub delta_floor: StateVector,
 }
 
+pub(crate) use validation::validate_message;
 pub use validation::{MalformedKind, ValidationError, ValidationLimits, validate_changes};
 
 /// Semantic conflicts detected during apply
@@ -178,12 +179,28 @@ impl SyncState {
         self.ops.get(&id).map(AsRef::as_ref)
     }
 
+    pub(crate) fn retained_payload_len(&self, id: OpId) -> usize {
+        self.ops.get(&id).map_or_else(
+            || self.pending.get(&id).map_or(0, |(op, _)| op.payload.len()),
+            |payload| payload.len(),
+        )
+    }
+
+    pub(crate) fn has_received(&self, id: OpId) -> bool {
+        id.counter <= self.max_applied_counter(id.peer) || self.pending.contains_key(&id)
+    }
+
     /// Snapshot of all applied (id, payload) pairs for persistence.
     pub fn applied_ops(&self) -> Vec<(OpId, Vec<u8>)> {
         self.ops
             .iter()
             .map(|(id, payload)| (*id, payload.to_vec()))
             .collect()
+    }
+
+    /// Borrow retained applied payloads for codec-normalized snapshot ownership.
+    pub(crate) fn applied_operations(&self) -> impl ExactSizeIterator<Item = (OpId, &[u8])> {
+        self.ops.iter().map(|(id, payload)| (*id, payload.as_ref()))
     }
 
     /// Restore applied ops from a snapshot (does not touch pending/outbox).
@@ -216,6 +233,9 @@ impl SyncState {
         if self.ops.contains_key(&op.id) {
             return IntegrateResult::AlreadyPresent;
         }
+        if op.id.counter <= self.max_applied_counter(op.id.peer) {
+            return IntegrateResult::AlreadyPresent;
+        }
         // If already buffered, do not duplicate.
         if self.pending.contains_key(&op.id) {
             return IntegrateResult::Buffered;
@@ -223,7 +243,7 @@ impl SyncState {
 
         let frontier = self.max_applied_counter(op.id.peer);
         let start = Self::span_start(op.id.counter, span);
-        if start > frontier + 1 {
+        if frontier.checked_add(1).is_some_and(|next| start > next) {
             self.pending.insert(op.id, (op, span));
             IntegrateResult::Buffered
         } else {
@@ -238,35 +258,48 @@ impl SyncState {
     /// Returns payloads in promotion order so a session can apply document effects
     /// for each without re-decoding from a side map when payloads are still available.
     pub fn promote_ready_pending(&mut self) -> Vec<Operation> {
+        let mut promoted = Vec::new();
+        self.promote_pending(Some(&mut promoted));
+        promoted
+    }
+
+    pub(crate) fn promote_pending_log(&mut self) {
+        self.promote_pending(None);
+    }
+
+    fn promote_pending(&mut self, mut promoted: Option<&mut Vec<Operation>>) {
         if self.pending.is_empty() {
-            return Vec::new();
+            return;
         }
-        let mut promoted = Vec::with_capacity(self.pending.len());
-        let mut made_progress = true;
-        while made_progress {
-            made_progress = false;
-            // Snapshot keys once per promotion wave, rather than after every removal.
-            let pending_ids: Vec<OpId> = self.pending.keys().copied().collect();
-            for op_id in pending_ids {
-                let frontier = self.max_applied_counter(op_id.peer);
-                let span = self.pending.get(&op_id).map(|(_, s)| *s).unwrap_or(1);
-                if Self::span_start(op_id.counter, span) <= frontier + 1
-                    && let Some((op, _)) = self.pending.remove(&op_id)
-                {
-                    self.observe(op.id);
-                    // `Operation.payload` is `Arc<[u8]>` — clone is refcount only.
+        // OpId order is counter-first, so a single increasing pass visits every
+        // predecessor before any later span from that peer.
+        let pending_ids: Vec<OpId> = self.pending.keys().copied().collect();
+        for op_id in pending_ids {
+            let frontier = self.max_applied_counter(op_id.peer);
+            let span = self.pending.get(&op_id).map(|(_, s)| *s).unwrap_or(1);
+            if frontier
+                .checked_add(1)
+                .is_none_or(|next| Self::span_start(op_id.counter, span) <= next)
+                && let Some((op, _)) = self.pending.remove(&op_id)
+            {
+                self.observe(op.id);
+                if let Some(output) = promoted.as_mut() {
                     self.ops.insert(op.id, op.payload.clone());
-                    promoted.push(op);
-                    made_progress = true;
+                    output.push(op);
+                } else {
+                    self.ops.insert(op.id, op.payload);
                 }
             }
         }
-        promoted
     }
 
     /// Get the state vector representing all applied operations
     pub fn state_vector(&self) -> StateVector {
         self.state_vector.clone()
+    }
+
+    pub(crate) fn frontier(&self) -> &StateVector {
+        &self.state_vector
     }
 
     /// Encode all operations since a given state vector
@@ -284,8 +317,7 @@ impl SyncState {
                 delta_floor: self.delta_floor.clone(),
             });
         }
-        // Upper-bound capacity: at most one op per applied log entry.
-        let mut ops = Vec::with_capacity(self.ops.len());
+        let mut ops = Vec::new();
         for (op_id, payload) in &self.ops {
             let seen = since.get(op_id.peer).unwrap_or(0);
             if op_id.counter > seen {
@@ -414,6 +446,10 @@ impl SyncState {
     /// Get the number of pending (causally unready) operations
     pub fn pending_count(&self) -> usize {
         self.pending.len()
+    }
+
+    pub(crate) fn pending_operations(&self) -> impl Iterator<Item = &Operation> {
+        self.pending.values().map(|(operation, _)| operation)
     }
 
     /// Get pending operations (for persistence). Spans are recomputed on restore.

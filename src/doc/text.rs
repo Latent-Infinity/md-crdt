@@ -1,6 +1,6 @@
 //! Grapheme-level paragraph text as a CRDT sequence of units.
 
-use crate::core::{OpId, PeerId, Sequence};
+use crate::core::{OpId, PeerId, Sequence, SequenceOp};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// One grapheme cluster in a paragraph sequence.
@@ -74,7 +74,7 @@ pub fn after_for_grapheme_offset(seq: &Sequence<TextUnit>, grapheme_offset: usiz
 
 /// Insert graphemes into a paragraph sequence starting at `op_id.counter`.
 ///
-/// Returns the number of units inserted, or `None` if `grapheme_offset` is out of range.
+/// Returns `None` for an invalid offset or an exhausted operation counter span.
 pub fn insert_graphemes(
     seq: &mut Sequence<TextUnit>,
     grapheme_offset: usize,
@@ -85,24 +85,28 @@ pub fn insert_graphemes(
     if grapheme_offset > visible_len {
         return None;
     }
+    let count = grapheme_count(text);
+    if count > 0 {
+        op_id.counter.checked_add(u64::try_from(count - 1).ok()?)?;
+    }
     let mut after = after_for_grapheme_offset(seq, grapheme_offset);
-    let mut counter = op_id.counter;
-    let mut n = 0usize;
-    for g in text.graphemes(true) {
+    let right_origin = seq.compute_right_origin(after);
+    let ops = text.graphemes(true).enumerate().map(|(index, grapheme)| {
         let id = OpId {
-            counter,
+            counter: op_id.counter + index as u64,
             peer: op_id.peer,
         };
-        counter = counter.saturating_add(1);
-        seq.insert(
+        let op = SequenceOp::Insert {
             after,
-            TextUnit {
-                grapheme: g.to_string(),
-            },
             id,
-        );
+            value: TextUnit {
+                grapheme: grapheme.to_string(),
+            },
+            right_origin: if index == 0 { right_origin } else { None },
+        };
         after = Some(id);
-        n += 1;
-    }
-    Some(n)
+        op
+    });
+    seq.apply_batch(ops);
+    Some(count)
 }

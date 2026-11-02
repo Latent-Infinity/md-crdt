@@ -9,10 +9,12 @@
 //! - [`LwwRegister`] - Last-writer-wins register for single values
 //! - [`Map`] - LWW-based key-value map
 //! - [`mark`] - Rich causal mark/formatting CRDT (`MarkSet`, spans)
+//! - [`causal`] - Maximal concurrent candidates for causally ordered registers
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod causal;
 pub mod mark;
 
 // Unified mark API (rich causal remove-wins). Generic LWW mark types were removed.
@@ -118,11 +120,10 @@ impl<T: Clone> Sequence<T> {
     }
 
     pub fn apply(&mut self, op: SequenceOp<T>) {
-        // A ready single insert uses the same O(n) splice path as multi-unit
-        // chains, avoiding a full rebuild_order for the common case.
-        if matches!(&op, SequenceOp::Insert { .. })
-            && self.try_apply_contiguous_insert_chain(std::slice::from_ref(&op))
-        {
+        // A ready single insert uses the same splice path as multi-unit chains,
+        // avoiding a full rebuild_order for the common case.
+        if let Some(insert_at) = self.contiguous_insert_index(std::slice::from_ref(&op)) {
+            self.splice_insert_chain(std::iter::once(op), insert_at);
             #[cfg(feature = "sequence_incremental")]
             self.debug_assert_incremental_order();
             return;
@@ -141,7 +142,8 @@ impl<T: Clone> Sequence<T> {
         }
         // Contiguous same-peer insert chains (local paste / multi-grapheme insert)
         // splice once without a full sequence rebuild.
-        if self.try_apply_contiguous_insert_chain(&ops) {
+        if let Some(insert_at) = self.contiguous_insert_index(&ops) {
+            self.splice_insert_chain(ops, insert_at);
             #[cfg(feature = "sequence_incremental")]
             self.debug_assert_incremental_order();
             return;
@@ -172,75 +174,100 @@ impl<T: Clone> Sequence<T> {
     /// chain with one sibling-position lookup and one splice; rebuilds only the
     /// id→index map.
     ///
-    /// Returns `false` when the batch is not a ready contiguous chain (mixed
+    /// Returns `None` when the batch is not a ready contiguous chain (mixed
     /// deletes, missing anchors, duplicate ids, pending work), so the caller
-    /// falls back to the general apply path.
-    fn try_apply_contiguous_insert_chain(&mut self, ops: &[SequenceOp<T>]) -> bool {
-        if ops.is_empty() {
-            return true;
-        }
+    /// falls back to the general apply path without consuming any values.
+    fn contiguous_insert_index(&self, ops: &[SequenceOp<T>]) -> Option<usize> {
+        let first_op = ops.first()?;
         // Refuse when any pending work exists: chain placement assumes a stable
         // linearized order without delayed promotions mid-batch.
         if !self.pending_inserts.is_empty() || !self.pending_deletes.is_empty() {
-            return false;
+            return None;
         }
 
-        let mut chain: Vec<Element<T>> = Vec::with_capacity(ops.len());
         for (i, op) in ops.iter().enumerate() {
             let SequenceOp::Insert {
                 after,
                 id,
-                value,
+                value: _,
                 right_origin,
             } = op
             else {
-                return false;
+                return None;
             };
             if self.index.contains_key(id) {
-                return false;
+                return None;
             }
             if i == 0 {
                 if let Some(anchor) = after
                     && !self.index.contains_key(anchor)
                 {
-                    return false;
+                    return None;
                 }
             } else {
                 let SequenceOp::Insert { id: prev_id, .. } = &ops[i - 1] else {
-                    return false;
+                    return None;
                 };
                 if *after != Some(*prev_id) {
-                    return false;
+                    return None;
                 }
                 // A local expanded insert reserves one consecutive counter run.
                 // Enforcing that invariant also prevents duplicate ids within
                 // the batch from corrupting the id-to-index map.
                 if id.peer != prev_id.peer || prev_id.counter.checked_add(1) != Some(id.counter) {
-                    return false;
+                    return None;
                 }
                 // Tail units of a local expand always use right_origin = None.
                 if right_origin.is_some() {
-                    return false;
+                    return None;
                 }
             }
-            chain.push(Element {
-                id: *id,
-                value: Some(value.clone()),
-                after: *after,
-                right_origin: *right_origin,
-            });
         }
 
-        let first = &chain[0];
-        let insert_at = self.linearized_insert_index(first);
+        let SequenceOp::Insert {
+            after,
+            id,
+            right_origin,
+            ..
+        } = first_op
+        else {
+            return None;
+        };
+        Some(self.linearized_insert_index(&Element {
+            id: *id,
+            value: None,
+            after: *after,
+            right_origin: *right_origin,
+        }))
+    }
+
+    /// Consume a previously validated insert chain without cloning its values.
+    fn splice_insert_chain(
+        &mut self,
+        ops: impl IntoIterator<Item = SequenceOp<T>>,
+        insert_at: usize,
+    ) {
+        let chain = ops.into_iter().map(|op| match op {
+            SequenceOp::Insert {
+                after,
+                id,
+                value,
+                right_origin,
+            } => Element {
+                id,
+                value: Some(value),
+                after,
+                right_origin,
+            },
+            SequenceOp::Delete { .. } => unreachable!("insert chain was validated before splicing"),
+        });
         self.elements.splice(insert_at..insert_at, chain);
 
-        // Only indices from insert_at onward shifted; rebuild the whole map is
-        // still O(n) but much cheaper than rebuild_order's tree walk + sorts.
+        // Shifted suffix indices require O(k log n) BTreeMap updates, in
+        // addition to the O(n) sibling scan and contiguous Vec splice.
         for index in insert_at..self.elements.len() {
             self.index.insert(self.elements[index].id, index);
         }
-        true
     }
 
     /// Physical index where `element` belongs among siblings of `element.after`.
@@ -316,6 +343,36 @@ impl<T: Clone> Sequence<T> {
         }
     }
 
+    /// Transfer a value while retaining its placement as a tombstone anchor.
+    pub(crate) fn take_value(&mut self, id: OpId) -> Option<T> {
+        let index = *self.index.get(&id)?;
+        self.elements.get_mut(index)?.value.take()
+    }
+
+    /// Install placement history without manufacturing or copying a live value.
+    pub(crate) fn insert_tombstone(
+        &mut self,
+        after: Option<OpId>,
+        id: OpId,
+        right_origin: Option<OpId>,
+    ) -> bool {
+        if self.index.contains_key(&id)
+            || after.is_some_and(|anchor| !self.index.contains_key(&anchor))
+        {
+            return false;
+        }
+        let element = Element {
+            id,
+            value: None,
+            after,
+            right_origin,
+        };
+        self.elements.push(element);
+        self.rebuild_order();
+        self.process_pending_inner(id, true);
+        true
+    }
+
     /// Mutate the value of element `id` in place (no full-element clone).
     ///
     /// Returns `None` if the id is unknown or the element is tombstoned.
@@ -381,16 +438,29 @@ impl<T: Clone> Sequence<T> {
         }
     }
 
-    /// Pending operations whose cross-peer anchor or target has not arrived yet.
+    /// Number of retained inserts and deletes awaiting an anchor or target.
     ///
-    /// Session snapshots persist these independently from the compacted operation log.
-    pub(crate) fn pending_ops(&self) -> Vec<SequenceOp<T>> {
+    /// Counts operations, not dependency buckets; duplicate deliveries are
+    /// included when they are still pending. Runs in O(dependency buckets).
+    pub fn pending_op_count(&self) -> usize {
+        self.pending_inserts
+            .values()
+            .chain(self.pending_deletes.values())
+            .map(Vec::len)
+            .sum()
+    }
+
+    /// Borrow all retained operations without cloning their payloads.
+    ///
+    /// Callers can account concrete value bytes and promotion work before
+    /// admission. This is not a heap-size estimate: collection capacity and
+    /// allocator overhead are not represented by iterating occupied entries.
+    /// Required operations remain retained until their dependency arrives.
+    pub fn pending_ops_iter(&self) -> impl Iterator<Item = &SequenceOp<T>> {
         self.pending_inserts
             .values()
             .chain(self.pending_deletes.values())
             .flatten()
-            .cloned()
-            .collect()
     }
 
     /// Rebuild materialized elements and their unresolved cross-peer operations.
@@ -412,24 +482,24 @@ impl<T: Clone> Sequence<T> {
     fn apply_insert_internal(
         &mut self,
         after: Option<OpId>,
-        id: &OpId,
-        value: &T,
+        id: OpId,
+        value: T,
         right_origin: Option<OpId>,
         rebuild: bool,
-    ) -> bool {
-        if self.index.contains_key(id) {
-            return true;
+    ) -> Result<(), T> {
+        if self.index.contains_key(&id) {
+            return Ok(());
         }
 
         if let Some(anchor) = after
             && !self.index.contains_key(&anchor)
         {
-            return false;
+            return Err(value);
         }
 
         let element = Element {
-            id: *id,
-            value: Some(value.clone()),
+            id,
+            value: Some(value),
             after,
             right_origin,
         };
@@ -437,7 +507,7 @@ impl<T: Clone> Sequence<T> {
         #[cfg(feature = "sequence_incremental")]
         if rebuild {
             self.insert_incrementally(element);
-            return true;
+            return Ok(());
         }
 
         self.elements.push(element);
@@ -445,9 +515,9 @@ impl<T: Clone> Sequence<T> {
             self.rebuild_order();
         } else {
             let idx = self.elements.len() - 1;
-            self.index.insert(*id, idx);
+            self.index.insert(id, idx);
         }
-        true
+        Ok(())
     }
 
     #[cfg(feature = "sequence_incremental")]
@@ -464,22 +534,21 @@ impl<T: Clone> Sequence<T> {
         let Some(parent) = parent else {
             return self.elements.len();
         };
-        let start = self.index[&parent] + 1;
-        self.elements[start..]
-            .iter()
-            .position(|candidate| !self.is_descendant_of(candidate, parent))
-            .map_or(self.elements.len(), |offset| start + offset)
-    }
-
-    fn is_descendant_of(&self, candidate: &Element<T>, ancestor: OpId) -> bool {
-        let mut cursor = candidate.after;
-        while let Some(id) = cursor {
-            if id == ancestor {
-                return true;
+        let parent_index = self.index[&parent];
+        // In preorder, the subtree is contiguous. While scanning its prefix,
+        // an element is a descendant exactly when its direct anchor is in the
+        // prefix already visited (including parent). One O(log n) lookup per
+        // element avoids walking its complete ancestry again on deep chains.
+        for index in parent_index + 1..self.elements.len() {
+            let in_subtree = self.elements[index]
+                .after
+                .and_then(|anchor| self.index.get(&anchor).copied())
+                .is_some_and(|anchor_index| anchor_index >= parent_index && anchor_index < index);
+            if !in_subtree {
+                return index;
             }
-            cursor = self.get_element(&id).and_then(|element| element.after);
         }
-        false
+        self.elements.len()
     }
 
     fn compare_siblings(a: &Element<T>, b: &Element<T>) -> std::cmp::Ordering {
@@ -499,13 +568,76 @@ impl<T: Clone> Sequence<T> {
 
     #[cfg(all(feature = "sequence_incremental", debug_assertions))]
     fn debug_assert_incremental_order(&self) {
-        let mut rebuilt = self.clone();
-        rebuilt.rebuild_order();
-        debug_assert_eq!(
-            self.element_ids(),
-            rebuilt.element_ids(),
-            "incremental sequence order diverged from full rebuild"
+        crate::perf::timed(crate::perf::Span::SequenceOrderOracle, || {
+            let rebuilt_ids = self.reference_order_ids();
+            debug_assert!(
+                self.elements
+                    .iter()
+                    .map(|element| element.id)
+                    .eq(rebuilt_ids.iter().copied()),
+                "incremental sequence order diverged from full rebuild: actual {:?}, rebuilt {:?}",
+                self.element_ids(),
+                rebuilt_ids,
+            );
+        });
+    }
+
+    #[cfg(all(feature = "sequence_incremental", debug_assertions))]
+    fn reference_order_ids(&self) -> Vec<OpId> {
+        // Rebuild the entire reference topology from borrowed metadata. Neither
+        // the incremental index nor the stored order supplies any parent edges
+        // or sibling ordering: both sorts below cover every retained element,
+        // including tombstones.
+        let mut siblings: Vec<_> = self.elements.iter().collect();
+        siblings.sort_unstable_by(|a, b| {
+            a.after
+                .cmp(&b.after)
+                .then_with(|| Self::compare_siblings(a, b))
+        });
+        let mut by_id: Vec<_> = (0..siblings.len()).collect();
+        by_id.sort_unstable_by_key(|&index| siblings[index].id);
+        debug_assert!(
+            by_id
+                .windows(2)
+                .all(|pair| siblings[pair[0]].id != siblings[pair[1]].id),
+            "full ordering reference contains duplicate identifiers",
         );
+
+        // Parent groups and identifiers are independently sorted, so one merge
+        // join links every group's full child range without a temporary map.
+        let mut children = vec![0..0; siblings.len()];
+        let mut roots = 0..0;
+        let mut parent_index = 0;
+        let mut start = 0;
+        while start < siblings.len() {
+            let parent = siblings[start].after;
+            let mut end = start + 1;
+            while end < siblings.len() && siblings[end].after == parent {
+                end += 1;
+            }
+            if let Some(parent) = parent {
+                while parent_index < by_id.len() && siblings[by_id[parent_index]].id < parent {
+                    parent_index += 1;
+                }
+                if parent_index < by_id.len() && siblings[by_id[parent_index]].id == parent {
+                    children[by_id[parent_index]] = start..end;
+                }
+            } else {
+                roots = start..end;
+            }
+            start = end;
+        }
+
+        // As in rebuild_order, only rooted nodes are reachable. Missing-parent
+        // components or cycles therefore fail the caller's complete ID check;
+        // they are not silently appended in their current incremental order.
+        let mut stack: Vec<_> = roots.rev().collect();
+        let mut ordered_ids = Vec::with_capacity(siblings.len());
+        while let Some(index) = stack.pop() {
+            ordered_ids.push(siblings[index].id);
+            stack.extend(children[index].clone().rev());
+        }
+        ordered_ids
     }
 
     #[cfg(all(feature = "sequence_incremental", not(debug_assertions)))]
@@ -608,9 +740,9 @@ impl<T: Clone> Sequence<T> {
                 value,
                 right_origin,
             } => {
-                if self.apply_insert_internal(after, &id, &value, right_origin, rebuild) {
-                    Some(id)
-                } else {
+                if let Err(value) =
+                    self.apply_insert_internal(after, id, value, right_origin, rebuild)
+                {
                     if let Some(anchor) = after {
                         self.pending_inserts
                             .entry(anchor)
@@ -623,6 +755,8 @@ impl<T: Clone> Sequence<T> {
                             });
                     }
                     None
+                } else {
+                    Some(id)
                 }
             }
             SequenceOp::Delete { target, id } => {
@@ -661,19 +795,22 @@ impl<T: Clone> Sequence<T> {
                     value,
                     right_origin,
                 } => {
-                    if self.apply_insert_internal(after, &id, &value, right_origin, rebuild) {
+                    if let Err(value) =
+                        self.apply_insert_internal(after, id, value, right_origin, rebuild)
+                    {
+                        if let Some(anchor) = after {
+                            self.pending_inserts.entry(anchor).or_default().push(
+                                SequenceOp::Insert {
+                                    after: Some(anchor),
+                                    id,
+                                    value,
+                                    right_origin,
+                                },
+                            );
+                        }
+                    } else {
                         inserted = true;
                         self.enqueue_pending(id, &mut queue);
-                    } else if let Some(anchor) = after {
-                        self.pending_inserts
-                            .entry(anchor)
-                            .or_default()
-                            .push(SequenceOp::Insert {
-                                after: Some(anchor),
-                                id,
-                                value,
-                                right_origin,
-                            });
                     }
                 }
                 SequenceOp::Delete { target, id } => {
@@ -844,6 +981,229 @@ mod batch_tests {
         let mut batched = Sequence::new();
         batched.apply_batch(ops);
         assert_eq!(batched, individual);
+    }
+
+    #[test]
+    fn owned_insert_values_keep_their_allocations_across_every_apply_path() {
+        fn owned_insert(
+            after: Option<OpId>,
+            counter: u64,
+            text: &str,
+        ) -> (SequenceOp<String>, *const u8) {
+            let value = text.to_owned();
+            let allocation = value.as_ptr();
+            (
+                SequenceOp::Insert {
+                    after,
+                    id: id(counter),
+                    value,
+                    right_origin: None,
+                },
+                allocation,
+            )
+        }
+
+        fn allocation(sequence: &Sequence<String>, counter: u64) -> *const u8 {
+            sequence
+                .get_element(&id(counter))
+                .and_then(|element| element.value.as_ref())
+                .expect("inserted value must be live")
+                .as_ptr()
+        }
+
+        let mut sequence = Sequence::new();
+        let (root, root_allocation) = owned_insert(None, 1, "root");
+        sequence.apply(root);
+        assert_eq!(allocation(&sequence, 1), root_allocation);
+
+        let (first, first_allocation) = owned_insert(Some(id(1)), 2, "first");
+        let (second, second_allocation) = owned_insert(Some(id(2)), 3, "second");
+        sequence.apply_batch([first, second]);
+        assert_eq!(allocation(&sequence, 2), first_allocation);
+        assert_eq!(allocation(&sequence, 3), second_allocation);
+
+        let (pending, pending_allocation) = owned_insert(Some(id(4)), 5, "pending");
+        sequence.apply(pending);
+        assert_eq!(sequence.pending_op_count(), 1);
+        let (anchor, anchor_allocation) = owned_insert(Some(id(3)), 4, "anchor");
+        sequence.apply(anchor);
+        assert_eq!(allocation(&sequence, 4), anchor_allocation);
+        assert_eq!(allocation(&sequence, 5), pending_allocation);
+        assert_eq!(sequence.pending_op_count(), 0);
+
+        // A mixed batch exercises the general owned-value path rather than the
+        // contiguous-chain specialization.
+        let (last, last_allocation) = owned_insert(Some(id(5)), 6, "last");
+        sequence.apply_batch([
+            last,
+            SequenceOp::Delete {
+                target: id(1),
+                id: id(7),
+            },
+        ]);
+        assert_eq!(allocation(&sequence, 6), last_allocation);
+        assert_eq!(
+            sequence.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["first", "second", "anchor", "pending", "last"]
+        );
+    }
+}
+
+#[cfg(all(test, feature = "sequence_incremental", debug_assertions))]
+mod ordering_reference_tests {
+    use super::{Element, OpId, Sequence};
+
+    fn id(counter: u64, peer: u64) -> OpId {
+        OpId { counter, peer }
+    }
+
+    fn element(
+        id: OpId,
+        after: Option<OpId>,
+        right_origin: Option<OpId>,
+        live: bool,
+    ) -> Element<u8> {
+        Element {
+            id,
+            after,
+            right_origin,
+            value: live.then_some(1),
+        }
+    }
+
+    fn metadata(elements: &[Element<u8>]) -> Vec<Element<()>> {
+        elements
+            .iter()
+            .map(|element| Element {
+                id: element.id,
+                value: None,
+                after: element.after,
+                right_origin: element.right_origin,
+            })
+            .collect()
+    }
+
+    fn no_initial_index_rebuild_ids(elements: &[Element<u8>]) -> Vec<OpId> {
+        // Attribution precursor only: the full legacy rebuild replaces this
+        // empty index without reading it. The shipped borrowed oracle supersedes
+        // this smaller change rather than accumulating it as a second feature.
+        let mut sequence = Sequence {
+            elements: metadata(elements),
+            index: Default::default(),
+            pending_inserts: Default::default(),
+            pending_deletes: Default::default(),
+        };
+        sequence.rebuild_order();
+        sequence.element_ids()
+    }
+
+    fn full_rebuild_ids(elements: &[Element<u8>]) -> Vec<OpId> {
+        let mut sequence = Sequence::from_elements(metadata(elements));
+        sequence.rebuild_order();
+        let ids = sequence.element_ids();
+        assert_eq!(ids, no_initial_index_rebuild_ids(elements));
+        ids
+    }
+
+    fn assert_permutations(elements: &mut [Element<u8>], offset: usize, expected: &[OpId]) {
+        if offset == elements.len() {
+            let mut sequence = Sequence::from_elements(elements.to_vec());
+            // The reference must not trust even a populated incremental index.
+            sequence.index.clear();
+            assert_eq!(sequence.reference_order_ids(), expected);
+            return;
+        }
+        for index in offset..elements.len() {
+            elements.swap(offset, index);
+            assert_permutations(elements, offset + 1, expected);
+            elements.swap(offset, index);
+        }
+    }
+
+    #[test]
+    fn borrowed_order_reference_matches_full_rebuild_for_every_metadata_permutation() {
+        let root = id(1, 1);
+        let first = id(2, 1);
+        let tie = id(2, 2);
+        let earlier_origin = id(4, 3);
+        let unbounded = id(5, 1);
+        let descendant = id(6, 2);
+        let mut elements = vec![
+            element(root, None, None, true),
+            element(id(7, 3), None, None, false),
+            element(first, Some(root), Some(descendant), true),
+            element(tie, Some(root), Some(descendant), false),
+            element(earlier_origin, Some(root), Some(unbounded), true),
+            element(unbounded, Some(root), None, true),
+            element(descendant, Some(first), None, false),
+        ];
+        let expected = full_rebuild_ids(&elements);
+        assert_eq!(expected.len(), elements.len());
+        assert_permutations(&mut elements, 0, &expected);
+    }
+
+    #[test]
+    fn borrowed_order_reference_matches_deep_and_wide_full_rebuilds() {
+        for chain in [false, true] {
+            let elements: Vec<_> = (1..=4096)
+                .map(|counter| {
+                    let after = if counter == 1 {
+                        None
+                    } else if chain {
+                        Some(id(counter - 1, 1))
+                    } else {
+                        Some(id(1, 1))
+                    };
+                    let right_origin = (counter % 3 == 0).then_some(id(2, 1));
+                    element(id(counter, 1), after, right_origin, counter % 2 == 0)
+                })
+                .collect();
+            let expected = full_rebuild_ids(&elements);
+            let mut reversed = elements;
+            reversed.reverse();
+            let sequence = Sequence::from_elements(reversed);
+            assert_eq!(sequence.reference_order_ids(), expected);
+        }
+    }
+
+    #[test]
+    fn borrowed_order_reference_preserves_unrooted_component_rejection() {
+        for unrooted in [
+            vec![element(id(2, 1), Some(id(99, 1)), None, false)],
+            vec![
+                element(id(2, 1), Some(id(3, 1)), None, true),
+                element(id(3, 1), Some(id(2, 1)), None, false),
+            ],
+        ] {
+            let mut elements = vec![element(id(1, 1), None, None, true)];
+            elements.extend(unrooted);
+            let expected = full_rebuild_ids(&elements);
+            let sequence = Sequence::from_elements(elements);
+            assert_eq!(sequence.reference_order_ids(), expected);
+            assert!(
+                std::panic::catch_unwind(|| sequence.debug_assert_incremental_order()).is_err()
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "incremental sequence order diverged from full rebuild")]
+    fn borrowed_order_reference_detects_wrong_stored_order() {
+        let sequence = Sequence::from_elements(vec![
+            element(id(2, 1), Some(id(1, 1)), None, true),
+            element(id(1, 1), None, None, false),
+        ]);
+        sequence.debug_assert_incremental_order();
+    }
+
+    #[test]
+    #[should_panic(expected = "full ordering reference contains duplicate identifiers")]
+    fn borrowed_order_reference_rejects_duplicate_retained_identifiers() {
+        let sequence = Sequence::from_elements(vec![
+            element(id(1, 1), None, None, true),
+            element(id(1, 1), Some(id(1, 1)), None, false),
+        ]);
+        sequence.debug_assert_incremental_order();
     }
 }
 

@@ -156,14 +156,23 @@ fn failed_refresh_preserves_the_clean_session_and_allows_a_later_repair() {
         .document()
         .serialize(EquivalenceMode::Structural);
 
-    fs::write(
-        &path,
-        "# Note\n\n```markdown\n* item:\n  ```text\n  code\n  ```\n```\n",
-    )
-    .unwrap();
-    vault
+    let too_deep = format!(
+        "# Changed\n\n{}outside the nesting budget\n",
+        "> ".repeat(md_crdt::limits::MAX_QUOTE_DEPTH + 1),
+    );
+    fs::write(&path, too_deep).unwrap();
+    let error = vault
         .refresh_markdown("note.md", Some(&opened.revision), None)
-        .expect_err("the ambiguous fence cannot be ingested");
+        .expect_err("source outside the nesting budget is refused");
+    let md_crdt::filesync::VaultError::Io(error) = error else {
+        panic!("the bounded file reader must preserve its input error")
+    };
+    assert!(matches!(
+        error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<md_crdt::limits::InputLimitError>()),
+        Some(md_crdt::limits::InputLimitError::Nesting { .. })
+    ));
 
     assert_eq!(
         vault

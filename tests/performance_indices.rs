@@ -1,7 +1,6 @@
 use md_crdt::core::{OpId, Sequence, SequenceOp, StateVector};
 use md_crdt::doc::{Block, BlockKind, Document, ListItem, block_id_from_op};
 use md_crdt::sync::{IntegrateResult, Operation, SyncState};
-use std::sync::Arc;
 
 fn op(counter: u64, peer: u64) -> OpId {
     OpId { counter, peer }
@@ -98,7 +97,9 @@ fn block_index_follows_list_item_paths_and_survives_document_clone() {
             task: None,
             task_op: item_id,
             task_observed: StateVector::new(),
+            task_conflicts: Vec::new(),
             placement_observed: StateVector::new(),
+            placement_conflicts: Vec::new(),
             children,
         },
         item_id,
@@ -171,32 +172,6 @@ fn block_index_repairs_after_public_sequence_replacement() {
         right.find_block(left_id).map(|block| block.id),
         Some(block_id_from_op(left_id))
     );
-}
-
-#[test]
-fn encoded_changes_share_immutable_payload_storage() {
-    let mut sync = SyncState::new();
-    let payload: Arc<[u8]> = vec![7; 1024].into();
-    sync.apply_op(Operation {
-        id: op(1, 3),
-        payload: payload.clone(),
-    });
-
-    let changes = sync.encode_changes_since(&StateVector::new()).unwrap();
-    assert_eq!(changes.ops.len(), 1);
-    assert!(Arc::ptr_eq(&changes.ops[0].payload, &payload));
-}
-
-#[test]
-fn shared_payload_keeps_the_existing_json_byte_array_shape() {
-    let operation = Operation {
-        id: op(1, 7),
-        payload: vec![1, 2, 3].into(),
-    };
-    let json = serde_json::to_value(&operation).expect("serialize operation");
-    assert_eq!(json["payload"], serde_json::json!([1, 2, 3]));
-    let restored: Operation = serde_json::from_value(json).expect("deserialize operation");
-    assert_eq!(restored, operation);
 }
 
 #[test]
@@ -294,4 +269,121 @@ fn cached_state_vector_matches_independent_recompute() {
     let mut restored = SyncState::new();
     restored.restore_applied(sync.applied_ops());
     assert_eq!(restored.state_vector(), oracle);
+}
+
+#[test]
+fn nested_container_insertion_follows_public_child_replacement() {
+    let mut document = Document::new();
+    let outer = op(1, 20);
+    let old_quote = op(2, 20);
+    let new_quote = op(3, 20);
+    let child = op(4, 20);
+    let quote = |id| {
+        Block::new(
+            BlockKind::BlockQuote {
+                children: Sequence::new(),
+            },
+            id,
+        )
+    };
+    assert!(document.insert_block_at(None, None, outer, quote(outer), None));
+    assert!(document.insert_block_at(Some(outer), None, old_quote, quote(old_quote), None));
+    assert!(document.container_children(Some(old_quote)).is_some());
+
+    document
+        .with_block_mut(outer, |block| {
+            let mut children = Sequence::new();
+            children.insert(None, quote(new_quote), new_quote);
+            block.kind = BlockKind::BlockQuote { children };
+        })
+        .unwrap();
+
+    assert!(document.find_block(old_quote).is_none());
+    assert!(document.container_children(Some(old_quote)).is_none());
+    assert!(document.insert_block_at(Some(new_quote), None, child, paragraph(child), None));
+    assert_eq!(
+        document.block_parent(block_id_from_op(child)),
+        Some(Some(new_quote))
+    );
+    assert_eq!(
+        document
+            .container_children(Some(new_quote))
+            .unwrap()
+            .iter()
+            .map(|block| block.elem_id)
+            .collect::<Vec<_>>(),
+        vec![child],
+    );
+    assert_eq!(
+        document.find_block(child).unwrap().id,
+        block_id_from_op(child)
+    );
+}
+
+#[test]
+fn item_container_insertion_follows_public_list_replacement() {
+    let mut document = Document::new();
+    let list = op(1, 21);
+    let old_item = op(2, 21);
+    let new_item = op(3, 21);
+    let child = op(4, 21);
+    let item = |id| ListItem {
+        id: block_id_from_op(id),
+        elem_id: id,
+        task: None,
+        task_op: id,
+        task_observed: StateVector::new(),
+        task_conflicts: Vec::new(),
+        placement_observed: StateVector::new(),
+        placement_conflicts: Vec::new(),
+        children: Sequence::new(),
+    };
+    let mut items = Sequence::new();
+    items.insert(None, item(old_item), old_item);
+    assert!(document.insert_block_at(
+        None,
+        None,
+        list,
+        Block::new(
+            BlockKind::List {
+                style: md_crdt::ListStyle::default(),
+                items,
+                pending_moves: Vec::new(),
+            },
+            list,
+        ),
+        None
+    ));
+    assert!(document.container_children(Some(old_item)).is_some());
+
+    document
+        .with_block_mut(list, |block| {
+            let BlockKind::List { items, .. } = &mut block.kind else {
+                panic!("list");
+            };
+            *items = Sequence::new();
+            items.insert(None, item(new_item), new_item);
+        })
+        .unwrap();
+
+    assert!(document.find_list_item(old_item).is_none());
+    assert!(document.container_children(Some(old_item)).is_none());
+    assert!(document.insert_block_at(Some(new_item), None, child, paragraph(child), None));
+    assert_eq!(
+        document.block_parent(block_id_from_op(child)),
+        Some(Some(new_item))
+    );
+    assert_eq!(
+        document
+            .container_children(Some(new_item))
+            .unwrap()
+            .iter()
+            .map(|block| block.elem_id)
+            .collect::<Vec<_>>(),
+        vec![child],
+    );
+    assert_eq!(
+        document.find_list_item(new_item).unwrap().id,
+        block_id_from_op(new_item)
+    );
 }

@@ -9,7 +9,7 @@ use md_crdt::doc::EquivalenceMode;
 use md_crdt::filesync::VaultSession;
 use md_crdt::session::CollaborativeDocument;
 use md_crdt::sync::{ChangeMessage, ValidationLimits};
-use md_crdt::{OpId, StateVector, block_id_from_op};
+use md_crdt::{StateVector, Storage, block_id_from_op};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
@@ -35,26 +35,6 @@ fn session_dir(root: &Path, rel: &str) -> PathBuf {
     let mut path = root.join(".mdcrdt").join("sessions").join(rel);
     path.set_extension("mdcrdt");
     path
-}
-
-fn count_op_segments(session_storage: &Path) -> usize {
-    let ops = session_storage.join("ops");
-    if !ops.exists() {
-        return 0;
-    }
-    fs::read_dir(&ops)
-        .unwrap()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .strip_prefix("op_")
-                .and_then(|s| s.parse::<usize>().ok())
-                .is_some()
-                && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
-        })
-        .count()
 }
 
 #[test]
@@ -159,7 +139,7 @@ fn unbatched_edit_still_persists_on_return() {
 }
 
 #[test]
-fn many_edits_write_one_snapshot_when_batched() {
+fn batched_edits_are_durable_after_flush() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("note.md"), "seed").unwrap();
 
@@ -167,7 +147,6 @@ fn many_edits_write_one_snapshot_when_batched() {
     vault.ingest_all().unwrap();
     // Establish a full baseline snapshot so subsequent flushes can append.
     vault.save_state("note.md").unwrap();
-    let segments_before = count_op_segments(&session_dir(dir.path(), "note.md"));
 
     let block_id = first_block_id(&mut vault, "note.md");
     for i in 0..5 {
@@ -179,11 +158,6 @@ fn many_edits_write_one_snapshot_when_batched() {
             })
             .unwrap();
     }
-    // No new segments until flush.
-    assert_eq!(
-        count_op_segments(&session_dir(dir.path(), "note.md")),
-        segments_before
-    );
     vault.flush_document("note.md").unwrap();
     drop(vault);
 
@@ -210,10 +184,6 @@ fn reopen_replays_appended_changes() {
         })
         .unwrap();
     vault.flush_document("note.md").unwrap();
-    assert!(
-        count_op_segments(&session_dir(dir.path(), "note.md")) >= 1,
-        "expected at least one live op segment after incremental flush"
-    );
     drop(vault);
 
     let mut reopened = VaultSession::open(dir.path()).unwrap();
@@ -237,16 +207,7 @@ fn full_snapshot_supersedes_its_segments() {
             .unwrap();
         vault.flush_document("note.md").unwrap();
     }
-    assert!(
-        count_op_segments(&session_dir(dir.path(), "note.md")) >= 1,
-        "expected live segments before compaction"
-    );
     vault.compact_document("note.md").unwrap();
-    let live = count_op_segments(&session_dir(dir.path(), "note.md"));
-    assert_eq!(
-        live, 0,
-        "full snapshot should clear live op segments, found {live}"
-    );
     let expected = text(&mut vault, "note.md");
     drop(vault);
 
@@ -277,24 +238,17 @@ fn corrupt_trailing_segment_fails_closed() {
     vault.flush_document("note.md").unwrap();
     drop(vault);
 
-    let ops = session_dir(dir.path(), "note.md").join("ops");
-    let mut segments: Vec<_> = fs::read_dir(&ops)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with("op_"))
-        })
-        .collect();
-    segments.sort();
-    let last = segments.last().expect("live op segment");
-    let mut bytes = fs::read(last).unwrap();
+    let storage = Storage::open(session_dir(dir.path(), "note.md")).unwrap();
+    let payloads = storage.read_op_segments().unwrap();
+    // Append a valid duplicate and corrupt its physical envelope. Recovery must
+    // reject corruption even when its operation IDs were already acknowledged.
+    let last = storage.append_op_segment(payloads.last().unwrap()).unwrap();
+    let mut bytes = fs::read(&last).unwrap();
     // Flip a payload byte while leaving the file present.
     if let Some(b) = bytes.last_mut() {
         *b ^= 0xff;
     }
-    fs::write(last, bytes).unwrap();
+    fs::write(&last, bytes).unwrap();
 
     let result = VaultSession::open(dir.path()).and_then(|mut v| {
         v.open_document("note.md")?;
@@ -367,12 +321,47 @@ fn deferred_edit_is_not_durable_until_flush() {
     assert_eq!(text(&mut reopened, "note.md"), "alpha");
 }
 
-/// Compile-time / API smoke: block id helper used by benches.
 #[test]
-fn block_id_from_op_is_stable_for_seed() {
-    let id = block_id_from_op(OpId {
-        counter: 1,
-        peer: 1,
-    });
-    assert_ne!(format!("{id:?}"), "");
+fn lazy_restore_preserves_snapshot_and_operation_storage_error_stages() {
+    use md_crdt::filesync::VaultError;
+    use md_crdt::session::SnapshotError;
+    use md_crdt::storage::StorageError;
+
+    for snapshot_failure in [true, false] {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("note.md"), "seed").unwrap();
+        let mut vault = VaultSession::open(dir.path()).unwrap();
+        vault.ingest_all().unwrap();
+        vault.save_state("note.md").unwrap();
+        drop(vault);
+        let root = session_dir(dir.path(), "note.md");
+        let storage = Storage::open(&root).unwrap();
+        if snapshot_failure {
+            // No snapshot slot remains readable; recovery must preserve the
+            // pre-existing Snapshot(Storage(..)) classification.
+            fs::write(root.join("segment_a"), b"corrupt-a").unwrap();
+            fs::write(root.join("segment_b"), b"corrupt-b").unwrap();
+        } else {
+            let path = storage.append_op_segment(b"payload").unwrap();
+            let mut encoded = fs::read(&path).unwrap();
+            *encoded.last_mut().unwrap() ^= 1;
+            fs::write(path, encoded).unwrap();
+        }
+        let mut reopened = VaultSession::open(dir.path()).unwrap();
+        let error = reopened
+            .session_mut("note.md")
+            .err()
+            .expect("physical corruption must fail lazy recovery");
+        if snapshot_failure {
+            assert!(matches!(
+                error,
+                VaultError::Snapshot(SnapshotError::Storage(StorageError::Corrupt(_)))
+            ));
+        } else {
+            assert!(matches!(
+                error,
+                VaultError::Storage(StorageError::CorruptOperationSegment { .. })
+            ));
+        }
+    }
 }

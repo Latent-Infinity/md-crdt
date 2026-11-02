@@ -458,3 +458,64 @@ fn snapshot_preserves_pending_column_operations() {
 
     assert_eq!(editor.document(), restored.document());
 }
+
+#[test]
+fn direct_table_cell_candidates_commute_even_when_a_loser_becomes_relevant() {
+    use md_crdt::core::{OpId, StateVector};
+    use md_crdt::doc::TableCell;
+    let base = OpId {
+        counter: 1,
+        peer: 9,
+    };
+    let a = OpId {
+        counter: 100,
+        peer: 1,
+    };
+    let b = OpId {
+        counter: 1,
+        peer: 2,
+    };
+    let c = OpId {
+        counter: 50,
+        peer: 3,
+    };
+    let mut concurrent = StateVector::new();
+    concurrent.set(9, 1);
+    let mut after_a = concurrent.clone();
+    after_a.set(1, 100);
+    let writes = [
+        ("A", a, concurrent.clone()),
+        ("B", b, after_a),
+        ("C", c, concurrent),
+    ];
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [2, 0, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 1, 0],
+    ] {
+        let mut cell = TableCell::new("base".into(), base, StateVector::new());
+        for index in order {
+            let (value, id, observed) = &writes[index];
+            cell.set((*value).into(), *id, observed.clone());
+        }
+        assert_eq!(cell.value, "C", "{order:?}");
+        assert_eq!(cell.op_id, c);
+        let mut after_all = StateVector::new();
+        after_all.set(1, 100);
+        after_all.set(2, 1);
+        after_all.set(3, 50);
+        cell.set(
+            "resolved".into(),
+            OpId {
+                counter: 1,
+                peer: 4,
+            },
+            after_all,
+        );
+        cell.set("A".into(), a, writes[0].2.clone());
+        assert_eq!(cell.value, "resolved");
+    }
+}

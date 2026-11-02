@@ -146,5 +146,5 @@ pub use filesync::{
     match_blocks, parsed_blocks_from_doc,
 };
 
-/// Resource budgets for externally supplied Markdown.
+/// Resource budgets for durable sessions and externally supplied Markdown.
 pub mod limits;

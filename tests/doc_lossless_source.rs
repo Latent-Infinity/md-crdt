@@ -190,3 +190,114 @@ fn multi_region_edit_leaves_untouched_unicode_region_byte_identical() {
     assert!(output.contains("alpha Xone"), "first edit: {output:?}");
     assert!(output.contains("gamma Ythree"), "third edit: {output:?}");
 }
+
+fn parsed_session(source: &str, peer: u64) -> md_crdt::CollaborativeDocument {
+    let mut snapshot = md_crdt::CollaborativeDocument::new(peer)
+        .save_snapshot()
+        .unwrap();
+    snapshot.document = DocumentDto::from_document(&Parser::parse(source));
+    md_crdt::CollaborativeDocument::restore_from_snapshot(snapshot).unwrap()
+}
+
+#[test]
+fn direct_document_move_then_edit_dirties_the_logical_source_region() {
+    let mut document = Parser::parse("alpha\n\nbeta\n");
+    let mut beta = document.blocks_in_order()[1].clone();
+    let target = beta.elem_id;
+    let logical_id = beta.id;
+    let moved = OpId {
+        peer: 42,
+        counter: 1,
+    };
+    beta.elem_id = moved;
+    assert!(document.delete_block_at(None, target, moved));
+    assert!(document.insert_block_at(None, None, moved, beta, None));
+    document
+        .insert_text(
+            logical_id,
+            0,
+            "X",
+            OpId {
+                peer: 42,
+                counter: 2,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        document.serialize(EquivalenceMode::Exact),
+        "Xbeta\n\nalpha\n"
+    );
+}
+
+#[test]
+fn session_move_then_edit_survives_remote_replay_and_snapshot_restore() {
+    for restore_between in [false, true] {
+        let mut sender = parsed_session("alpha\n\nbeta\n", 42);
+        let baseline = sender.save_snapshot().unwrap();
+        let beta = sender.document().blocks_in_order()[1].id;
+        sender.move_block(beta, None, None).unwrap();
+        if restore_between {
+            let bytes = sender.save_snapshot().unwrap().to_bytes().unwrap();
+            sender = md_crdt::CollaborativeDocument::restore_from_snapshot(
+                md_crdt::SessionSnapshot::from_bytes(&bytes).unwrap(),
+            )
+            .unwrap();
+        }
+        sender.insert_text(beta, 0, "X").unwrap();
+        assert_eq!(
+            sender.document().serialize(EquivalenceMode::Exact),
+            "Xbeta\n\nalpha\n"
+        );
+        let mut receiver =
+            md_crdt::CollaborativeDocument::rebase_from_snapshot(baseline, 43).unwrap();
+        receiver
+            .apply_remote(
+                sender
+                    .encode_changes_since(&receiver.state_vector())
+                    .unwrap(),
+                &md_crdt::ValidationLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            receiver.document().serialize(EquivalenceMode::Exact),
+            "Xbeta\n\nalpha\n"
+        );
+    }
+}
+
+#[test]
+fn nested_move_dirties_both_container_roots_but_preserves_unrelated_trivia() {
+    let input = "> alpha\n>\n> beta\n\n> gamma\n\n#  Untouched ##\r\n";
+    let mut sender = parsed_session(input, 42);
+    let roots = sender.document().blocks_in_order();
+    let BlockKind::BlockQuote { children } = &roots[0].kind else {
+        panic!("first quote")
+    };
+    let beta = children.iter().last().unwrap().id;
+    let destination = roots[1].elem_id;
+    let baseline = sender.save_snapshot().unwrap();
+    sender.move_block(beta, Some(destination), None).unwrap();
+    let bytes = sender.save_snapshot().unwrap().to_bytes().unwrap();
+    sender = md_crdt::CollaborativeDocument::restore_from_snapshot(
+        md_crdt::SessionSnapshot::from_bytes(&bytes).unwrap(),
+    )
+    .unwrap();
+    sender.insert_text(beta, 0, "X").unwrap();
+    let exact = sender.document().serialize(EquivalenceMode::Exact);
+    assert_eq!(exact.matches("Xbeta").count(), 1);
+    assert!(exact.ends_with("#  Untouched ##\r\n"), "{exact:?}");
+    assert_eq!(
+        Parser::parse(&exact).serialize(EquivalenceMode::Structural),
+        sender.document().serialize(EquivalenceMode::Structural),
+    );
+    let mut receiver = md_crdt::CollaborativeDocument::rebase_from_snapshot(baseline, 43).unwrap();
+    receiver
+        .apply_remote(
+            sender
+                .encode_changes_since(&receiver.state_vector())
+                .unwrap(),
+            &md_crdt::ValidationLimits::default(),
+        )
+        .unwrap();
+    assert_eq!(receiver.document().serialize(EquivalenceMode::Exact), exact);
+}

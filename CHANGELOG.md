@@ -11,15 +11,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Parse bare, aliased, and embedded wikilinks into semantic link marks, and
   expose `doc::inline_links` so raw table-cell text uses the parser's link rules.
+- Focused `council_performance` microbenchmarks with isolated allocation/peak-live-byte probes,
+  semantic-session and Exact-render fuzz inputs, a Unicode-frontmatter seed, and a registered
+  `snapshot_restore` fuzz target. Registration does not establish execution or sanitizer coverage.
 
 ### Changed
 
-- Breaking wire V5 and snapshot V8 distinguish an unmarked table column from
-  explicit left alignment. Older peers and persisted sessions fail closed and
-  must upgrade or re-ingest rather than decoding the expanded enum as V4/V7.
+- Breaking wire V7 and snapshot V10 require durable block/list-item placement and deletion
+  topology with creation-incarnation targets, independent frontmatter initializer/field state,
+  and source-local frontmatter revision provenance. They retain causally maximal
+  structured-register candidates and distinguish default from explicit-left table alignment.
+  Older peers and persisted sessions fail closed with typed errors; no legacy field defaults
+  or in-place migration are provided. Public structured document/DTO literals require topology
+  and conflict-history fields, and list-item placement uses stable destination IDs.
+  Back up and export unexported state with a compatible binary before upgrading and
+  reinitializing from authoritative Markdown.
+- Clarify that transport-log checkpointing retains full structural placement/deletion history,
+  incarnation metadata, and tombstones; it does not bound snapshot size or RSS by live content.
+- Breaking block matching now returns typed budget refusals, vault errors preserve typed causes,
+  and validation limits include aggregate retained-byte and dependency-work budgets.
+- CLI parsing is isolated behind the default-enabled `cli` feature; library-only feature
+  selections no longer require clap. Unused tracing was removed.
+- Rebuild the incremental-debug ordering oracle from borrowed metadata instead of
+  temporary sequences and indexes. Complete independent stored-ID comparisons,
+  tombstones, verification frequency, and the 9,999-edit boundary remain intact;
+  no debug assertion sampling, caps, or default profile changes are introduced.
+- Share snapshot selection and generation-aware operation replay during lazy vault
+  loading, avoiding repeated payload validation within one externally serialized
+  read. Corrupt-newest fallback still replays required retired operations;
+  independent `Storage` APIs revalidate per call and retain no cross-call cache.
+- Reuse a private owned validation/decoded-envelope proof during snapshot restore.
+  Mutable DTOs still validate freshly, and normalization invalidates the proof and
+  fully revalidates the changed snapshot. Deferred DTO restores trade a measured
+  transient peak increase for less decoding; returned-session retention is unchanged
+  in the measured fixtures.
+- Borrow applied transport payloads while constructing canonical snapshots, avoiding
+  the discarded generic-codec log copy. Native JSON still copies once into the final
+  owned snapshot, and canonical borrowed subslices preserve their exact extent.
+- Admit additional long-paragraph local edits with exact suffix trimming and
+  certified banded alignment, preserving the original grapheme identity mapping.
+  Original dense admissions remain supported; optimized work, allocation traffic,
+  output size and every attempted band share explicit limits.
+- Resolve nested mutable container access through the existing incarnation-aware
+  index instead of repeated recursive path searches. Public child/list replacement
+  still invalidates the index; structural history and tombstones remain intact.
+- Retain unfavorable component ablations: redundant-anchor, borrowed physical-path,
+  and frontmatter-render candidates were not accepted as general improvements.
+- V2 storage gains checksummed operation-generation/coverage metadata. Stores that adopt this
+  layout require generation-aware binaries. Outer storage/compression framing is unchanged;
+  the session JSON schema is V10.
 
 ### Fixed
 
+- Update the excluded attribution consumer for `SequenceOrderOracle`, restoring
+  its opt-in `sub_probes` build and keeping recorded-span rows exhaustive.
+- Document per-worker fuzz RSS thresholds and distinguish corpus replay from
+  new mutation iterations; no active CI fuzz campaign is implied.
+- Capture deletion's target and visible subtree at its causal cut, qualified by creation
+  incarnation. Concurrent captured escapes die; previously observed completed escapes and
+  unseen incoming outsiders survive, with historical viable placement fallback. Late initial
+  births into deleted origins remain no-ops rather than absorbing arbitrary incoming moves.
+- Preserve a single owned body tree through concurrent block/list-item moves, destination
+  cycles, checkpoint/restore, and explicit identity recreation without reviving old placements.
+- Normalize generic-codec applied, pending, and deferred snapshot payloads to native JSON,
+  restoring/rebasing Json sessions without changing the source session's transport codec.
+- Enforce conjunctive hard durable pending ceilings of 100,000 operations and 64 MiB logical
+  charge, including normalized snapshot bytes; caller limits can tighten but not raise them.
+- Keep explicit frontmatter field writes/deletions independent of concurrent initializer LWW
+  bases, preserve losing initializer clocks, and avoid importing embedded field history as
+  initializer authority. Retain supported remote registers under opaque bases/adopted source
+  while rejecting local structured mutation of opaque source.
+- Persist frontmatter source-revision provenance so comment-only/adopted CRLF source remains
+  Exact through later supported field edits and reopen, without replicating adoption as a base.
 - Preserve literal, escaped, and nested brackets before inline Markdown links
   instead of letting the next unrelated `](` absorb intervening text.
 - Preserve `---` versus `:---` table delimiters through structural edits and
@@ -28,6 +91,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot leave partially applied CRDT state or block a later repaired file.
 - Keep escaped link openers and links inside single- or multi-backtick code spans
   literal in both parsed blocks and the public raw-text link scanner.
+- Reconcile local clocks after recovery; fall back to snapshots for unreplayable deltas;
+  retain a valid snapshot and its required operations through failed publication/retirement.
+- Preserve source invalidation after block moves, and retain formatting endpoints from both
+  sides of split/merge collision remapping, including removed mark history.
+- Make structured registers converge independently of delivery order without advancing
+  local clocks to foreign counters; author local causal contexts from materialized effects.
+- Advance remote admission projections within a message, retain unresolved nested envelopes
+  without over-expanding pending queues, and verify complete reader replay admission before
+  appending durable segments.
+- Normalize restored causal move/alignment queues into deferred envelopes, preserving
+  observation barriers after container deletion and allowing dependency-plus-follower
+  messages to progress at the pending cap without weakening atomic refusal.
+- Reserve mutually unique exact block fingerprints before bounded fuzzy matching so ordinary
+  large common-token refreshes preserve identities without removing resource limits.
+- Attribute direct and deferred remote integration to the same committed-wire-operation
+  counter; avoid document DTO cloning for pending accounting and repeated held-envelope sizing.
+- Share validated snapshot-slot state within one publication/retirement operation while
+  retaining full integrity checks across independent storage calls.
+- Defer document effects until cross-peer dependencies arrive, reject descendant list moves,
+  and reconcile heading/code/raw disk refresh semantics before adopting source.
+- Reject invalid counter spans, snapshot source offsets, overdeep binary structures, and
+  escaping recovery journals before mutation; preserve Markdown permissions and durable peer IDs.
+- Bound table/matcher expansion and preserve grapheme boundaries in inline parsing and
+  mark rendering.
+- Require successful runs and recorded build context in competitive provenance schema V2.
+  Removed constant-derived “ablation” output that was not a measurement.
 
 ## [0.4.0] - 2026-08-05
 
@@ -74,7 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they intentionally discard unexported session work, including when disk bytes
   are unchanged, so guarding that transition remains the host's responsibility.
 - Breaking snapshot V7 wraps the versioned JSON state in a zlib-compressed envelope with an
-  authenticated declared length and a 512 MiB decompression limit. Non-current raw JSON snapshots
+  checked declared length and a 512 MiB decompression limit. Non-current raw JSON snapshots
   still report the actionable reinitialize/re-ingest error.
 - Full snapshot writes use zlib level 3 instead of level 6, reducing representative tail latency
   in exchange for a modest increase in persisted snapshot size without changing the V7 format.

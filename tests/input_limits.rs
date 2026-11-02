@@ -40,14 +40,15 @@ fn oversized_ingest_preserves_the_existing_session() {
 fn alignment_work_refusal_preserves_the_live_document() {
     let root = tempfile::tempdir().unwrap();
     let mut vault = VaultSession::open(root.path()).unwrap();
-    let original = "a".repeat(2100);
+    let original = "a".repeat(5000);
     vault.create_markdown("note.md", &original).unwrap();
-    std::fs::write(
-        root.path().join("note.md"),
-        format!("{}b", "a".repeat(2099)),
-    )
-    .unwrap();
-    assert!(vault.ingest_all().is_err());
+    std::fs::write(root.path().join("note.md"), "b".repeat(5000)).unwrap();
+    assert!(matches!(
+        vault.ingest_all(),
+        Err(md_crdt::filesync::VaultError::InputLimit(
+            md_crdt::limits::InputLimitError::DiffWork
+        ))
+    ));
     assert_eq!(
         vault
             .session_mut("note.md")

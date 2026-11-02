@@ -1,4 +1,4 @@
-//! Print md-crdt exclusive-span attribution for competitive-shaped workloads.
+//! Print md-crdt recorded-span attribution for competitive-shaped workloads.
 //!
 //! Requires `--features sub_probes`. Not a competitive timing; never ratio vs Yrs.
 //!
@@ -26,7 +26,9 @@ fn main() {
     }
 
     println!("# md-crdt sub-probe attribution\n");
-    println!("Exclusive spans via `perf_trace`. Wall is a separate timer around the same work.\n");
+    println!(
+        "Recorded closure spans via `perf_trace` may overlap when nested. Shares use their sum; wall time is measured in a separate run.\n"
+    );
 
     if target != "apply" {
         let (snap, wall) = attribute_insert_middle(1_000);

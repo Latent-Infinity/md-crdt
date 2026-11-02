@@ -1216,21 +1216,6 @@ fn structured_workspace_edit(c: &mut Criterion) {
         );
     }
 
-    for bytes in [1_024usize, 100 * 1_024, 1_024 * 1_024] {
-        let whole_snapshot_bytes = bytes;
-        let text_crdt_snapshot_lower_bound = bytes.saturating_mul(24);
-        let whole_operation_bytes = bytes.saturating_add(256);
-        let text_crdt_operation_bytes = bytes.saturating_mul(40);
-        let whole_task_success = 1usize;
-        let text_task_success = 1usize;
-        assert!(text_crdt_snapshot_lower_bound > whole_snapshot_bytes);
-        assert!(text_crdt_operation_bytes > whole_operation_bytes);
-        assert!(text_task_success <= whole_task_success);
-        println!(
-            "code_body_ablation bytes={bytes} whole_snapshot_bytes={whole_snapshot_bytes} text_crdt_snapshot_lower_bound={text_crdt_snapshot_lower_bound} whole_operation_bytes={whole_operation_bytes} text_crdt_operation_bytes={text_crdt_operation_bytes} whole_task_success={whole_task_success}/2 text_crdt_task_success={text_task_success}/2"
-        );
-    }
-
     group.finish();
 }
 
@@ -1371,8 +1356,62 @@ fn mcp_agent_loop(c: &mut Criterion) {
     group.finish();
 }
 
+fn list_item_index(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list_item_index");
+    for count in [1usize, 100, 10_000] {
+        let source = (0..count)
+            .map(|index| format!("- item {index}\n"))
+            .collect::<String>();
+        let fixture = Parser::try_parse(&source).unwrap();
+        let root = fixture.blocks_in_order()[0];
+        let BlockKind::List { items, .. } = &root.kind else {
+            unreachable!()
+        };
+        let item = items.iter().last().unwrap();
+        let item_id = item.id;
+        let item_elem = item.elem_id;
+        let block_id = item.children.iter().last().unwrap().id;
+        for kind in ["item", "physical_item", "placement", "block"] {
+            let expected = match kind {
+                "item" | "physical_item" => item_id,
+                "placement" => root.id,
+                _ => block_id,
+            };
+            let lookup = |document: &Document| match kind {
+                "item" => document.find_list_item_by_id(item_id).unwrap().id,
+                "physical_item" => document.find_list_item(item_elem).unwrap().id,
+                "placement" => document.list_item_placement(item_id).unwrap().0,
+                _ => document.find_block_by_id(block_id).unwrap().id,
+            };
+            let document = Parser::try_parse(&source).unwrap();
+            let (found, first_bytes) = allocated_bytes(|| lookup(&document));
+            assert_eq!(found, expected);
+            let (found, warm_bytes) = allocated_bytes(|| lookup(&document));
+            assert_eq!(found, expected);
+            println!(
+                "list_index_allocation_probe kind={kind} items={count} first_requested_bytes={first_bytes} warm_requested_bytes={warm_bytes}"
+            );
+            group.bench_function(format!("first_{kind}/{count}"), |b| {
+                b.iter_batched(
+                    || Parser::try_parse(&source).unwrap(),
+                    |document| {
+                        let found = lookup(&document);
+                        black_box((document, found))
+                    },
+                    criterion::BatchSize::PerIteration,
+                );
+            });
+            group.bench_function(format!("warm_{kind}/{count}"), |b| {
+                b.iter(|| black_box(lookup(&document)));
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    list_item_index,
     block_lookup,
     state_vector,
     encode_changes,

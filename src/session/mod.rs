@@ -23,8 +23,8 @@ use crate::doc::{
     paragraph_visible_ids, paragraph_visible_string, units_from_str,
 };
 use crate::sync::{
-    ChangeMessage, CheckpointError, CheckpointReport, CheckpointRequest, IntegrateResult,
-    Operation, RebaseRequired, SyncState, ValidationError, ValidationLimits, validate_changes,
+    ChangeMessage, CheckpointError, CheckpointReport, CheckpointRequest, Operation, RebaseRequired,
+    SyncState, ValidationError, ValidationLimits,
 };
 use crate::workspace::{
     BlockDraft, ListItemDraft, StructuredEditError, StructuredEditLimits, TextBlockKind,
@@ -39,6 +39,10 @@ use wire::*;
 pub enum SessionError {
     #[error("codec: {0}")]
     Codec(String),
+    #[error(transparent)]
+    WireCodec(#[from] crate::codec::CodecError),
+    #[error("local operation counter is exhausted")]
+    CounterExhausted,
     #[error(transparent)]
     Validation(#[from] ValidationError),
     #[error("unknown wire version {0}")]
@@ -95,15 +99,16 @@ pub enum SessionError {
     Frontmatter(#[from] crate::doc::FrontmatterError),
 }
 
-fn codec_err<E: std::fmt::Display>(e: E) -> SessionError {
-    let s = e.to_string();
-    // JsonOpCodec rejects unknown versions as CodecError::UnknownVersion(...).
-    if let Some(rest) = s.strip_prefix("unknown wire version ")
-        && let Ok(v) = rest.parse::<u16>()
-    {
-        return SessionError::UnknownWireVersion(v);
+fn codec_err<E: std::error::Error + 'static>(e: E) -> SessionError {
+    if let Some(error) = (&e as &dyn std::error::Error).downcast_ref::<crate::codec::CodecError>() {
+        return match error {
+            crate::codec::CodecError::UnknownVersion(version) => {
+                SessionError::UnknownWireVersion(*version)
+            }
+            error => SessionError::WireCodec(error.clone()),
+        };
     }
-    SessionError::Codec(s)
+    SessionError::Codec(e.to_string())
 }
 
 fn validate_table_cell(value: &str) -> Result<(), SessionError> {
@@ -156,6 +161,10 @@ fn envelope_observed_frontier(envelope: &Envelope) -> Option<&StateVector> {
     match &envelope.body {
         OpBody::Doc(
             DocOp::RemoveMark { observed, .. }
+            | DocOp::MoveBlocks { observed, .. }
+            | DocOp::DeleteBlock { observed, .. }
+            | DocOp::DeleteBlockById { observed, .. }
+            | DocOp::DeleteListItemById { observed, .. }
             | DocOp::SetTableCell { observed, .. }
             | DocOp::SetTableColumnAlignment { observed, .. }
             | DocOp::MoveTableRow { observed, .. }
@@ -168,6 +177,25 @@ fn envelope_observed_frontier(envelope: &Envelope) -> Option<&StateVector> {
             | DocOp::ReplaceRawBlock { observed, .. },
         ) => Some(observed),
         _ => None,
+    }
+}
+
+fn draft_counter_count(draft: &BlockDraft) -> Option<u64> {
+    match draft {
+        BlockDraft::Paragraph { text } | BlockDraft::Heading { text, .. } => {
+            1u64.checked_add(grapheme_count(text) as u64)
+        }
+        BlockDraft::BlockQuote { children } => children.iter().try_fold(1u64, |count, child| {
+            count.checked_add(draft_counter_count(child)?)
+        }),
+        BlockDraft::List { items, .. } => items.iter().try_fold(1u64, |count, item| {
+            item.children
+                .iter()
+                .try_fold(count.checked_add(1)?, |count, child| {
+                    count.checked_add(draft_counter_count(child)?)
+                })
+        }),
+        BlockDraft::CodeFence { .. } | BlockDraft::RawBlock { .. } => Some(1),
     }
 }
 
@@ -184,7 +212,92 @@ pub enum SyncResponse {
     Rebase { checkpoint: Box<SessionSnapshot> },
 }
 
+struct PreparedOperation {
+    id: OpId,
+    raw_bytes: usize,
+    op: Option<Operation>,
+    envelope: Envelope,
+    ready: bool,
+    staged_block: Option<Block>,
+    charge: usize,
+    folded: bool,
+    committed_operations: usize,
+    discarded: bool,
+}
+
+#[derive(Clone)]
+struct PendingEnvelope {
+    envelope: Envelope,
+    decoded_bytes: usize,
+    /// JSON snapshot raw charge when larger than the retained transport payload.
+    snapshot_raw_bytes: usize,
+}
+
+impl PendingEnvelope {
+    fn raw_charge(&self, retained: usize) -> usize {
+        if retained == 0 {
+            0 // Checkpointing removed the raw applied copy.
+        } else {
+            retained.max(self.snapshot_raw_bytes)
+        }
+    }
+}
+
+struct AdmissionView<'a> {
+    received: &'a StateVector,
+    materialized: &'a StateVector,
+    inserted: &'a AdmissionInsertions,
+}
+
+enum PlannedEffect {
+    New(usize),
+    Held(OpId),
+}
+
+fn advance_materialized(frontier: &mut StateVector, envelope: &Envelope) {
+    let (end, span) = operation_extent(envelope);
+    let start = end.counter.saturating_sub(span.saturating_sub(1));
+    if frontier
+        .get(end.peer)
+        .unwrap_or(0)
+        .checked_add(1)
+        .is_none_or(|next| start <= next)
+    {
+        frontier.set(
+            end.peer,
+            frontier.get(end.peer).unwrap_or(0).max(end.counter),
+        );
+    }
+}
+
+fn validate_retained_resources(
+    resources: (usize, usize),
+    limits: &ValidationLimits,
+) -> Result<(), SessionError> {
+    let max_pending = limits
+        .max_pending_buffer
+        .min(crate::limits::MAX_DURABLE_PENDING_OPERATIONS);
+    let max_bytes = limits
+        .max_retained_bytes
+        .min(crate::limits::MAX_DURABLE_RETAINED_BYTES);
+    if resources.0 > max_pending {
+        return Err(ValidationError::BufferFull {
+            capacity: max_pending,
+        }
+        .into());
+    }
+    if resources.1 > max_bytes {
+        return Err(ValidationError::ResourceLimitExceeded {
+            limit: max_bytes,
+            actual: resources.1,
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// Document + sync log + local peer clock for collaborative editing.
+#[derive(Clone)]
 pub struct CollaborativeDocument<C: OpCodec = JsonOpCodec> {
     peer: PeerId,
     /// Next counter to allocate; MUST start at 1 (sync rejects counter == 0).
@@ -195,7 +308,9 @@ pub struct CollaborativeDocument<C: OpCodec = JsonOpCodec> {
     /// When true, InsertBlock Paragraph skeleton text must be empty.
     unit_mode: bool,
     /// Decoded envelopes for causally buffered ops (avoid re-decode).
-    pending_envelopes: BTreeMap<OpId, Envelope>,
+    pending_envelopes: BTreeMap<OpId, PendingEnvelope>,
+    /// Derived admission fast path; snapshots rebuild it from document pending state.
+    has_document_pending: bool,
 }
 
 impl CollaborativeDocument<JsonOpCodec> {
@@ -215,6 +330,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             codec,
             unit_mode,
             pending_envelopes: BTreeMap::new(),
+            has_document_pending: false,
         }
     }
 
@@ -242,7 +358,9 @@ impl<C: OpCodec> CollaborativeDocument<C> {
     /// for its observed frontier, exists only in snapshot state.
     #[cfg(feature = "filesync")]
     pub(crate) fn requires_full_snapshot(&self) -> bool {
-        self.sync.pending_count() != 0 || !self.pending_envelopes.is_empty()
+        self.sync.pending_count() != 0
+            || !self.pending_envelopes.is_empty()
+            || self.has_document_pending
     }
 
     pub fn unit_mode(&self) -> bool {
@@ -276,6 +394,80 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 checkpoint: Box::new(self.save_snapshot()?),
             }),
         }
+    }
+
+    /// Prove that recovery applies this delta in order without retaining work.
+    /// Source rewrites not provable from the post-edit document need a snapshot.
+    #[cfg(feature = "filesync")]
+    pub(crate) fn delta_replay_admissible(
+        &self,
+        message: &ChangeMessage,
+        limits: &ValidationLimits,
+    ) -> Result<bool, SessionError> {
+        if crate::sync::validate_message(message, limits).is_err() {
+            return Ok(false);
+        }
+        let mut frontier = message.since.clone();
+        let mut inserted = AdmissionInsertions::for_replay(frontier.clone());
+        let empty = Document::new();
+        let mut work = limits.max_dependency_work;
+        for op in &message.ops {
+            let envelope = self.decode_remote_envelope(op)?;
+            self.validate_remote_envelope(op.id, &envelope)?;
+            // The final document cannot prove pre-rewrite sequence membership.
+            if matches!(
+                &envelope.body,
+                OpBody::Doc(
+                    DocOp::MoveBlocks { .. }
+                        | DocOp::SplitBlock { .. }
+                        | DocOp::MergeBlocks { .. }
+                        | DocOp::MoveListItem { .. }
+                        | DocOp::MoveTableRow { .. }
+                        | DocOp::MoveTableColumn { .. }
+                        | DocOp::DeleteBlock { .. }
+                        | DocOp::DeleteBlockById { .. }
+                        | DocOp::DeleteTableRow { .. }
+                        | DocOp::DeleteTableRowById { .. }
+                        | DocOp::DeleteTableColumnById { .. }
+                        | DocOp::DeleteListItemById { .. }
+                        | DocOp::SetCodeFence { .. }
+                        | DocOp::ConvertTextBlock { .. }
+                        | DocOp::ReplaceRawBlock { .. }
+                )
+            ) {
+                return Ok(false);
+            }
+            let (_, span) = operation_extent(&envelope);
+            let start = op.id.counter.saturating_sub(span.saturating_sub(1));
+            let cost = envelope_dependency_work(&envelope);
+            if !frontier
+                .get(op.id.peer)
+                .unwrap_or(0)
+                .checked_add(1)
+                .is_some_and(|next| start <= next)
+                || cost > work
+                || !envelope_dependencies_ready(&envelope, &frontier, &empty)
+                || envelope_may_buffer_in_document(&self.document, &envelope, &inserted)
+            {
+                return Ok(false);
+            }
+            let staged = stage_nested_block(&envelope);
+            if staged_pending_count(staged.as_ref()) != 0 {
+                return Ok(false);
+            }
+            work -= cost;
+            if inserted
+                .record(&self.document, &envelope, staged.as_ref())
+                .is_err()
+            {
+                return Ok(false);
+            }
+            frontier.set(
+                op.id.peer,
+                frontier.get(op.id.peer).unwrap_or(0).max(op.id.counter),
+            );
+        }
+        Ok(true)
     }
 
     pub fn checkpoint_history(
@@ -340,15 +532,31 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         // Operation.id is the max embedded id (N1); a paragraph body expands into text
         // units at b+1..b+G, so the op covers a counter range and its id is b+G.
         let (op_id, _span) = operation_extent(&envelope);
+        let next = op_id
+            .counter
+            .checked_add(1)
+            .ok_or(SessionError::CounterExhausted)?;
+        validate_operation_envelope(op_id, &envelope)?;
+        let staged = stage_nested_block(&envelope);
+        validate_identity_declarations(
+            &self.document,
+            self.sync.frontier(),
+            self.has_document_pending,
+            self.pending_envelopes
+                .values()
+                .map(|pending| &pending.envelope),
+            std::iter::once((op_id, &envelope)),
+        )?;
+        AdmissionInsertions::default().record(&self.document, &envelope, staged.as_ref())?;
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
         // Apply to document before advancing clock / logging (N3).
-        apply_envelope_to_document(&mut self.document, &envelope);
+        self.apply_document_effect(&envelope, staged);
         self.sync.add_local_op(Operation {
             id: op_id,
             payload: payload.into(),
         });
         // Advance past the whole reserved range so later ids never collide with the units.
-        self.next_counter = op_id.counter + 1;
+        self.next_counter = next;
         Ok(block_elem)
     }
 
@@ -383,15 +591,20 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 target,
                 block_id,
                 id: delete_id,
+                observed: self.materialized_frontier().into_owned(),
+                subtree: self
+                    .document
+                    .logical_subtree(crate::doc::LogicalContainer::Block(block_id)),
             }),
         };
+        let next = b.checked_add(1).ok_or(SessionError::CounterExhausted)?;
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
-        apply_envelope_to_document(&mut self.document, &envelope);
+        self.apply_document_envelope(&envelope);
         self.sync.add_local_op(Operation {
             id: delete_id,
             payload: payload.into(),
         });
-        self.next_counter = b + 1;
+        self.next_counter = next;
         Ok(delete_id)
     }
 
@@ -414,6 +627,10 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         after: Option<OpId>,
         text: &str,
     ) -> Result<OpId, SessionError> {
+        self.next_counter
+            .checked_add(1)
+            .and_then(|next| next.checked_add(grapheme_count(text) as u64))
+            .ok_or(SessionError::CounterExhausted)?;
         let empty = BlockKind::paragraph(
             "",
             OpId {
@@ -439,6 +656,9 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         limits: StructuredEditLimits,
     ) -> Result<OpId, SessionError> {
         draft.validate(limits)?;
+        draft_counter_count(draft)
+            .and_then(|count| self.next_counter.checked_add(count))
+            .ok_or(SessionError::CounterExhausted)?;
         self.insert_validated_draft(parent, after, draft)
     }
 
@@ -565,6 +785,13 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             items: vec![item.clone()],
         }
         .validate(limits)?;
+        item.children
+            .iter()
+            .try_fold(1u64, |count, child| {
+                count.checked_add(draft_counter_count(child)?)
+            })
+            .and_then(|count| self.next_counter.checked_add(count))
+            .ok_or(SessionError::CounterExhausted)?;
         let item_elem = self.insert_list_item(list_id, after, item.task)?;
         let mut after_child = None;
         for child in &item.children {
@@ -598,6 +825,10 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                     target,
                     item_id,
                     id,
+                    observed: self.materialized_frontier().into_owned(),
+                    subtree: self
+                        .document
+                        .logical_subtree(crate::doc::LogicalContainer::Item(item_id)),
                 }),
             },
             id,
@@ -610,6 +841,9 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         list_id: BlockId,
         after: Option<OpId>,
     ) -> Result<OpId, SessionError> {
+        if self.document.list_item_contains_block(item_id, list_id) {
+            return Err(SessionError::MoveCycle);
+        }
         let (_, from_list_elem) = self
             .document
             .list_containing_item(item_id)
@@ -632,7 +866,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         }
         let to_list_elem = destination.elem_id;
         let id = self.peek_next_id();
-        let observed = self.state_vector();
+        let observed = self.materialized_frontier().into_owned();
         let right_origin = items.compute_right_origin(after);
         self.commit_single_id(
             Envelope {
@@ -668,7 +902,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         }
         let block_elem = block.elem_id;
         let id = self.peek_next_id();
-        let observed = self.state_vector();
+        let observed = self.materialized_frontier().into_owned();
         self.commit_single_id(
             Envelope {
                 version: WIRE_VERSION,
@@ -693,7 +927,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             .find_list_item_by_id(item_id)
             .ok_or(SessionError::ListItemNotFound)?;
         let id = self.peek_next_id();
-        let observed = self.state_vector();
+        let observed = self.materialized_frontier().into_owned();
         self.commit_single_id(
             Envelope {
                 version: WIRE_VERSION,
@@ -725,7 +959,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         }
         let block_elem = block.elem_id;
         let id = self.peek_next_id();
-        let observed = self.state_vector();
+        let observed = self.materialized_frontier().into_owned();
         self.commit_single_id(
             Envelope {
                 version: WIRE_VERSION,
@@ -767,7 +1001,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         };
         let block_elem = block.elem_id;
         let id = self.peek_next_id();
-        let observed = self.state_vector();
+        let observed = self.materialized_frontier().into_owned();
         self.commit_single_id(
             Envelope {
                 version: WIRE_VERSION,
@@ -797,7 +1031,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         }
         let block_elem = block.elem_id;
         let id = self.peek_next_id();
-        let observed = self.state_vector();
+        let observed = self.materialized_frontier().into_owned();
         self.commit_single_id(
             Envelope {
                 version: WIRE_VERSION,
@@ -834,6 +1068,10 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             return Err(SessionError::InvalidTableShape);
         }
         validate_table_cells(&header)?;
+        self.next_counter
+            .checked_add(1)
+            .and_then(|next| next.checked_add(columns.len() as u64))
+            .ok_or(SessionError::CounterExhausted)?;
         let elem_id = self.peek_next_id();
         let table = Table::new(block_id_from_op(elem_id), elem_id, elem_id);
         let table_elem = self.insert_block_in(
@@ -1001,7 +1239,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             block.elem_id
         };
         let id = self.peek_next_id();
-        let observed = self.state_vector();
+        let observed = self.materialized_frontier().into_owned();
         let envelope = Envelope {
             version: WIRE_VERSION,
             body: OpBody::Doc(DocOp::SetTableCell {
@@ -1116,7 +1354,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
     ) -> Result<OpId, SessionError> {
         let table_elem = self.table_elem_with_column(table_id, column_id)?;
         let id = self.peek_next_id();
-        let observed = self.state_vector();
+        let observed = self.materialized_frontier().into_owned();
         let envelope = Envelope {
             version: WIRE_VERSION,
             body: OpBody::Doc(DocOp::SetTableColumnAlignment {
@@ -1192,7 +1430,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             )
         };
         let id = self.peek_next_id();
-        let observed = self.state_vector();
+        let observed = self.materialized_frontier().into_owned();
         let envelope = Envelope {
             version: WIRE_VERSION,
             body: OpBody::Doc(DocOp::MoveTableColumn {
@@ -1238,7 +1476,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             )
         };
         let id = self.peek_next_id();
-        let observed = self.state_vector();
+        let observed = self.materialized_frontier().into_owned();
         let envelope = Envelope {
             version: WIRE_VERSION,
             body: OpBody::Doc(DocOp::MoveTableRow {
@@ -1274,13 +1512,32 @@ impl<C: OpCodec> CollaborativeDocument<C> {
     }
 
     fn commit_single_id(&mut self, envelope: Envelope, id: OpId) -> Result<OpId, SessionError> {
+        let next = id
+            .counter
+            .checked_add(1)
+            .ok_or(SessionError::CounterExhausted)?;
+        if matches!(
+            &envelope.body,
+            OpBody::Doc(DocOp::InsertListItem { .. } | DocOp::SplitBlock { .. })
+        ) {
+            validate_identity_declarations(
+                &self.document,
+                self.sync.frontier(),
+                self.has_document_pending,
+                self.pending_envelopes
+                    .values()
+                    .map(|pending| &pending.envelope),
+                std::iter::once((id, &envelope)),
+            )?;
+            AdmissionInsertions::default().record(&self.document, &envelope, None)?;
+        }
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
-        apply_envelope_to_document(&mut self.document, &envelope);
+        self.apply_document_envelope(&envelope);
         self.sync.add_local_op(Operation {
             id,
             payload: payload.into(),
         });
-        self.next_counter = id.counter + 1;
+        self.next_counter = next;
         Ok(id)
     }
 
@@ -1326,7 +1583,9 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                     counter,
                     peer: self.peer,
                 };
-                counter = counter.saturating_add(1);
+                counter = counter
+                    .checked_add(1)
+                    .ok_or(SessionError::CounterExhausted)?;
                 let right_origin = if units.is_empty() {
                     first_right_origin
                 } else {
@@ -1356,11 +1615,15 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             }),
         };
         let (op_id, _span) = operation_extent(&envelope);
+        let next = op_id
+            .counter
+            .checked_add(1)
+            .ok_or(SessionError::CounterExhausted)?;
         let payload = crate::perf::timed(crate::perf::Span::EnvelopeEncode, || {
             self.codec.encode(&envelope).map_err(codec_err)
         })?;
         crate::perf::timed(crate::perf::Span::SequenceApply, || {
-            apply_envelope_to_document(&mut self.document, &envelope);
+            self.apply_document_envelope(&envelope);
         });
         crate::perf::timed(crate::perf::Span::SyncLogAppend, || {
             self.sync.add_local_op(Operation {
@@ -1368,7 +1631,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 payload: payload.into(),
             });
         });
-        self.next_counter = op_id.counter + 1;
+        self.next_counter = next;
         Ok(Some(op_id))
     }
 
@@ -1443,13 +1706,17 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 targets,
             }),
         };
+        let next = delete_id
+            .counter
+            .checked_add(1)
+            .ok_or(SessionError::CounterExhausted)?;
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
-        apply_envelope_to_document(&mut self.document, &envelope);
+        self.apply_document_envelope(&envelope);
         self.sync.add_local_op(Operation {
             id: delete_id,
             payload: payload.into(),
         });
-        self.next_counter = delete_id.counter + 1;
+        self.next_counter = next;
         Ok(Some(delete_id))
     }
 
@@ -1508,7 +1775,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 block_id,
                 interval_id,
                 id,
-                observed: self.state_vector(),
+                observed: self.materialized_frontier().into_owned(),
             }),
         };
         self.commit_single_id(envelope, id)
@@ -1520,7 +1787,34 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         key: impl Into<String>,
         value: Option<String>,
     ) -> Result<OpId, SessionError> {
-        let key = key.into();
+        self.document.validate_frontmatter_edit()?;
+        self.commit_frontmatter_field(key.into(), value)
+    }
+
+    #[cfg(feature = "filesync")]
+    pub(crate) fn set_frontmatter_field_from_parsed(
+        &mut self,
+        key: String,
+        value: Option<String>,
+        parsed: &crate::doc::Document,
+    ) -> Result<OpId, SessionError> {
+        if parsed
+            .frontmatter
+            .as_ref()
+            .is_some_and(|frontmatter| !frontmatter.is_structured())
+        {
+            return Err(crate::doc::FrontmatterError::Opaque.into());
+        }
+        // Only source ingestion may replace a stale opaque formatting baseline
+        // with parsed supported YAML. The selected base's own restriction remains.
+        self.commit_frontmatter_field(key, value)
+    }
+
+    fn commit_frontmatter_field(
+        &mut self,
+        key: String,
+        value: Option<String>,
+    ) -> Result<OpId, SessionError> {
         let id = self.peek_next_id();
         // Prevalidate without burning the clock or changing the live document.
         let mut probe = self
@@ -1536,12 +1830,17 @@ impl<C: OpCodec> CollaborativeDocument<C> {
         self.commit_single_id(envelope, id)
     }
 
-    /// Establish a lossless frontmatter base. Existing frontmatter is never overwritten.
+    /// Propose a lossless base if none is known; concurrent bases select the greatest OpId.
     pub fn initialize_frontmatter(
         &mut self,
         frontmatter: crate::doc::Frontmatter,
     ) -> Result<Option<OpId>, SessionError> {
-        if self.document.frontmatter.is_some() {
+        if self
+            .document
+            .frontmatter
+            .as_ref()
+            .is_some_and(crate::doc::Frontmatter::has_base)
+        {
             return Ok(None);
         }
         let id = self.peek_next_id();
@@ -1699,6 +1998,9 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             return Err(SessionError::InvalidMove);
         }
         let base = self.next_counter;
+        let next = base
+            .checked_add(targets.len() as u64)
+            .ok_or(SessionError::CounterExhausted)?;
         let mut moves = Vec::with_capacity(targets.len());
         let mut placement_after = after;
         for (offset, (block_id, target)) in targets.into_iter().enumerate() {
@@ -1727,15 +2029,16 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                 to_parent,
                 id,
                 blocks: moves,
+                observed: self.materialized_frontier().into_owned(),
             }),
         };
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
-        apply_envelope_to_document(&mut self.document, &envelope);
+        self.apply_document_envelope(&envelope);
         self.sync.add_local_op(Operation {
             id,
             payload: payload.into(),
         });
-        self.next_counter = id.counter + 1;
+        self.next_counter = next;
         Ok(id)
     }
 
@@ -1877,7 +2180,16 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             )
         };
 
-        let mut replacement_counter = action_id.counter.saturating_add(1);
+        let replacement_count = source_units
+            .iter()
+            .filter(|(id, _)| occupied.contains(id))
+            .count() as u64;
+        action_id
+            .counter
+            .checked_add(replacement_count)
+            .and_then(|last| last.checked_add(1))
+            .ok_or(SessionError::CounterExhausted)?;
+        let mut replacement_counter = action_id.counter + 1;
         let units = source_units
             .into_iter()
             .map(|(source_id, grapheme)| {
@@ -1886,7 +2198,7 @@ impl<C: OpCodec> CollaborativeDocument<C> {
                         counter: replacement_counter,
                         peer: self.peer,
                     };
-                    replacement_counter = replacement_counter.saturating_add(1);
+                    replacement_counter += 1;
                     replacement
                 } else {
                     source_id
@@ -1911,164 +2223,706 @@ impl<C: OpCodec> CollaborativeDocument<C> {
             }),
         };
         let (op_id, _) = operation_extent(&envelope);
+        let next = op_id
+            .counter
+            .checked_add(1)
+            .ok_or(SessionError::CounterExhausted)?;
         let payload = self.codec.encode(&envelope).map_err(codec_err)?;
-        apply_envelope_to_document(&mut self.document, &envelope);
+        self.apply_document_envelope(&envelope);
         self.sync.add_local_op(Operation {
             id: op_id,
             payload: payload.into(),
         });
-        self.next_counter = op_id.counter.saturating_add(1);
+        self.next_counter = next;
         Ok(op_id)
     }
 
-    /// Apply remote changes: pre-decode all, then integrate with document apply.
+    fn decode_remote_envelope(&self, op: &Operation) -> Result<Envelope, SessionError> {
+        crate::perf::timed(crate::perf::Span::ApplyDecode, || {
+            self.codec.decode(&op.payload).map_err(codec_err)
+        })
+    }
+
+    fn validate_remote_envelope(&self, id: OpId, envelope: &Envelope) -> Result<(), SessionError> {
+        if envelope.version != WIRE_VERSION {
+            return Err(SessionError::UnknownWireVersion(envelope.version));
+        }
+        if let OpBody::Doc(DocOp::InsertBlock { block, .. }) = &envelope.body {
+            validate_block_skeleton(&block.kind)?;
+        }
+        if self.unit_mode && !insert_block_paragraph_is_empty(envelope) {
+            return Err(SessionError::NonEmptyParagraphOnInsertBlock);
+        }
+        validate_operation_envelope(id, envelope)
+    }
+
+    fn pending_charge(&self, id: OpId) -> usize {
+        let pending = &self.pending_envelopes[&id];
+        pending
+            .decoded_bytes
+            .saturating_add(pending.raw_charge(self.sync.retained_payload_len(id)))
+    }
+
+    fn retained_resources(&self) -> (usize, usize) {
+        let mut resources = if self.has_document_pending {
+            document_pending_resources(&self.document)
+        } else {
+            (0, 0)
+        };
+        resources.0 = resources.0.saturating_add(self.pending_envelopes.len());
+        resources.1 = self
+            .pending_envelopes
+            .iter()
+            .fold(resources.1, |sum, (id, pending)| {
+                sum.saturating_add(pending.decoded_bytes)
+                    .saturating_add(pending.raw_charge(self.sync.retained_payload_len(*id)))
+            });
+        resources
+    }
+
+    fn advance_received(
+        &self,
+        received: &mut StateVector,
+        prepared: &[PreparedOperation],
+        indices: &BTreeMap<OpId, usize>,
+    ) {
+        let mut incoming = indices.iter().peekable();
+        let mut held = self.pending_envelopes.iter().peekable();
+        loop {
+            let envelope = match (incoming.peek(), held.peek()) {
+                (Some((incoming_id, _)), Some((held_id, _))) if incoming_id <= held_id => {
+                    let (_, index) = incoming.next().expect("peeked incoming operation");
+                    &prepared[*index].envelope
+                }
+                (_, Some(_)) => &held.next().expect("peeked held operation").1.envelope,
+                (Some(_), None) => {
+                    let (_, index) = incoming.next().expect("peeked incoming operation");
+                    &prepared[*index].envelope
+                }
+                (None, None) => break,
+            };
+            advance_materialized(received, envelope);
+        }
+    }
+
+    fn prepare_effect(
+        &self,
+        prepared: &mut PreparedOperation,
+        received: &StateVector,
+        materialized: &mut StateVector,
+        inserted: &mut AdmissionInsertions,
+        work: &mut usize,
+    ) -> Result<bool, SessionError> {
+        if prepared.ready
+            || prepared.discarded
+            || prepared.id.counter > received.get(prepared.id.peer).unwrap_or(0)
+        {
+            return Ok(false);
+        }
+        let cost = envelope_dependency_work(&prepared.envelope);
+        if cost > *work {
+            return Ok(false);
+        }
+        *work -= cost;
+        if !envelope_dependencies_ready(&prepared.envelope, materialized, &self.document)
+            || envelope_may_buffer_in_document(&self.document, &prepared.envelope, inserted)
+            || !inserted.document_effect_ready(
+                &self.document,
+                &prepared.envelope,
+                materialized,
+                work,
+            )
+        {
+            return Ok(false);
+        }
+        prepared.staged_block = stage_nested_block(&prepared.envelope);
+        if staged_pending_count(prepared.staged_block.as_ref()) != 0 {
+            return Ok(false);
+        }
+        prepared.ready = true;
+        inserted.record(
+            &self.document,
+            &prepared.envelope,
+            prepared.staged_block.as_ref(),
+        )?;
+        advance_materialized(materialized, &prepared.envelope);
+        Ok(true)
+    }
+
+    fn resolve_nested_root(
+        &self,
+        envelope: &Envelope,
+        mut block: Block,
+        prepared: &[PreparedOperation],
+        view: AdmissionView<'_>,
+        resolved_held: &std::collections::BTreeSet<OpId>,
+        work: &mut usize,
+    ) -> Option<(Block, std::collections::BTreeSet<OpId>, StateVector)> {
+        if !envelope_dependencies_ready(envelope, view.materialized, &self.document)
+            || envelope_may_buffer_in_document(&self.document, envelope, view.inserted)
+        {
+            return None;
+        }
+        let (root, span) = operation_extent(envelope);
+        if root.counter > view.received.get(root.peer).unwrap_or(0)
+            || view
+                .materialized
+                .get(root.peer)
+                .unwrap_or(0)
+                .checked_add(1)
+                .is_some_and(|next| root.counter.saturating_sub(span.saturating_sub(1)) > next)
+        {
+            return None;
+        }
+        let mut frontier = view.materialized.clone();
+        advance_materialized(&mut frontier, envelope);
+        let mut absorbed = std::collections::BTreeSet::new();
+        if !view.inserted.container_exists_for(&self.document, envelope) {
+            return Some((block, absorbed, frontier));
+        }
+        let root_work = envelope_dependency_work(envelope);
+        loop {
+            if staged_pending_count(Some(&block)) == 0 {
+                return Some((block, absorbed, frontier));
+            }
+            let mut progress = false;
+            let candidates = prepared
+                .iter()
+                .filter(|candidate| !candidate.folded && !candidate.discarded)
+                .map(|candidate| (candidate.id, &candidate.envelope))
+                .chain(
+                    self.pending_envelopes
+                        .iter()
+                        .filter(|(id, _)| !resolved_held.contains(id))
+                        .map(|(id, pending)| (*id, &pending.envelope)),
+                );
+            for (id, candidate) in candidates {
+                if id == root
+                    || absorbed.contains(&id)
+                    || id.counter > view.received.get(id.peer).unwrap_or(0)
+                    || !matches!(
+                        &candidate.body,
+                        OpBody::Doc(
+                            DocOp::InsertBlock {
+                                parent: Some(_),
+                                ..
+                            } | DocOp::InsertListItem { .. }
+                        )
+                    )
+                {
+                    continue;
+                }
+                // A staged tree has no document index. Charge the bounded tree
+                // traversal as well as the candidate's dependency inspection.
+                let cost = root_work.saturating_add(envelope_dependency_work(candidate));
+                if cost > *work {
+                    continue;
+                }
+                *work -= cost;
+                if envelope_dependencies_ready(candidate, &frontier, &self.document)
+                    && fold_staged_dependency(&mut block, candidate)
+                {
+                    absorbed.insert(id);
+                    advance_materialized(&mut frontier, candidate);
+                    progress = true;
+                }
+            }
+            if !progress {
+                return None;
+            }
+        }
+    }
+
+    /// Apply remote changes: validate and budget the entire message before mutation.
     pub fn apply_remote(
         &mut self,
         message: ChangeMessage,
         limits: &ValidationLimits,
     ) -> Result<SessionApplyResult, SessionError> {
-        let deferred_count = self
-            .pending_envelopes
-            .keys()
-            .filter(|id| self.sync.contains(**id))
-            .count();
         crate::perf::timed(crate::perf::Span::ApplyValidate, || {
-            validate_changes(
-                &message,
-                limits,
-                self.sync.pending_count().saturating_add(deferred_count),
-            )
+            crate::sync::validate_message(&message, limits)
         })?;
-
-        let mut prepared: Vec<(Operation, Envelope)> = Vec::with_capacity(message.ops.len());
+        let mut prepared = Vec::with_capacity(message.ops.len());
+        let mut seen = BTreeMap::new();
         for op in message.ops {
-            if self.sync.contains(op.id) {
+            if self.sync.has_received(op.id) {
                 continue;
             }
-            if op.id.counter == 0 {
-                return Err(SessionError::Validation(
-                    ValidationError::MalformedOperation {
-                        op_id: op.id,
-                        kind: crate::sync::MalformedKind::ZeroCounter,
-                    },
-                ));
+            match seen.entry(op.id) {
+                std::collections::btree_map::Entry::Occupied(_) => continue,
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(prepared.len());
+                }
             }
-            let env = crate::perf::timed(crate::perf::Span::ApplyDecode, || {
-                self.codec.decode(&op.payload).map_err(codec_err)
+            let envelope = self.decode_remote_envelope(&op)?;
+            prepared.push(PreparedOperation {
+                id: op.id,
+                raw_bytes: op.payload.len(),
+                op: Some(op),
+                envelope,
+                ready: false,
+                staged_block: None,
+                charge: 0,
+                folded: false,
+                committed_operations: 1,
+                discarded: false,
+            });
+        }
+        if prepared.is_empty() && self.pending_envelopes.is_empty() {
+            crate::perf::timed(crate::perf::Span::ApplyValidate, || {
+                validate_retained_resources(self.retained_resources(), limits)
             })?;
-            if env.version != WIRE_VERSION {
-                return Err(SessionError::UnknownWireVersion(env.version));
-            }
-            if let OpBody::Doc(DocOp::InsertBlock { block, .. }) = &env.body {
-                validate_block_skeleton(&block.kind)?;
-            }
-            // Reject a unit-mode non-empty paragraph before computing the expansion-based
-            // max id (in unit-mode a paragraph must not expand at all).
-            if self.unit_mode && !insert_block_paragraph_is_empty(&env) {
-                return Err(SessionError::NonEmptyParagraphOnInsertBlock);
-            }
-            check_operation_id_is_max(&op, &env)?;
-            check_peer_consistency(&op, &env)?;
-            prepared.push((op, env));
+            return Ok(SessionApplyResult::default());
         }
 
-        let mut result = SessionApplyResult::default();
-        result.applied.reserve(prepared.len());
-        // When the session has no buffered/deferred work, in-order ready ops can
-        // skip per-op pending scans (still correct: promote/defer only matter when
-        // something is waiting). Falls back to the full path on the first buffer.
-        let mut clean_path = self.sync.pending_count() == 0 && self.pending_envelopes.is_empty();
-        for (op, env) in prepared {
-            let id = op.id;
-            let (_, span) = operation_extent(&env);
-            crate::perf::timed(crate::perf::Span::ApplyIntegrate, || {
-                match self.sync.apply_one(op, span) {
-                    IntegrateResult::AlreadyPresent => Ok::<(), SessionError>(()),
-                    IntegrateResult::Buffered => {
-                        clean_path = false;
-                        self.pending_envelopes.insert(id, env);
-                        result.buffered.push(id);
-                        Ok(())
+        let (mut work, order, mut held_roots, resolved_held) =
+            crate::perf::timed(crate::perf::Span::ApplyValidate, || {
+                for operation in &prepared {
+                    self.validate_remote_envelope(operation.id, &operation.envelope)?;
+                }
+                validate_identity_declarations(
+                    &self.document,
+                    self.sync.frontier(),
+                    self.has_document_pending,
+                    self.pending_envelopes
+                        .values()
+                        .map(|pending| &pending.envelope),
+                    prepared
+                        .iter()
+                        .map(|operation| (operation.id, &operation.envelope)),
+                )?;
+
+                let document_resources = if self.has_document_pending {
+                    document_pending_resources(&self.document)
+                } else {
+                    (0, 0)
+                };
+                let document_pending = document_resources.0;
+                let mut retained_count =
+                    document_pending.saturating_add(self.pending_envelopes.len());
+                let mut retained_bytes = self.pending_envelopes.iter().fold(
+                    document_resources.1,
+                    |sum, (id, pending)| {
+                        sum.saturating_add(pending.decoded_bytes)
+                            .saturating_add(pending.raw_charge(self.sync.retained_payload_len(*id)))
+                    },
+                );
+                let mut received = self.sync.state_vector();
+                let mut materialized = self.materialized_frontier().into_owned();
+                let mut inserted = AdmissionInsertions::default();
+                let mut work = limits.max_dependency_work.saturating_sub(document_pending);
+                let indices = seen;
+                let mut order = Vec::with_capacity(prepared.len());
+                for (index, prepared) in prepared.iter_mut().enumerate() {
+                    if prepared.id.counter <= received.get(prepared.id.peer).unwrap_or(0) {
+                        prepared.discarded = true;
+                        prepared.op = None;
+                        continue;
                     }
-                    IntegrateResult::Applied => {
-                        // Fast path only when nothing is waiting and this envelope
-                        // has no observed-frontier gate. Otherwise defer and drain.
-                        if clean_path && envelope_observed_frontier(&env).is_none() {
-                            apply_envelope_to_document(&mut self.document, &env);
-                            result.applied.push(id);
-                        } else {
-                            clean_path = false;
-                            self.apply_or_defer(id, env, &mut result);
-                            self.drain_promoted(&mut result)?;
-                            self.drain_deferred(&mut result);
-                        }
-                        Ok(())
+                    let (_, span) = operation_extent(&prepared.envelope);
+                    let start = prepared.id.counter.saturating_sub(span.saturating_sub(1));
+                    if received
+                        .get(prepared.id.peer)
+                        .unwrap_or(0)
+                        .checked_add(1)
+                        .is_none_or(|next| start <= next)
+                    {
+                        received.set(
+                            prepared.id.peer,
+                            received
+                                .get(prepared.id.peer)
+                                .unwrap_or(0)
+                                .max(prepared.id.counter),
+                        );
+                    }
+                    if self.prepare_effect(
+                        prepared,
+                        &received,
+                        &mut materialized,
+                        &mut inserted,
+                        &mut work,
+                    )? {
+                        order.push(PlannedEffect::New(index));
                     }
                 }
+                self.advance_received(&mut received, &prepared, &indices);
+                let mut resolved_held = std::collections::BTreeSet::new();
+                let mut held_roots = BTreeMap::new();
+                loop {
+                    let mut progress = false;
+                    for index in 0..prepared.len() {
+                        if prepared[index].ready {
+                            continue;
+                        }
+                        let Some(block) = prepared[index].staged_block.take() else {
+                            continue;
+                        };
+                        let resolved = self.resolve_nested_root(
+                            &prepared[index].envelope,
+                            block,
+                            &prepared,
+                            AdmissionView {
+                                received: &received,
+                                materialized: &materialized,
+                                inserted: &inserted,
+                            },
+                            &resolved_held,
+                            &mut work,
+                        );
+                        if let Some((block, absorbed, frontier)) = resolved {
+                            prepared[index].committed_operations = 1 + absorbed.len();
+                            materialized = frontier;
+                            inserted.record(
+                                &self.document,
+                                &prepared[index].envelope,
+                                Some(&block),
+                            )?;
+                            prepared[index].ready = true;
+                            prepared[index].staged_block = Some(block);
+                            order.push(PlannedEffect::New(index));
+                            for id in absorbed {
+                                if let Some(&child) = indices.get(&id) {
+                                    prepared[child].ready = true;
+                                    prepared[child].folded = true;
+                                    prepared[child].staged_block = None;
+                                } else {
+                                    resolved_held.insert(id);
+                                }
+                            }
+                            progress = true;
+                        }
+                    }
+                    for (id, pending) in &self.pending_envelopes {
+                        let envelope = &pending.envelope;
+                        if resolved_held.contains(id)
+                            || id.counter > received.get(id.peer).unwrap_or(0)
+                        {
+                            continue;
+                        }
+                        let cost = envelope_dependency_work(envelope);
+                        if cost > work {
+                            continue;
+                        }
+                        work -= cost;
+                        if !envelope_dependencies_ready(envelope, &materialized, &self.document)
+                            || envelope_may_buffer_in_document(&self.document, envelope, &inserted)
+                            || !inserted.document_effect_ready(
+                                &self.document,
+                                envelope,
+                                &materialized,
+                                &mut work,
+                            )
+                        {
+                            continue;
+                        }
+                        let Some(block) = stage_nested_block(envelope) else {
+                            resolved_held.insert(*id);
+                            order.push(PlannedEffect::Held(*id));
+                            inserted.record(&self.document, envelope, None)?;
+                            advance_materialized(&mut materialized, envelope);
+                            progress = true;
+                            continue;
+                        };
+                        if let Some((block, absorbed, frontier)) = self.resolve_nested_root(
+                            envelope,
+                            block,
+                            &prepared,
+                            AdmissionView {
+                                received: &received,
+                                materialized: &materialized,
+                                inserted: &inserted,
+                            },
+                            &resolved_held,
+                            &mut work,
+                        ) {
+                            materialized = frontier;
+                            inserted.record(&self.document, envelope, Some(&block))?;
+                            held_roots.insert(*id, (block, 1 + absorbed.len()));
+                            resolved_held.insert(*id);
+                            order.push(PlannedEffect::Held(*id));
+                            for id in absorbed {
+                                if let Some(&child) = indices.get(&id) {
+                                    prepared[child].ready = true;
+                                    prepared[child].folded = true;
+                                    prepared[child].staged_block = None;
+                                } else {
+                                    resolved_held.insert(id);
+                                }
+                            }
+                            progress = true;
+                        }
+                    }
+                    for (index, prepared) in prepared.iter_mut().enumerate() {
+                        if self.prepare_effect(
+                            prepared,
+                            &received,
+                            &mut materialized,
+                            &mut inserted,
+                            &mut work,
+                        )? {
+                            order.push(PlannedEffect::New(index));
+                            progress = true;
+                        }
+                    }
+                    if !progress {
+                        break;
+                    }
+                }
+                for id in &resolved_held {
+                    retained_count = retained_count.saturating_sub(1);
+                    retained_bytes = retained_bytes.saturating_sub(self.pending_charge(*id));
+                }
+                for prepared in &mut prepared {
+                    if !prepared.ready && !prepared.discarded {
+                        prepared.charge = envelope_retained_bytes(&prepared.envelope);
+                        let raw = &prepared.op.as_ref().expect("uncommitted operation").payload;
+                        prepared.raw_bytes = prepared.raw_bytes.max(
+                            self.codec
+                                .snapshot_payload_len(raw, &prepared.envelope)
+                                .map_err(codec_err)?,
+                        );
+                        retained_count = retained_count.saturating_add(1);
+                        retained_bytes = retained_bytes
+                            .saturating_add(prepared.raw_bytes)
+                            .saturating_add(prepared.charge);
+                    }
+                }
+                validate_retained_resources((retained_count, retained_bytes), limits)?;
+                Ok::<_, SessionError>((work, order, held_roots, resolved_held))
             })?;
+
+        let mut result = SessionApplyResult::default();
+        for prepared in &mut prepared {
+            if let Some(op) = prepared.op.take() {
+                let span = operation_extent(&prepared.envelope).1;
+                self.sync.apply_one(op, span);
+            }
         }
-        if !clean_path {
-            self.drain_deferred(&mut result);
+        self.sync.promote_pending_log();
+        let committed = !order.is_empty();
+        for effect in order {
+            match effect {
+                PlannedEffect::New(index) if !prepared[index].folded => {
+                    let staged = prepared[index].staged_block.take();
+                    self.integrate_document_envelope(
+                        &prepared[index].envelope,
+                        staged,
+                        prepared[index].committed_operations,
+                    );
+                    result.applied.push(prepared[index].id);
+                }
+                PlannedEffect::Held(id) => {
+                    if let Some(pending) = self.pending_envelopes.remove(&id) {
+                        let (staged, count) = held_roots
+                            .remove(&id)
+                            .map_or((None, 1), |(block, count)| (Some(block), count));
+                        self.integrate_document_envelope(&pending.envelope, staged, count);
+                        result.applied.push(id);
+                    }
+                }
+                PlannedEffect::New(_) => {}
+            }
+        }
+        for id in resolved_held {
+            if self.pending_envelopes.remove(&id).is_some() {
+                result.applied.push(id);
+            }
+        }
+        for prepared in prepared {
+            if prepared.discarded {
+                continue;
+            }
+            if prepared.folded {
+                result.applied.push(prepared.id);
+            } else if !prepared.ready {
+                self.pending_envelopes.insert(
+                    prepared.id,
+                    PendingEnvelope {
+                        envelope: prepared.envelope,
+                        decoded_bytes: prepared.charge,
+                        snapshot_raw_bytes: prepared.raw_bytes,
+                    },
+                );
+                result.buffered.push(prepared.id);
+            }
+        }
+        if committed {
+            self.drain_deferred(&mut result, &mut work, limits);
         }
         Ok(result)
     }
 
-    fn drain_promoted(&mut self, result: &mut SessionApplyResult) -> Result<(), SessionError> {
-        for promoted in self.sync.promote_ready_pending() {
-            let env = if let Some(env) = self.pending_envelopes.remove(&promoted.id) {
-                env
-            } else {
-                self.codec.decode(&promoted.payload).map_err(codec_err)?
-            };
-            self.apply_or_defer(promoted.id, env, result);
-        }
-        Ok(())
-    }
-
-    fn observed_frontier_is_ready(&self, envelope: &Envelope) -> bool {
-        let Some(observed) = envelope_observed_frontier(envelope) else {
-            return true;
-        };
-        let current = self.sync.state_vector();
-        observed
-            .iter()
-            .all(|(peer, counter)| current.get(peer).unwrap_or(0) >= counter)
-    }
-
-    fn apply_or_defer(&mut self, id: OpId, envelope: Envelope, result: &mut SessionApplyResult) {
-        if !self.observed_frontier_is_ready(&envelope) {
-            let first = !self.pending_envelopes.contains_key(&id);
-            self.pending_envelopes.insert(id, envelope);
-            if first {
-                result.buffered.push(id);
+    fn apply_document_envelope(&mut self, envelope: &Envelope) {
+        if let OpBody::Doc(DocOp::MoveListItem {
+            from_list_elem,
+            to_list_elem,
+            list_id,
+            item_id,
+            target,
+            id,
+            after,
+            right_origin,
+            observed,
+        }) = &envelope.body
+        {
+            // Native mutations refuse current-tree descendant moves. Replicated
+            // proposals use apply_document_effect so concurrent cycle histories
+            // remain available to the shared deterministic projection.
+            self.document
+                .move_list_item_at(&crate::doc::PendingListItemMove {
+                    from_list_elem: *from_list_elem,
+                    to_list_elem: *to_list_elem,
+                    list_id: *list_id,
+                    item_id: *item_id,
+                    target: *target,
+                    id: *id,
+                    after: *after,
+                    right_origin: *right_origin,
+                    observed: observed.clone(),
+                });
+            if self.has_document_pending {
+                self.refresh_document_pending();
             }
-            return;
+        } else {
+            self.apply_document_effect(envelope, None);
         }
-        apply_envelope_to_document(&mut self.document, &envelope);
-        result.buffered.retain(|pending| *pending != id);
-        // Callers only invoke this once per applied id in a message.
-        result.applied.push(id);
     }
 
-    fn drain_deferred(&mut self, result: &mut SessionApplyResult) {
-        if self.pending_envelopes.is_empty() {
-            return;
+    fn integrate_document_envelope(
+        &mut self,
+        envelope: &Envelope,
+        staged_block: Option<Block>,
+        committed_operations: usize,
+    ) {
+        crate::perf::timed_count(
+            crate::perf::Span::ApplyIntegrate,
+            committed_operations,
+            || {
+                self.apply_document_effect(envelope, staged_block);
+            },
+        );
+    }
+
+    fn apply_document_effect(&mut self, envelope: &Envelope, staged_block: Option<Block>) {
+        let refresh_pending = self.has_document_pending
+            || staged_block.is_some()
+            || envelope_has_nested_block(envelope);
+        if let (
+            Some(block),
+            OpBody::Doc(DocOp::InsertBlock {
+                parent,
+                after,
+                id,
+                right_origin,
+                ..
+            }),
+        ) = (staged_block, &envelope.body)
+        {
+            self.document
+                .insert_block_at(*parent, *after, *id, block, *right_origin);
+        } else {
+            apply_envelope_to_document(&mut self.document, envelope);
         }
-        loop {
-            let ready: Vec<_> = self
-                .pending_envelopes
-                .iter()
-                .filter(|(id, envelope)| {
-                    self.sync.contains(**id) && self.observed_frontier_is_ready(envelope)
-                })
-                .map(|(id, _)| *id)
-                .collect();
+        if refresh_pending {
+            self.refresh_document_pending();
+        }
+    }
+
+    fn refresh_document_pending(&mut self) {
+        let status = document_pending_status(&self.document);
+        self.has_document_pending = status.count != 0;
+    }
+
+    fn materialized_frontier(&self) -> std::borrow::Cow<'_, StateVector> {
+        if self.pending_envelopes.is_empty() && !self.has_document_pending {
+            return std::borrow::Cow::Borrowed(self.sync.frontier());
+        }
+        let mut frontier = self.sync.state_vector();
+        if self.has_document_pending {
+            lower_document_pending_frontier(&self.document, &mut frontier);
+        }
+        for pending in self.pending_envelopes.values() {
+            let (end, span) = operation_extent(&pending.envelope);
+            let before = end.counter.saturating_sub(span);
+            if frontier
+                .get(end.peer)
+                .is_some_and(|current| current > before)
+            {
+                frontier.set(end.peer, before);
+            }
+        }
+        std::borrow::Cow::Owned(frontier)
+    }
+
+    fn drain_deferred(
+        &mut self,
+        result: &mut SessionApplyResult,
+        work: &mut usize,
+        limits: &ValidationLimits,
+    ) {
+        while !self.pending_envelopes.is_empty() && *work != 0 {
+            let ready = crate::perf::timed(crate::perf::Span::ApplyValidate, || {
+                let mut frontier = self.materialized_frontier().into_owned();
+                let mut inserted = AdmissionInsertions::default();
+                let mut resources = self.retained_resources();
+                let mut ready = Vec::new();
+                for (id, pending) in &self.pending_envelopes {
+                    let envelope = &pending.envelope;
+                    if envelope_has_nested_block(envelope) {
+                        continue;
+                    }
+                    if id.counter > self.sync.frontier().get(id.peer).unwrap_or(0) {
+                        continue;
+                    }
+                    let cost = envelope_dependency_work(envelope);
+                    if cost > *work {
+                        break;
+                    }
+                    *work -= cost;
+                    if !envelope_dependencies_ready(envelope, &frontier, &self.document)
+                        || envelope_may_buffer_in_document(&self.document, envelope, &inserted)
+                        || !inserted.document_effect_ready(
+                            &self.document,
+                            envelope,
+                            &frontier,
+                            work,
+                        )
+                    {
+                        continue;
+                    }
+                    let count = resources.0.saturating_sub(1);
+                    let bytes = resources.1.saturating_sub(self.pending_charge(*id));
+                    if count
+                        > limits
+                            .max_pending_buffer
+                            .min(crate::limits::MAX_DURABLE_PENDING_OPERATIONS)
+                        || bytes
+                            > limits
+                                .max_retained_bytes
+                                .min(crate::limits::MAX_DURABLE_RETAINED_BYTES)
+                    {
+                        continue;
+                    }
+                    if inserted.record(&self.document, envelope, None).is_err() {
+                        continue;
+                    }
+                    resources = (count, bytes);
+                    ready.push(*id);
+                    let (end, span) = operation_extent(envelope);
+                    if frontier.get(end.peer).unwrap_or(0) == end.counter.saturating_sub(span) {
+                        frontier.set(end.peer, end.counter);
+                    }
+                }
+                ready
+            });
             if ready.is_empty() {
                 break;
             }
             for id in ready {
-                if let Some(envelope) = self.pending_envelopes.remove(&id) {
-                    self.apply_or_defer(id, envelope, result);
+                if let Some(pending) = self.pending_envelopes.remove(&id) {
+                    self.integrate_document_envelope(&pending.envelope, None, 1);
+                    result.buffered.retain(|pending| *pending != id);
+                    result.applied.push(id);
                 }
             }
         }
@@ -2079,20 +2933,32 @@ impl<C: OpCodec> CollaborativeDocument<C> {
     /// Includes the full applied op log for retransmission; growth without
     /// compaction is accepted for 0.1.
     pub fn save_snapshot(&self) -> Result<SessionSnapshot, SnapshotError> {
-        let ops = self.sync.applied_ops();
-        let pending: Vec<(OpId, Vec<u8>)> = self
+        let applied = self.sync.applied_operations();
+        let mut ops = Vec::with_capacity(applied.len());
+        for (id, payload) in applied {
+            let canonical = self
+                .codec
+                .snapshot_payload(payload, None)
+                .map_err(|error| SnapshotError::Serde(error.to_string()))?;
+            ops.push((id, canonical.into_owned()));
+        }
+        let pending = self
             .sync
-            .pending()
-            .into_iter()
-            .map(|op| (op.id, op.payload.to_vec()))
-            .collect();
+            .pending_operations()
+            .map(|op| {
+                self.codec
+                    .snapshot_payload(&op.payload, Some(&self.pending_envelopes[&op.id].envelope))
+                    .map(|payload| (op.id, payload.into_owned()))
+                    .map_err(|error| SnapshotError::Serde(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let deferred = self
             .pending_envelopes
             .iter()
-            .filter(|(id, _)| self.sync.contains(**id))
-            .map(|(id, envelope)| {
-                self.codec
-                    .encode(envelope)
+            .filter(|(id, _)| id.counter <= self.sync.frontier().get(id.peer).unwrap_or(0))
+            .map(|(id, pending)| {
+                JsonOpCodec
+                    .encode(&pending.envelope)
                     .map(|payload| (*id, payload))
                     .map_err(|error| SnapshotError::Serde(error.to_string()))
             })
@@ -2115,12 +2981,11 @@ impl<C: OpCodec> CollaborativeDocument<C> {
     /// Switch peer identity after restore (late join without reloading bytes).
     pub fn rebind_peer(&mut self, local_peer: PeerId) {
         self.peer = local_peer;
-        let ops = self.sync.applied_ops();
-        let mut max = max_counter_for_peer(local_peer, &ops, &self.document);
+        let mut max = max_counter_for_peer(local_peer, &[], &self.document);
         max = max
-            .max(self.sync.state_vector().get(local_peer).unwrap_or(0))
+            .max(self.sync.frontier().get(local_peer).unwrap_or(0))
             .max(self.sync.delta_floor().get(local_peer).unwrap_or(0));
-        for op in self.sync.pending() {
+        for op in self.sync.pending_operations() {
             if op.id.peer == local_peer {
                 max = max.max(op.id.counter);
             }
@@ -2138,15 +3003,21 @@ impl<C: OpCodec> CollaborativeDocument<C> {
 }
 
 impl CollaborativeDocument<JsonOpCodec> {
+    /// Decode and restore native snapshot bytes.
+    pub fn restore_from_snapshot_bytes(bytes: &[u8]) -> Result<Self, SnapshotError> {
+        Self::restore_validated_snapshot(snapshot::ValidatedSnapshot::from_bytes(bytes)?)
+    }
+
     /// Crash recovery for the **same** peer: restore peer id and `next_counter`.
     pub fn restore_from_snapshot(snap: SessionSnapshot) -> Result<Self, SnapshotError> {
-        if snap.format_version != SNAPSHOT_FORMAT_VERSION {
-            return Err(SnapshotError::ReinitializeRequired {
-                found: snap.format_version,
-                expected: SNAPSHOT_FORMAT_VERSION,
-            });
-        }
-        let doc = snap.document.clone().into_document();
+        Self::restore_validated_snapshot(snapshot::ValidatedSnapshot::new(snap)?)
+    }
+
+    fn restore_validated_snapshot(
+        validated: snapshot::ValidatedSnapshot,
+    ) -> Result<Self, SnapshotError> {
+        let (snap, pending_envelopes) = validated.into_parts();
+        let doc = snap.document.into_document();
         let mut max = max_counter_for_peer(snap.peer, &snap.ops, &doc)
             .max(snap.state_vector.get(snap.peer).unwrap_or(0))
             .max(snap.delta_floor.get(snap.peer).unwrap_or(0));
@@ -2155,7 +3026,7 @@ impl CollaborativeDocument<JsonOpCodec> {
                 max = max.max(id.counter);
             }
         }
-        if snap.next_counter <= max {
+        if snap.next_counter <= max && !(snap.next_counter == u64::MAX && max == u64::MAX) {
             return Err(SnapshotError::ClockBehind {
                 peer: snap.peer,
                 next: snap.next_counter,
@@ -2163,13 +3034,14 @@ impl CollaborativeDocument<JsonOpCodec> {
             });
         }
 
+        let codec = JsonOpCodec;
         let mut sync = SyncState::new();
         sync.restore_applied(snap.ops);
         let pending_ops: Vec<(Operation, u64)> = snap
             .pending
             .into_iter()
             .map(|(id, payload)| {
-                let span = span_of_payload(&payload);
+                let span = operation_extent(&pending_envelopes[&id].envelope).1;
                 (
                     Operation {
                         id,
@@ -2182,18 +3054,26 @@ impl CollaborativeDocument<JsonOpCodec> {
         sync.restore_pending(pending_ops);
         sync.restore_history(snap.state_vector, snap.checkpoint_epoch, snap.delta_floor);
 
-        let codec = JsonOpCodec;
-        let mut pending_envelopes = BTreeMap::new();
-        for (id, payload) in snap.deferred {
-            let envelope = codec
-                .decode(&payload)
-                .map_err(|error| SnapshotError::Serde(error.to_string()))?;
-            pending_envelopes.insert(id, envelope);
-        }
+        drop(snap.deferred);
 
+        let pending_status = document_pending_status(&doc);
+        validate_identity_declarations(
+            &doc,
+            sync.frontier(),
+            pending_status.count != 0,
+            std::iter::empty(),
+            pending_envelopes
+                .iter()
+                .map(|(id, pending)| (*id, &pending.envelope)),
+        )
+        .map_err(|error| match error {
+            SessionError::Validation(cause) => SnapshotError::Validation(cause),
+            _ => SnapshotError::InvalidState("invalid pending identity declarations"),
+        })?;
         Ok(Self {
             peer: snap.peer,
             next_counter: snap.next_counter,
+            has_document_pending: pending_status.count != 0,
             document: doc,
             sync,
             codec,
@@ -2221,56 +3101,33 @@ impl CollaborativeDocument<JsonOpCodec> {
         local_peer: PeerId,
         unit_mode: bool,
     ) -> Result<Self, SnapshotError> {
-        let doc = document.into_document();
-        let mut max = max_counter_for_peer(local_peer, &ops, &doc);
-        for (id, _) in &pending {
-            if id.peer == local_peer {
-                max = max.max(id.counter);
-            }
+        let mut state_vector = StateVector::new();
+        for (id, _) in &ops {
+            let counter = state_vector.get(id.peer).unwrap_or(0).max(id.counter);
+            state_vector.set(id.peer, counter);
         }
-        let next_counter = max.saturating_add(1).max(1);
-
-        let mut sync = SyncState::new();
-        sync.restore_applied(ops);
-        let pending_ops: Vec<(Operation, u64)> = pending
-            .into_iter()
-            .map(|(id, payload)| {
-                let span = span_of_payload(&payload);
-                (
-                    Operation {
-                        id,
-                        payload: payload.into(),
-                    },
-                    span,
-                )
-            })
-            .collect();
-        sync.restore_pending(pending_ops);
-
-        let codec = JsonOpCodec;
-        let mut pending_envelopes = BTreeMap::new();
-        for (id, payload) in deferred {
-            let envelope = codec
-                .decode(&payload)
-                .map_err(|error| SnapshotError::Serde(error.to_string()))?;
-            pending_envelopes.insert(id, envelope);
-        }
-
-        Ok(Self {
+        let mut session = Self::restore_from_snapshot(SessionSnapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION,
             peer: local_peer,
-            next_counter,
-            document: doc,
-            sync,
-            codec,
+            // Reserve the exhausted sentinel until rebind derives the actual clock
+            // from every imported layer; no local operation runs before that.
+            next_counter: u64::MAX,
             unit_mode,
-            pending_envelopes,
-        })
+            state_vector,
+            checkpoint_epoch: 0,
+            delta_floor: StateVector::new(),
+            document,
+            ops,
+            pending,
+            deferred,
+        })?;
+        session.rebind_peer(local_peer);
+        Ok(session)
     }
 
     #[cfg(feature = "storage")]
     pub fn read_from_storage(storage: &crate::storage::Storage) -> Result<Self, SnapshotError> {
         let (bytes, _, _) = storage.read_snapshot()?;
-        let snap = SessionSnapshot::from_bytes(&bytes)?;
-        Self::restore_from_snapshot(snap)
+        Self::restore_from_snapshot_bytes(&bytes)
     }
 }

@@ -55,7 +55,11 @@ impl Parser {
                 )
             })
             .collect();
-        let source = DocumentSource::new(text.to_string(), byte_spans, &blocks);
+        let mut source = DocumentSource::new(text.to_string(), byte_spans, &blocks);
+        source.record_frontmatter(
+            frontmatter.as_ref(),
+            frontmatter.as_ref().is_none_or(Frontmatter::is_structured),
+        );
 
         let sequence = Sequence::from_ordered(
             blocks
@@ -64,12 +68,15 @@ impl Parser {
                 .collect(),
         );
 
-        Document {
+        let mut document = Document {
             frontmatter,
             blocks: IndexedBlocks::new(sequence),
             source: Some(source),
             block_index: RwLock::new(None),
-        }
+        };
+        document.capture_block_topology();
+        document.initialize_placement_roots();
+        document
     }
 }
 
@@ -241,31 +248,51 @@ fn parse_blocks_with_spans(
 
             let elem_id = next_op_id(counter);
             let mut table = Table::new(block_id_from_op(elem_id), elem_id, elem_id);
-            let mut after_column = None;
-            for position in 0..width {
-                let alignment = columns
-                    .get(position)
-                    .map_or(ColumnAlignment::Default, |column| column.alignment.clone());
-                let header_cell = header.get(position).cloned().unwrap_or_default();
-                let column_id = next_op_id(counter);
-                table.insert_column(after_column, alignment, header_cell, column_id);
-                after_column = Some(column_id);
+            let mut ordered_columns = Vec::with_capacity(width);
+            let mut column_ids = Vec::with_capacity(width);
+            let mut alignments = columns.into_iter().map(|column| column.alignment);
+            let mut header_cells = header.into_iter();
+            for _ in 0..width {
+                let alignment = alignments.next().unwrap_or(ColumnAlignment::Default);
+                let header_cell = header_cells.next().unwrap_or_default();
+                let column_op = next_op_id(counter);
+                let column_id = block_id_from_op(column_op);
+                column_ids.push(column_id);
+                ordered_columns.push((
+                    column_op,
+                    TableColumn {
+                        id: column_id,
+                        elem_id: column_op,
+                        deleted: crate::core::LwwRegister::new(false, column_op),
+                        alignment: crate::core::LwwRegister::new(alignment, column_op),
+                        alignment_observed: StateVector::new(),
+                        alignment_conflicts: Vec::new(),
+                        placement_observed: StateVector::new(),
+                        placement_conflicts: Vec::new(),
+                    },
+                ));
+                table.set_cell(table.header_row_id(), column_id, header_cell, column_op);
             }
-            let column_ids: Vec<_> = table
-                .columns_in_order()
-                .into_iter()
-                .map(|column| column.id)
-                .collect();
-            let mut after = None;
+            table.columns = Sequence::from_ordered(ordered_columns);
+            let mut ordered_rows = Vec::with_capacity(body.len());
             for cells in body {
-                let row_id = next_op_id(counter);
-                table.insert_row(
-                    after,
-                    column_ids.iter().copied().zip(cells).collect(),
-                    row_id,
-                );
-                after = Some(row_id);
+                let row_op = next_op_id(counter);
+                let row_id = block_id_from_op(row_op);
+                ordered_rows.push((
+                    row_op,
+                    TableRow {
+                        id: row_id,
+                        elem_id: row_op,
+                        deleted: crate::core::LwwRegister::new(false, row_op),
+                        placement_observed: StateVector::new(),
+                        placement_conflicts: Vec::new(),
+                    },
+                ));
+                for (column_id, value) in column_ids.iter().copied().zip(cells) {
+                    table.set_cell(row_id, column_id, value, row_op);
+                }
             }
+            table.rows = Sequence::from_ordered(ordered_rows);
             let block = Block::new(
                 BlockKind::Table {
                     table: Box::new(table),
@@ -570,7 +597,7 @@ fn parse_fence_open(trimmed: &str) -> Option<(CodeFenceStyle, &str)> {
     ))
 }
 
-fn is_fence_close(trimmed: &str, style: CodeFenceStyle) -> bool {
+pub(crate) fn is_fence_close(trimmed: &str, style: CodeFenceStyle) -> bool {
     let symbol = match style.marker {
         FenceMarker::Backtick => '`',
         FenceMarker::Tilde => '~',
@@ -736,7 +763,9 @@ fn parse_list(
             task,
             task_op: item_elem,
             task_observed: StateVector::new(),
+            task_conflicts: Vec::new(),
             placement_observed: StateVector::new(),
+            placement_conflicts: Vec::new(),
             children: child_seq,
         });
     }

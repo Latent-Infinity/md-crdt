@@ -94,7 +94,7 @@ pub fn decode_change_message_bin_v1(bytes: &[u8]) -> Result<ChangeMessage, Codec
         let payload = read_slice(bytes, &mut offset, plen)?;
         ops.push(Operation {
             id: OpId { counter, peer },
-            payload: Arc::<[u8]>::from(payload.to_vec()),
+            payload: Arc::<[u8]>::from(payload),
         });
     }
     if offset != bytes.len() {

@@ -508,3 +508,141 @@ fn storage_write_read_round_trip() {
     );
     assert_eq!(a.state_vector(), b.state_vector());
 }
+
+#[test]
+fn pre_candidate_snapshot_schema_is_rejected_typed_before_missing_history_fields() {
+    let mut session = CollaborativeDocument::new(3);
+    session.insert_paragraph(None, "prior schema").unwrap();
+    let mut value = serde_json::to_value(session.save_snapshot().unwrap()).unwrap();
+    value["format_version"] = serde_json::json!(8);
+    value["document"]["blocks"]["elements"][0]["value"]
+        .as_object_mut()
+        .unwrap()
+        .remove("kind_conflicts");
+    assert!(matches!(
+        SessionSnapshot::from_bytes(&serde_json::to_vec(&value).unwrap()),
+        Err(SnapshotError::ReinitializeRequired {
+            found: 8,
+            expected: SNAPSHOT_FORMAT_VERSION
+        })
+    ));
+    value["format_version"] = serde_json::json!(SNAPSHOT_FORMAT_VERSION);
+    assert!(matches!(
+        SessionSnapshot::from_bytes(&serde_json::to_vec(&value).unwrap()),
+        Err(SnapshotError::Serde(_))
+    ));
+}
+
+#[test]
+fn stale_list_destination_and_missing_item_stay_in_raw_deferred_envelopes() {
+    use md_crdt::session::snapshot::BlockKindDto;
+    use md_crdt::{StateVector, block_id_from_op};
+    let limits = ValidationLimits::default();
+    let mut author = CollaborativeDocument::new(1);
+    let mut lists = Vec::new();
+    for _ in 0..2 {
+        lists.push(
+            author
+                .insert_draft_in(
+                    None,
+                    None,
+                    &BlockDraft::List {
+                        style: ListStyle::default(),
+                        items: Vec::new(),
+                    },
+                    StructuredEditLimits::default(),
+                )
+                .unwrap(),
+        );
+    }
+    let quote = author
+        .insert_draft_in(
+            None,
+            None,
+            &BlockDraft::BlockQuote {
+                children: Vec::new(),
+            },
+            StructuredEditLimits::default(),
+        )
+        .unwrap();
+    let common = author.save_snapshot().unwrap();
+    let mut mover = CollaborativeDocument::rebase_from_snapshot(common.clone(), 3).unwrap();
+    mover
+        .move_block(block_id_from_op(lists[1]), Some(quote), None)
+        .unwrap();
+    let item = author
+        .insert_list_item(block_id_from_op(lists[0]), None, None)
+        .unwrap();
+    let mut editor =
+        CollaborativeDocument::rebase_from_snapshot(author.save_snapshot().unwrap(), 2).unwrap();
+    editor
+        .move_list_item(block_id_from_op(item), block_id_from_op(lists[1]), None)
+        .unwrap();
+    let mut move_message = editor.encode_changes_since(&StateVector::new()).unwrap();
+    move_message.ops.retain(|operation| operation.id.peer == 2);
+    for movement_first in [false, true] {
+        for checkpoint in [false, true] {
+            let mut target =
+                CollaborativeDocument::rebase_from_snapshot(common.clone(), 4).unwrap();
+            if movement_first {
+                exchange(&mover, &mut target);
+            }
+            target.apply_remote(move_message.clone(), &limits).unwrap();
+            if !movement_first {
+                exchange(&mover, &mut target);
+            }
+            if checkpoint {
+                target
+                    .checkpoint_history(&CheckpointRequest {
+                        max_retained_ops: 0,
+                        active_peer_leases: Vec::new(),
+                        tombstones: DocumentTombstonePolicy::KeepAll,
+                    })
+                    .unwrap();
+            }
+            let snapshot = target.save_snapshot().unwrap();
+            assert!(snapshot.pending.is_empty());
+            assert_eq!(snapshot.deferred.len(), 1);
+            // A supported missing-item producer does not populate normalized
+            // document queues, even after its destination placement has moved.
+            let mut blocks = snapshot
+                .document
+                .blocks
+                .elements
+                .iter()
+                .filter_map(|element| element.value.as_ref())
+                .collect::<Vec<_>>();
+            while let Some(block) = blocks.pop() {
+                match &block.kind {
+                    BlockKindDto::BlockQuote { children } => blocks.extend(
+                        children
+                            .elements
+                            .iter()
+                            .filter_map(|element| element.value.as_ref()),
+                    ),
+                    BlockKindDto::List { pending_moves, .. } => assert!(pending_moves.is_empty()),
+                    _ => {}
+                }
+            }
+            let mut restored =
+                CollaborativeDocument::restore_from_snapshot_bytes(&snapshot.to_bytes().unwrap())
+                    .unwrap();
+            exchange(&author, &mut restored);
+            let items = restored
+                .document()
+                .list_items(block_id_from_op(lists[1]))
+                .unwrap();
+            assert_eq!(items.len_visible(), 1);
+            assert_eq!(items.iter().next().unwrap().id, block_id_from_op(item));
+            let final_snapshot = restored.save_snapshot().unwrap();
+            assert!(final_snapshot.pending.is_empty());
+            assert!(final_snapshot.deferred.is_empty());
+            assert_eq!(
+                CollaborativeDocument::restore_from_snapshot(final_snapshot)
+                    .unwrap()
+                    .document(),
+                restored.document()
+            );
+        }
+    }
+}

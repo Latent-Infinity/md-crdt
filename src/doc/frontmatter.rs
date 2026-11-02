@@ -1,14 +1,29 @@
-use crate::core::{LwwRegister, OpId};
+use crate::core::{LwwRegister, OpId, StateVector};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Frontmatter {
-    raw: String,
+    #[serde(deserialize_with = "Option::deserialize")]
+    base: Option<LwwRegister<FrontmatterBase>>,
+    // Explicit writes are independent of the initializer's timestamp and raw YAML.
     fields: BTreeMap<String, LwwRegister<Option<String>>>,
+    initializers: StateVector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct FrontmatterBase {
+    raw: String,
     original: BTreeMap<String, String>,
-    dirty: BTreeSet<String>,
     structured: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FrontmatterRevision {
+    #[serde(deserialize_with = "Option::deserialize")]
+    base: Option<OpId>,
+    fields: BTreeMap<String, OpId>,
+    pub(crate) source_structured: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -19,9 +34,8 @@ pub enum FrontmatterError {
     InvalidKey,
 }
 
-impl Frontmatter {
-    pub fn parse(raw: String) -> Self {
-        let mut fields = BTreeMap::new();
+impl FrontmatterBase {
+    fn parse(raw: String) -> Self {
         let mut original = BTreeMap::new();
         let mut structured = true;
         for line in raw.lines() {
@@ -38,7 +52,7 @@ impl Frontmatter {
                 continue;
             };
             let key = key.trim();
-            if !valid_key(key) || fields.contains_key(key) {
+            if !valid_key(key) || original.contains_key(key) {
                 structured = false;
                 continue;
             }
@@ -46,19 +60,28 @@ impl Frontmatter {
             if matches!(value.as_str(), "|" | ">" | "|-" | ">-") {
                 structured = false;
             }
-            let seed = OpId {
-                counter: 0,
-                peer: 0,
-            };
-            fields.insert(key.to_string(), LwwRegister::new(Some(value.clone()), seed));
             original.insert(key.to_string(), value);
         }
         Self {
             raw,
-            fields,
             original,
-            dirty: BTreeSet::new(),
             structured,
+        }
+    }
+}
+
+impl Frontmatter {
+    pub fn parse(raw: String) -> Self {
+        Self {
+            base: Some(LwwRegister::new(
+                FrontmatterBase::parse(raw),
+                OpId {
+                    counter: 0,
+                    peer: 0,
+                },
+            )),
+            fields: BTreeMap::new(),
+            initializers: StateVector::new(),
         }
     }
 
@@ -66,22 +89,118 @@ impl Frontmatter {
         Self::parse(String::new())
     }
 
+    pub(crate) fn without_base() -> Self {
+        Self {
+            base: None,
+            fields: BTreeMap::new(),
+            initializers: StateVector::new(),
+        }
+    }
+
+    pub fn has_base(&self) -> bool {
+        self.base.is_some()
+    }
+
+    pub(crate) fn initialize(&mut self, frontmatter: &Self, op_id: OpId) {
+        self.initializers.set(
+            op_id.peer,
+            self.initializers
+                .get(op_id.peer)
+                .unwrap_or(0)
+                .max(op_id.counter),
+        );
+        if self.base.as_ref().is_some_and(|base| base.op_id() > op_id) {
+            return;
+        }
+        // An initializer contributes only its rendered base, never embedded write history.
+        let base = FrontmatterBase::parse(frontmatter.render());
+        if let Some(register) = &mut self.base {
+            register.set(base, op_id);
+        } else {
+            self.base = Some(LwwRegister::new(base, op_id));
+        }
+    }
+
     pub fn is_structured(&self) -> bool {
-        self.structured
+        self.base
+            .as_ref()
+            .is_none_or(|base| base.get_ref().structured)
     }
 
     pub fn is_dirty(&self) -> bool {
-        !self.dirty.is_empty()
+        (self.is_structured() && !self.fields.is_empty())
+            || self
+                .base
+                .as_ref()
+                .is_some_and(|base| base.op_id().counter != 0)
+    }
+
+    pub(crate) fn source_revision(&self, source_structured: bool) -> FrontmatterRevision {
+        FrontmatterRevision {
+            base: self.base.as_ref().map(LwwRegister::op_id),
+            source_structured,
+            fields: self
+                .fields
+                .iter()
+                .filter(|_| self.is_structured())
+                .map(|(key, register)| (key.clone(), register.op_id()))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn matches_source_revision(&self, revision: &FrontmatterRevision) -> bool {
+        self.matches_source_base(revision)
+            && self
+                .fields
+                .iter()
+                .filter(|_| self.is_structured())
+                .map(|(key, register)| (key, register.op_id()))
+                .eq(revision.fields.iter().map(|(key, id)| (key, *id)))
+    }
+
+    pub(crate) fn matches_source_base(&self, revision: &FrontmatterRevision) -> bool {
+        self.base.as_ref().map(LwwRegister::op_id) == revision.base
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.fields.get(key)?.get_ref().as_deref()
+        if self.is_structured()
+            && let Some(value) = self.fields.get(key)
+        {
+            return value.get_ref().as_deref();
+        }
+        self.base
+            .as_ref()?
+            .get_ref()
+            .original
+            .get(key)
+            .map(String::as_str)
     }
 
     pub fn entries(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
-        self.fields
+        let structured = self.is_structured();
+        self.base
             .iter()
-            .map(|(key, value)| (key.as_str(), value.get_ref().as_deref()))
+            .flat_map(|base| &base.get_ref().original)
+            .filter(move |(key, _)| !structured || !self.fields.contains_key(*key))
+            .map(|(key, value)| (key.as_str(), Some(value.as_str())))
+            .chain(
+                self.fields
+                    .iter()
+                    .filter(move |_| structured)
+                    .map(|(key, value)| (key.as_str(), value.get_ref().as_deref())),
+            )
+    }
+
+    pub(crate) fn max_counter_for_peer(&self, peer: crate::core::PeerId) -> u64 {
+        self.fields
+            .values()
+            .map(LwwRegister::op_id)
+            .chain(self.base.iter().map(LwwRegister::op_id))
+            .filter(|id| id.peer == peer)
+            .map(|id| id.counter)
+            .max()
+            .unwrap_or(0)
+            .max(self.initializers.get(peer).unwrap_or(0))
     }
 
     pub fn set(
@@ -90,56 +209,63 @@ impl Frontmatter {
         value: Option<String>,
         op_id: OpId,
     ) -> Result<(), FrontmatterError> {
-        if !self.structured {
+        if !self.is_structured() {
             return Err(FrontmatterError::Opaque);
         }
+        self.receive_field(key, value, op_id)
+    }
+
+    pub(crate) fn receive_field(
+        &mut self,
+        key: String,
+        value: Option<String>,
+        op_id: OpId,
+    ) -> Result<(), FrontmatterError> {
         if !valid_key(&key) {
             return Err(FrontmatterError::InvalidKey);
         }
+        // A concurrent opaque base hides, but must not discard, supported writes.
         self.fields
-            .entry(key.clone())
+            .entry(key)
             .and_modify(|register| register.set(value.clone(), op_id))
             .or_insert_with(|| LwwRegister::new(value, op_id));
-        self.dirty.insert(key);
         Ok(())
     }
 
     pub fn render(&self) -> String {
-        if self.dirty.is_empty() {
-            return self.raw.clone();
+        let base = self.base.as_ref().map(LwwRegister::get_ref);
+        let raw = base.map_or("", |base| base.raw.as_str());
+        self.render_on(raw)
+    }
+
+    pub(crate) fn render_on(&self, raw: &str) -> String {
+        if self.fields.is_empty() || !self.is_structured() {
+            return raw.to_string();
         }
         let mut output = Vec::new();
         let mut emitted = BTreeSet::new();
-        for line in self.raw.lines() {
+        for line in raw.lines() {
             let Some((key_part, rest)) = line.split_once(':') else {
                 output.push(line.to_string());
                 continue;
             };
             let key = key_part.trim();
-            if !self.dirty.contains(key) {
+            let Some(register) = self.fields.get(key) else {
                 output.push(line.to_string());
                 continue;
-            }
+            };
             emitted.insert(key.to_string());
-            if let Some(value) = self
-                .fields
-                .get(key)
-                .and_then(|register| register.get_ref().as_ref())
-            {
+            if let Some(value) = register.get_ref() {
                 let comment = inline_comment(rest).unwrap_or_default();
                 let spacing = if rest.starts_with(' ') { " " } else { "" };
                 output.push(format!("{key_part}:{spacing}{value}{comment}"));
             }
         }
-        for key in &self.dirty {
-            if emitted.contains(key) || self.original.contains_key(key) {
+        for (key, register) in &self.fields {
+            if emitted.contains(key) {
                 continue;
             }
-            if let Some(value) = self
-                .fields
-                .get(key)
-                .and_then(|register| register.get_ref().as_ref())
-            {
+            if let Some(value) = register.get_ref() {
                 output.push(format!("{key}: {value}"));
             }
         }
@@ -162,7 +288,8 @@ fn inline_comment(value: &str) -> Option<&str> {
             '\'' if !double => single = !single,
             '"' if !single => double = !double,
             '#' if !single && !double && value[..index].ends_with(char::is_whitespace) => {
-                return Some(&value[index.saturating_sub(1)..]);
+                let (start, _) = value[..index].char_indices().next_back()?;
+                return Some(&value[start..]);
             }
             _ => {}
         }

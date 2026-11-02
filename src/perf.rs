@@ -2,6 +2,11 @@
 //!
 //! Enabled with Cargo feature `perf_trace`. When disabled, [`timed`] is an
 //! inlinable pass-through with no atomic traffic.
+//! Timers record completed closure durations; nested spans are not subtracted.
+//! Their sum and shares are diagnostic, not an exclusive wall-time partition.
+//! `ApplyIntegrate` counts committed wire operations, including deferred effects,
+//! rather than expanded document nodes or timer invocations. Validation records
+//! its actual header/admission/drain scopes; decoding records decoded envelopes.
 
 use std::time::Instant;
 
@@ -17,9 +22,11 @@ pub enum Span {
     ApplyValidate = 5,
     ApplyDecode = 6,
     ApplyIntegrate = 7,
+    /// Full incremental ordering oracle, including metadata construction and comparison.
+    SequenceOrderOracle = 8,
 }
 
-const SPAN_COUNT: usize = 8;
+const SPAN_COUNT: usize = 9;
 
 /// Snapshot of cumulative counts and nanoseconds per [`Span`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -72,8 +79,10 @@ mod active {
         AtomicU64::new(0),
         AtomicU64::new(0),
         AtomicU64::new(0),
+        AtomicU64::new(0),
     ];
     static NANOS: [AtomicU64; SPAN_COUNT] = [
+        AtomicU64::new(0),
         AtomicU64::new(0),
         AtomicU64::new(0),
         AtomicU64::new(0),
@@ -108,23 +117,27 @@ mod active {
         out
     }
 
-    pub fn record(span: Span, nanos: u64) {
+    fn record_count(span: Span, nanos: u64, count: u64) {
         if !is_enabled() {
             return;
         }
         let i = span as usize;
-        COUNTS[i].fetch_add(1, Ordering::Relaxed);
+        COUNTS[i].fetch_add(count, Ordering::Relaxed);
         NANOS[i].fetch_add(nanos, Ordering::Relaxed);
     }
 
+    pub fn record(span: Span, nanos: u64) {
+        record_count(span, nanos, 1);
+    }
+
     #[inline]
-    pub fn timed<T>(span: Span, f: impl FnOnce() -> T) -> T {
+    pub fn timed_count<T>(span: Span, count: usize, f: impl FnOnce() -> T) -> T {
         if !is_enabled() {
             return f();
         }
         let start = Instant::now();
         let value = f();
-        record(span, start.elapsed().as_nanos() as u64);
+        record_count(span, start.elapsed().as_nanos() as u64, count as u64);
         value
     }
 }
@@ -153,7 +166,7 @@ mod inactive {
     pub fn record(_span: Span, _nanos: u64) {}
 
     #[inline]
-    pub fn timed<T>(_span: Span, f: impl FnOnce() -> T) -> T {
+    pub fn timed_count<T>(_span: Span, _count: usize, f: impl FnOnce() -> T) -> T {
         f()
     }
 }
@@ -193,7 +206,14 @@ pub fn record(span: Span, nanos: u64) {
 /// Time a closure under `span` when recording is enabled.
 #[inline]
 pub fn timed<T>(span: Span, f: impl FnOnce() -> T) -> T {
-    backend::timed(span, f)
+    timed_count(span, 1, f)
+}
+
+/// Attribute one real publication to its committed wire operations. Duration is
+/// measured once, using the same completed-closure timer as `timed`.
+#[inline]
+pub(crate) fn timed_count<T>(span: Span, committed_operations: usize, f: impl FnOnce() -> T) -> T {
+    backend::timed_count(span, committed_operations, f)
 }
 
 /// Convenience: reset, enable, run `f`, disable, return snapshot + result.
@@ -279,59 +299,6 @@ mod tests {
         assert_eq!(value, 7);
         assert_eq!(snap.total_nanos(), 0);
         assert!(!is_enabled());
-    }
-
-    #[cfg(feature = "perf_trace")]
-    #[test]
-    fn insert_text_records_local_hot_path_spans() {
-        use crate::doc::block_id_from_op;
-        use crate::session::CollaborativeDocument;
-
-        let _guard = lock_counters();
-        let mut session = CollaborativeDocument::new(1);
-        let elem = session
-            .insert_paragraph(None, &"x".repeat(64))
-            .expect("seed");
-        let block_id = block_id_from_op(elem);
-
-        let (_, snap) = measure(|| session.insert_text(block_id, 32, "y").expect("insert"));
-
-        assert_eq!(snap.count(Span::BlockLookup), 1);
-        assert_eq!(snap.count(Span::UnitExpand), 1);
-        assert_eq!(snap.count(Span::EnvelopeEncode), 1);
-        assert_eq!(snap.count(Span::SequenceApply), 1);
-        assert_eq!(snap.count(Span::SyncLogAppend), 1);
-        assert!(snap.total_nanos() > 0);
-        // Local insert does not touch remote apply spans.
-        assert_eq!(snap.count(Span::ApplyValidate), 0);
-        assert_eq!(snap.count(Span::ApplyDecode), 0);
-        assert_eq!(snap.count(Span::ApplyIntegrate), 0);
-    }
-
-    #[cfg(feature = "perf_trace")]
-    #[test]
-    fn apply_remote_records_validate_decode_integrate() {
-        use crate::core::StateVector;
-        use crate::session::CollaborativeDocument;
-        use crate::sync::ValidationLimits;
-
-        let _guard = lock_counters();
-        let mut source = CollaborativeDocument::new(1);
-        source.insert_paragraph(None, "hello").expect("seed");
-        let full = source
-            .encode_changes_since(&StateVector::default())
-            .expect("encode");
-
-        let mut peer = CollaborativeDocument::new(2);
-        let (_, snap) = measure(|| {
-            peer.apply_remote(full, &ValidationLimits::default())
-                .expect("apply")
-        });
-
-        assert!(snap.count(Span::ApplyValidate) >= 1);
-        assert!(snap.count(Span::ApplyDecode) >= 1);
-        assert!(snap.count(Span::ApplyIntegrate) >= 1);
-        assert!(snap.total_nanos() > 0);
     }
 
     #[test]

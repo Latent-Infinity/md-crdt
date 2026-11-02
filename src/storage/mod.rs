@@ -3,6 +3,23 @@
 //! This module provides generation-based recovery using paired metadata/payload
 //! slots, checksumming, and atomic file replacement. Files are synced before
 //! publication; containing directories are additionally synced on Unix.
+//!
+//! Mutating calls for a root must be externally serialized (including across
+//! `Storage` handles/processes); this is not a multi-writer protocol.
+//!
+//! Additive V2 layout: `operations.manifest` atomically selects the active
+//! operation generation and lists retired generations with their covering
+//! snapshot generation and exact segment count. Generation zero uses `ops/`;
+//! later generations use `ops_<generation>/`. A retirement never renames or
+//! deletes active files before the manifest is durable. Retired files remain
+//! replayable for the older valid snapshot slot, and may be removed only after
+//! every valid slot covers them. The manifest is updated before physical
+//! cleanup, so interrupted cleanup cannot create an active-log gap.
+//! `coverage_a`/`coverage_b` bind each newly written V2 snapshot generation to
+//! its observed operation generation/count; legacy V2 snapshots remain readable.
+//!
+//! Snapshot publication and retirement can share full-slot validation within one
+//! externally serialized call. Validation is never retained across public calls.
 
 use crc32fast::Hasher;
 use rkyv::{Archive, Deserialize, Serialize};
@@ -27,6 +44,23 @@ const OP_SEGMENT_MAGIC: &[u8; 8] = b"MDCRDTOP";
 const OP_SEGMENT_VERSION: u16 = 1;
 const OP_SEGMENT_HEADER_LEN: usize = 8 + 2 + 8 + 4;
 const V2_VERSION: u32 = 2;
+const OPERATIONS_MANIFEST: &str = "operations.manifest";
+const MANIFEST_MAGIC: &[u8; 8] = b"MDCRDTGM";
+const COVERAGE_MAGIC: &[u8; 8] = b"MDCRDTCV";
+
+#[derive(Debug, Archive, Serialize, Deserialize, Clone)]
+struct OperationGeneration {
+    id: u64,
+    count: u64,
+    covered_by: u64,
+}
+
+#[derive(Debug, Archive, Serialize, Deserialize, Default)]
+struct OperationManifest {
+    active: u64,
+    retired: Vec<OperationGeneration>,
+    garbage: Vec<u64>,
+}
 
 #[derive(Debug, Archive, Serialize, Deserialize, Clone)]
 struct SuperblockV2Body {
@@ -42,18 +76,53 @@ struct SuperblockV2Body {
 struct StorageSlot {
     superblock: &'static str,
     segment: &'static str,
+    coverage: &'static str,
 }
 
 const STORAGE_SLOTS: [StorageSlot; 2] = [
     StorageSlot {
         superblock: SUPERBLOCK_A,
         segment: SEGMENT_A,
+        coverage: "coverage_a",
     },
     StorageSlot {
         superblock: SUPERBLOCK_B,
         segment: SEGMENT_B,
+        coverage: "coverage_b",
     },
 ];
+
+/// Payload-validated generations for one externally serialized operation only.
+struct ValidatedSlots {
+    generations: [Option<u64>; 2],
+}
+
+impl ValidatedSlots {
+    fn read(root: &Path) -> Result<Self, StorageError> {
+        Ok(Self {
+            generations: [
+                read_slot_generation(root, STORAGE_SLOTS[0])?,
+                read_slot_generation(root, STORAGE_SLOTS[1])?,
+            ],
+        })
+    }
+
+    fn newest(&self) -> Option<(StorageSlot, u64)> {
+        let mut newest = None;
+        for (slot, generation) in STORAGE_SLOTS.into_iter().zip(self.generations) {
+            if let Some(generation) = generation
+                && newest.is_none_or(|(_, current)| generation > current)
+            {
+                newest = Some((slot, generation));
+            }
+        }
+        newest
+    }
+
+    fn floor(&self) -> Option<u64> {
+        self.generations.into_iter().flatten().min()
+    }
+}
 
 #[derive(Debug)]
 struct SuperblockMetadata {
@@ -62,6 +131,19 @@ struct SuperblockMetadata {
     pending_ops: Vec<u8>,
     segment_checksum: u32,
     segment_len: u64,
+}
+
+/// Validated payload and its generation, scoped to one externally serialized read.
+struct SelectedSnapshot {
+    payload: Vec<u8>,
+    metadata: SuperblockMetadata,
+}
+
+/// Preserve the existing restore consumer's error provenance without extra reads.
+#[derive(Debug)]
+pub(crate) enum SnapshotAndOperationsReadError {
+    Snapshot(StorageError),
+    Operations(StorageError),
 }
 
 #[derive(Debug)]
@@ -112,16 +194,46 @@ impl Storage {
         pending_ops: &[u8],
         seq_ref_index_flag: bool,
     ) -> Result<(), StorageError> {
+        let mut slots = self.validated_snapshot_slots()?;
+        self.write_snapshot_validated(&mut slots, payload, pending_ops, seq_ref_index_flag)
+    }
+
+    /// Publish a full snapshot and retire its covered active operation segments.
+    ///
+    /// Existing slot payloads are validated once for this externally serialized
+    /// operation; a successfully published slot joins that validated state.
+    /// Errors after publication can leave the snapshot or retirement committed.
+    /// As with separate calls, fallback-required operations remain replayable and
+    /// interrupted physical cleanup is restartable.
+    pub fn write_snapshot_and_retire(
+        &self,
+        payload: &[u8],
+        pending_ops: &[u8],
+        seq_ref_index_flag: bool,
+    ) -> Result<usize, StorageError> {
+        let mut slots = self.validated_snapshot_slots()?;
+        self.write_snapshot_validated(&mut slots, payload, pending_ops, seq_ref_index_flag)?;
+        self.clear_op_segments_validated(&slots)
+    }
+
+    fn validated_snapshot_slots(&self) -> Result<ValidatedSlots, StorageError> {
         if self.root.join(LEGACY_SEGMENT_FILE).exists() {
             return Err(StorageError::ReinitializeRequired {
                 found: None,
                 expected: V2_VERSION,
             });
         }
-        let slot_generations = [
-            read_slot_generation(&self.root, STORAGE_SLOTS[0])?,
-            read_slot_generation(&self.root, STORAGE_SLOTS[1])?,
-        ];
+        ValidatedSlots::read(&self.root)
+    }
+
+    fn write_snapshot_validated(
+        &self,
+        slots: &mut ValidatedSlots,
+        payload: &[u8],
+        pending_ops: &[u8],
+        seq_ref_index_flag: bool,
+    ) -> Result<(), StorageError> {
+        let slot_generations = slots.generations;
         let max_generation = slot_generations.into_iter().flatten().max().unwrap_or(0);
         let target_index = slot_generations
             .iter()
@@ -130,12 +242,26 @@ impl Storage {
             .map(|(index, _)| index)
             .expect("storage always has two slots");
         let target = STORAGE_SLOTS[target_index];
-
-        atomic_write_durable(&self.root, target.segment, payload)?;
+        // Capture the exact generation covered by this snapshot. Retirement
+        // refuses an intervening append instead of silently dropping it.
+        let manifest = read_operation_manifest(&self.root)?;
+        let count = operation_paths(&operation_dir(&self.root, manifest.active), None)?.len();
 
         let generation = max_generation
             .checked_add(1)
             .ok_or(StorageError::Corrupt("generation overflow"))?;
+        let mut coverage = COVERAGE_MAGIC.to_vec();
+        coverage.extend_from_slice(&generation.to_le_bytes());
+        coverage.extend_from_slice(&manifest.active.to_le_bytes());
+        coverage.extend_from_slice(&(count as u64).to_le_bytes());
+        coverage.extend_from_slice(&checksum_bytes(&coverage).to_le_bytes());
+        atomic_write_durable(&self.root, target.coverage, &coverage)?;
+        #[cfg(test)]
+        fault("snapshot payload")?;
+        atomic_write_durable(&self.root, target.segment, payload)?;
+
+        #[cfg(test)]
+        fault("snapshot metadata")?;
         let superblock = SuperblockV2Body {
             version: V2_VERSION,
             generation,
@@ -150,10 +276,18 @@ impl Storage {
         encoded.extend_from_slice(&body);
         encoded.extend_from_slice(&checksum_bytes(&body).to_le_bytes());
         atomic_write_durable(&self.root, target.superblock, &encoded)?;
+        // The durable write published these exact bytes. Do not re-read their
+        // payload within this operation, and never carry this state to a caller.
+        slots.generations[target_index] = Some(generation);
         Ok(())
     }
 
     pub fn read_snapshot(&self) -> Result<(Vec<u8>, Vec<u8>, bool), StorageError> {
+        let SelectedSnapshot { payload, metadata } = self.read_selected_snapshot()?;
+        Ok((payload, metadata.pending_ops, metadata.seq_ref_index_flag))
+    }
+
+    fn read_selected_snapshot(&self) -> Result<SelectedSnapshot, StorageError> {
         let mut candidates = Vec::new();
         let mut saw_superblock = false;
         let mut last_corruption = "decode";
@@ -190,7 +324,10 @@ impl Storage {
                 last_corruption = "checksum mismatch";
                 continue;
             }
-            return Ok((segment, metadata.pending_ops, metadata.seq_ref_index_flag));
+            return Ok(SelectedSnapshot {
+                payload: segment,
+                metadata,
+            });
         }
 
         if self.root.join(LEGACY_SEGMENT_FILE).exists() {
@@ -205,9 +342,41 @@ impl Storage {
         }
     }
 
+    /// Read one validated snapshot and the operations needed by that generation.
+    ///
+    /// The entire call must be externally serialized against mutations to this
+    /// root, including through other handles/processes. Selection and its payload
+    /// validation are shared only inside this call; no proof survives a return.
+    /// Retired operations required by a corrupt-newest fallback remain replayable.
+    pub fn read_snapshot_and_op_segments(&self) -> Result<(Vec<u8>, Vec<Vec<u8>>), StorageError> {
+        self.read_snapshot_and_op_segments_staged()
+            .map_err(|error| match error {
+                SnapshotAndOperationsReadError::Snapshot(error)
+                | SnapshotAndOperationsReadError::Operations(error) => error,
+            })
+    }
+
+    pub(crate) fn read_snapshot_and_op_segments_staged(
+        &self,
+    ) -> Result<(Vec<u8>, Vec<Vec<u8>>), SnapshotAndOperationsReadError> {
+        let selected = self
+            .read_selected_snapshot()
+            .map_err(SnapshotAndOperationsReadError::Snapshot)?;
+        let manifest = read_operation_manifest(&self.root)
+            .map_err(SnapshotAndOperationsReadError::Operations)?;
+        let segments = self
+            .read_op_segments_for_generation(&manifest, selected.metadata.generation)
+            .map_err(SnapshotAndOperationsReadError::Operations)?;
+        Ok((selected.payload, segments))
+    }
+
     pub fn append_op_segment(&self, payload: &[u8]) -> Result<PathBuf, StorageError> {
-        let ops_dir = self.root.join(OPS_DIR);
-        fs::create_dir_all(&ops_dir)?;
+        let manifest = read_operation_manifest(&self.root)?;
+        let ops_dir = operation_dir(&self.root, manifest.active);
+        if !ops_dir.exists() {
+            fs::create_dir_all(&ops_dir)?;
+            sync_directory(&self.root)?;
+        }
         let index = next_index(&ops_dir, "op_")?;
         let name = format!("op_{index}");
         let encoded = encode_op_segment(payload);
@@ -215,35 +384,95 @@ impl Storage {
         Ok(ops_dir.join(name))
     }
 
-    /// Remove live `ops/op_*` segment files after a successful full snapshot write.
+    /// Atomically retire exactly the operations covered by the latest snapshot.
     ///
-    /// Call only after the new snapshot is durable. Leftover segments that survive a
-    /// crash between snapshot write and clear are safe to replay because apply skips
-    /// already-present op ids.
+    /// A successful snapshot write must precede this call, with no intervening
+    /// append. Retired generations needed by the fallback slot remain replayable.
+    /// Physical cleanup is independent of publication and safe to interrupt.
     pub fn clear_op_segments(&self) -> Result<usize, StorageError> {
-        let ops_dir = self.root.join(OPS_DIR);
-        if !ops_dir.exists() {
+        let slots = ValidatedSlots::read(&self.root)?;
+        self.clear_op_segments_validated(&slots)
+    }
+
+    fn clear_op_segments_validated(&self, slots: &ValidatedSlots) -> Result<usize, StorageError> {
+        let mut manifest = read_operation_manifest(&self.root)?;
+        let paths = operation_paths(&operation_dir(&self.root, manifest.active), None)?;
+        if paths.is_empty() {
+            self.cleanup_retired(&mut manifest, slots)?;
             return Ok(0);
         }
-        let mut removed = 0usize;
-        for entry in fs::read_dir(&ops_dir)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name
-                .strip_prefix("op_")
-                .and_then(|v| v.parse::<usize>().ok())
-                .is_none()
-            {
-                continue;
-            }
-            fs::remove_file(entry.path())?;
-            removed += 1;
+        let (slot, generation) = slots.newest().ok_or(StorageError::Missing)?;
+        let coverage = read_coverage(&self.root, slot, generation)?;
+        if coverage != (manifest.active, paths.len() as u64) {
+            return Err(StorageError::Corrupt(
+                "operation log changed since snapshot",
+            ));
         }
-        Ok(removed)
+        manifest.retired.push(OperationGeneration {
+            id: manifest.active,
+            count: paths.len() as u64,
+            covered_by: generation,
+        });
+        manifest.active = manifest
+            .active
+            .checked_add(1)
+            .ok_or(StorageError::Corrupt("operation generation overflow"))?;
+        #[cfg(test)]
+        fault("retirement publication")?;
+        write_operation_manifest(&self.root, &manifest)?;
+        #[cfg(test)]
+        fault("after retirement")?;
+        self.cleanup_retired(&mut manifest, slots)?;
+        Ok(paths.len())
+    }
+
+    fn newest_valid_slot(&self) -> Result<Option<(StorageSlot, u64)>, StorageError> {
+        Ok(ValidatedSlots::read(&self.root)?.newest())
+    }
+
+    fn cleanup_retired(
+        &self,
+        manifest: &mut OperationManifest,
+        slots: &ValidatedSlots,
+    ) -> Result<(), StorageError> {
+        let Some(floor) = slots.floor() else {
+            return Ok(());
+        };
+        let removable: Vec<_> = manifest
+            .retired
+            .iter()
+            .filter(|entry| entry.covered_by <= floor)
+            .cloned()
+            .collect();
+        if removable.is_empty() && manifest.garbage.is_empty() {
+            return Ok(());
+        }
+        manifest.retired.retain(|entry| entry.covered_by > floor);
+        manifest
+            .garbage
+            .extend(removable.iter().map(|entry| entry.id));
+        #[cfg(test)]
+        fault("cleanup publication")?;
+        write_operation_manifest(&self.root, manifest)?;
+        for id in &manifest.garbage {
+            let dir = operation_dir(&self.root, *id);
+            if dir.exists() {
+                // The manifest no longer references this directory. Partial
+                // deletion, including a crash here, cannot affect replay.
+                for entry in fs::read_dir(&dir)? {
+                    fs::remove_file(entry?.path())?;
+                    #[cfg(test)]
+                    fault("cleanup deletion")?;
+                }
+                fs::remove_dir_all(&dir)?;
+                sync_directory(&self.root)?;
+            }
+        }
+        manifest.garbage.clear();
+        #[cfg(test)]
+        fault("cleanup completion")?;
+        write_operation_manifest(&self.root, manifest)?;
+        Ok(())
     }
 
     /// Whether a readable full snapshot currently exists.
@@ -257,35 +486,31 @@ impl Storage {
 
     /// Read and validate all operation segments in append order.
     pub fn read_op_segments(&self) -> Result<Vec<Vec<u8>>, StorageError> {
-        let ops_dir = self.root.join(OPS_DIR);
-        if !ops_dir.exists() {
-            return Ok(Vec::new());
-        }
+        let manifest = read_operation_manifest(&self.root)?;
+        let snapshot_generation = self
+            .newest_valid_slot()?
+            .map_or(0, |(_, generation)| generation);
+        self.read_op_segments_for_generation(&manifest, snapshot_generation)
+    }
+
+    fn read_op_segments_for_generation(
+        &self,
+        manifest: &OperationManifest,
+        snapshot_generation: u64,
+    ) -> Result<Vec<Vec<u8>>, StorageError> {
         let mut paths = Vec::new();
-        for entry in fs::read_dir(&ops_dir)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let Some(index) = name
-                .strip_prefix("op_")
-                .and_then(|value| value.parse::<usize>().ok())
-            else {
-                continue;
-            };
-            paths.push((index, entry.path()));
-        }
-        paths.sort_by_key(|(index, _)| *index);
-        for (expected, (actual, path)) in paths.iter().enumerate() {
-            if expected != *actual {
-                return Err(StorageError::CorruptOperationSegment {
-                    path: path.clone(),
-                    reason: "non-contiguous index",
-                });
+        for entry in &manifest.retired {
+            if entry.covered_by > snapshot_generation {
+                paths.extend(operation_paths(
+                    &operation_dir(&self.root, entry.id),
+                    Some(entry.count),
+                )?);
             }
         }
+        paths.extend(operation_paths(
+            &operation_dir(&self.root, manifest.active),
+            None,
+        )?);
         paths
             .into_iter()
             .map(|(_, path)| {
@@ -303,45 +528,48 @@ impl Storage {
         retention: TombstoneRetention,
         tombstones: &[u64],
     ) -> Result<CompactionReport, StorageError> {
+        // Prepare all fallible input/encoding work without moving acknowledged
+        // operations out of the recovery path.
+        let mut all_tombstones = self.read_tombstones()?;
+        all_tombstones.extend_from_slice(tombstones);
+        let (kept, pruned_tombstones) = prune_tombstones(all_tombstones, retention);
+        let kept_tombstones = kept.len();
+        let encoded = rkyv::to_bytes::<rkyv::rancor::Error>(&kept)
+            .map_err(|_| StorageError::Corrupt("encode"))?;
         let archive_dir = self.root.join(ARCHIVE_DIR);
         fs::create_dir_all(&archive_dir)?;
-
+        sync_directory(&self.root)?;
         let mut archived_segments = 0usize;
+        let segment_base = next_index(&archive_dir, "segment_")?;
         for segment_name in [SEGMENT_A, SEGMENT_B] {
-            let segment_path = self.root.join(segment_name);
-            if segment_path.exists() {
-                let index = next_index(&archive_dir, "segment_")?;
-                let archived = archive_dir.join(format!("segment_{index}"));
-                fs::copy(&segment_path, &archived)?;
+            let path = self.root.join(segment_name);
+            if path.exists() {
+                let bytes = read_artifact(path)?;
+                let index = segment_base
+                    .checked_add(archived_segments)
+                    .ok_or(StorageError::Corrupt("archive index overflow"))?;
+                atomic_write_durable(&archive_dir, &format!("segment_{index}"), &bytes)?;
                 archived_segments += 1;
             }
         }
-
-        let mut archived_ops = 0usize;
-        let ops_dir = self.root.join(OPS_DIR);
-        if ops_dir.exists() {
-            for entry in fs::read_dir(&ops_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() {
-                    let index = next_index(&archive_dir, "op_")?;
-                    let archived = archive_dir.join(format!("op_{index}"));
-                    fs::rename(&path, &archived)?;
-                    archived_ops += 1;
-                }
-            }
+        let manifest = read_operation_manifest(&self.root)?;
+        let op_paths = operation_paths(&operation_dir(&self.root, manifest.active), None)?;
+        let op_base = next_index(&archive_dir, "op_")?;
+        for (offset, (_, path)) in op_paths.iter().enumerate() {
+            let bytes = read_artifact(path)?;
+            let index = op_base
+                .checked_add(offset)
+                .ok_or(StorageError::Corrupt("archive index overflow"))?;
+            atomic_write_durable(&archive_dir, &format!("op_{index}"), &bytes)?;
         }
+        let archived_ops = op_paths.len();
 
-        let mut all_tombstones = self.read_tombstones()?;
-        all_tombstones.extend_from_slice(tombstones);
-        let (kept, pruned) = prune_tombstones(all_tombstones, retention);
-        let kept_tombstones = kept.len();
-        let pruned_tombstones = pruned;
-        let encoded = rkyv::to_bytes::<rkyv::rancor::Error>(&kept)
-            .map_err(|_| StorageError::Corrupt("encode"))?;
-        fs::write(self.root.join(TOMBSTONES_FILE), &encoded)?;
-
-        self.write_snapshot(payload, pending_ops, seq_ref_index_flag)?;
+        // Keep tombstone publication between the snapshot and retirement while
+        // sharing this operation's validated payload state across all three.
+        let mut slots = self.validated_snapshot_slots()?;
+        self.write_snapshot_validated(&mut slots, payload, pending_ops, seq_ref_index_flag)?;
+        atomic_write_durable(&self.root, TOMBSTONES_FILE, &encoded)?;
+        self.clear_op_segments_validated(&slots)?;
 
         Ok(CompactionReport {
             archived_segments,
@@ -366,13 +594,173 @@ impl Storage {
 fn read_slot_generation(root: &Path, slot: StorageSlot) -> Result<Option<u64>, StorageError> {
     match read_artifact(root.join(slot.superblock)) {
         Ok(bytes) => match decode_superblock(&bytes) {
-            Ok(metadata) => Ok(Some(metadata.generation)),
+            Ok(metadata) => {
+                let segment = match read_artifact(root.join(slot.segment)) {
+                    Ok(bytes) => bytes,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                };
+                Ok((segment.len() as u64 == metadata.segment_len
+                    && checksum_bytes(&segment) == metadata.segment_checksum)
+                    .then_some(metadata.generation))
+            }
             Err(StorageError::Corrupt(_)) => Ok(None),
             Err(error) => Err(error),
         },
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(StorageError::Io(error)),
     }
+}
+
+fn operation_dir(root: &Path, generation: u64) -> PathBuf {
+    if generation == 0 {
+        root.join(OPS_DIR)
+    } else {
+        root.join(format!("ops_{generation}"))
+    }
+}
+
+fn operation_paths(
+    dir: &Path,
+    expected_count: Option<u64>,
+) -> Result<Vec<(usize, PathBuf)>, StorageError> {
+    let mut paths = Vec::new();
+    match fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let Some(index) = name
+                    .strip_prefix("op_")
+                    .and_then(|v| v.parse::<usize>().ok())
+                else {
+                    continue;
+                };
+                if !entry.file_type()?.is_file() {
+                    return Err(StorageError::CorruptOperationSegment {
+                        path: entry.path(),
+                        reason: "not a regular file",
+                    });
+                }
+                paths.push((index, entry.path()));
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    paths.sort_by_key(|(index, _)| *index);
+    for (expected, (actual, path)) in paths.iter().enumerate() {
+        if expected != *actual {
+            return Err(StorageError::CorruptOperationSegment {
+                path: path.clone(),
+                reason: "non-contiguous index",
+            });
+        }
+    }
+    if expected_count.is_some_and(|count| count != paths.len() as u64) {
+        return Err(StorageError::CorruptOperationSegment {
+            path: dir.to_path_buf(),
+            reason: "retired generation count",
+        });
+    }
+    Ok(paths)
+}
+
+fn read_operation_manifest(root: &Path) -> Result<OperationManifest, StorageError> {
+    let bytes = match read_artifact(root.join(OPERATIONS_MANIFEST)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(OperationManifest::default());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let body = checked_body(&bytes, MANIFEST_MAGIC)?;
+    let archived = rkyv::access::<ArchivedOperationManifest, rkyv::rancor::Error>(body)
+        .map_err(|_| StorageError::Corrupt("operation manifest decode"))?;
+    let manifest: OperationManifest =
+        rkyv::deserialize::<OperationManifest, rkyv::rancor::Error>(archived)
+            .map_err(|_| StorageError::Corrupt("operation manifest decode"))?;
+    let mut previous = None;
+    for entry in &manifest.retired {
+        if entry.id >= manifest.active
+            || entry.count == 0
+            || entry.covered_by == 0
+            || previous.is_some_and(|id| entry.id <= id)
+        {
+            return Err(StorageError::Corrupt("operation manifest ordering"));
+        }
+        previous = Some(entry.id);
+    }
+    if manifest
+        .garbage
+        .iter()
+        .any(|id| *id >= manifest.active || manifest.retired.iter().any(|entry| entry.id == *id))
+    {
+        return Err(StorageError::Corrupt("operation manifest cleanup"));
+    }
+    Ok(manifest)
+}
+
+fn write_operation_manifest(root: &Path, manifest: &OperationManifest) -> Result<(), StorageError> {
+    let body = rkyv::to_bytes::<rkyv::rancor::Error>(manifest)
+        .map_err(|_| StorageError::Corrupt("operation manifest encode"))?;
+    let mut bytes = body.to_vec();
+    // Keep the rkyv body at offset zero to preserve its alignment.
+    bytes.extend_from_slice(MANIFEST_MAGIC);
+    bytes.extend_from_slice(&checksum_bytes(&bytes).to_le_bytes());
+    atomic_write_durable(root, OPERATIONS_MANIFEST, &bytes)
+}
+
+fn checked_body<'a>(bytes: &'a [u8], magic: &[u8; 8]) -> Result<&'a [u8], StorageError> {
+    if bytes.len() < 12 {
+        return Err(StorageError::Corrupt("operation metadata length"));
+    }
+    let body_len = bytes.len() - 12;
+    if &bytes[body_len..body_len + 8] != magic
+        || checksum_bytes(&bytes[..bytes.len() - 4])
+            != u32::from_le_bytes(bytes[bytes.len() - 4..].try_into().expect("fixed slice"))
+    {
+        return Err(StorageError::Corrupt("operation metadata checksum"));
+    }
+    Ok(&bytes[..body_len])
+}
+
+fn read_coverage(
+    root: &Path,
+    slot: StorageSlot,
+    generation: u64,
+) -> Result<(u64, u64), StorageError> {
+    let bytes = read_artifact(root.join(slot.coverage))?;
+    if bytes.len() != 36
+        || &bytes[..8] != COVERAGE_MAGIC
+        || checksum_bytes(&bytes[..32])
+            != u32::from_le_bytes(bytes[32..].try_into().expect("fixed slice"))
+        || u64::from_le_bytes(bytes[8..16].try_into().expect("fixed slice")) != generation
+    {
+        return Err(StorageError::Corrupt("snapshot operation coverage"));
+    }
+    Ok((
+        u64::from_le_bytes(bytes[16..24].try_into().expect("fixed slice")),
+        u64::from_le_bytes(bytes[24..32].try_into().expect("fixed slice")),
+    ))
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAILURE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn fault(stage: &'static str) -> Result<(), StorageError> {
+    FAILURE.with(|failure| {
+        if failure.get() == Some(stage) {
+            failure.set(None);
+            Err(io::Error::other("injected storage interruption").into())
+        } else {
+            Ok(())
+        }
+    })
 }
 
 fn decode_superblock(bytes: &[u8]) -> Result<SuperblockMetadata, StorageError> {
@@ -495,7 +883,11 @@ fn next_index(dir: &Path, prefix: &str) -> Result<usize, StorageError> {
             max_index = Some(max_index.map_or(value, |current| current.max(value)));
         }
     }
-    Ok(max_index.map_or(0, |value| value + 1))
+    max_index.map_or(Ok(0), |value| {
+        value
+            .checked_add(1)
+            .ok_or(StorageError::Corrupt("archive index overflow"))
+    })
 }
 
 fn prune_tombstones(values: Vec<u64>, retention: TombstoneRetention) -> (Vec<u64>, usize) {
@@ -522,6 +914,93 @@ mod tests {
     use std::io::Read;
     use tempfile::tempdir;
 
+    fn assert_paired_matches_independent(storage: &Storage) {
+        assert_eq!(
+            storage.read_snapshot_and_op_segments().unwrap(),
+            (
+                storage.read_snapshot().unwrap().0,
+                storage.read_op_segments().unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn paired_read_requires_a_valid_snapshot() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage.append_op_segment(b"active").unwrap();
+        assert!(matches!(
+            storage.read_snapshot_and_op_segments(),
+            Err(StorageError::Missing)
+        ));
+        assert!(matches!(
+            storage.read_snapshot_and_op_segments_staged(),
+            Err(SnapshotAndOperationsReadError::Snapshot(
+                StorageError::Missing
+            ))
+        ));
+        assert_eq!(
+            storage.read_op_segments().unwrap(),
+            vec![b"active".to_vec()]
+        );
+    }
+
+    #[test]
+    fn paired_read_fences_retired_replay_and_revalidates_after_corruption() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage
+            .write_snapshot(b"old", b"pending-old", false)
+            .unwrap();
+        let retired = storage.append_op_segment(b"retired").unwrap();
+        storage
+            .write_snapshot_and_retire(b"covered", b"pending-new", true)
+            .unwrap();
+        storage.append_op_segment(b"active").unwrap();
+        assert_eq!(
+            storage.read_snapshot_and_op_segments().unwrap(),
+            (b"covered".to_vec(), vec![b"active".to_vec()])
+        );
+        assert_paired_matches_independent(&storage);
+        // Same length: selecting the older generation requires payload CRC,
+        // and the same handle must not retain the previously selected proof.
+        fs::write(dir.path().join(SEGMENT_B), b"damaged").unwrap();
+        assert_eq!(
+            storage.read_snapshot_and_op_segments().unwrap(),
+            (
+                b"old".to_vec(),
+                vec![b"retired".to_vec(), b"active".to_vec()]
+            )
+        );
+        assert_paired_matches_independent(&storage);
+        fs::remove_file(retired).unwrap();
+        assert!(matches!(
+            storage.read_snapshot_and_op_segments(),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+    }
+
+    #[test]
+    fn paired_read_validates_active_operation_payloads() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage.write_snapshot(b"snapshot", b"", false).unwrap();
+        let active = storage.append_op_segment(b"active").unwrap();
+        let mut encoded = fs::read(&active).unwrap();
+        *encoded.last_mut().unwrap() ^= 1;
+        fs::write(active, encoded).unwrap();
+        assert!(matches!(
+            storage.read_snapshot_and_op_segments(),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+        assert!(matches!(
+            storage.read_snapshot_and_op_segments_staged(),
+            Err(SnapshotAndOperationsReadError::Operations(
+                StorageError::CorruptOperationSegment { .. }
+            ))
+        ));
+    }
+
     fn read_v2_generation(path: &Path) -> u64 {
         let bytes = fs::read(path).unwrap();
         let (body, trailer) = bytes.split_at(bytes.len() - 4);
@@ -540,6 +1019,574 @@ mod tests {
             .filter(|(superblock, _)| root.join(superblock).exists())
             .max_by_key(|(superblock, _)| read_v2_generation(&root.join(superblock)))
             .unwrap()
+    }
+
+    #[test]
+    fn corrupt_newest_payload_then_failed_publication_preserves_sole_valid_slot() {
+        for combined in [false, true] {
+            for stage in ["snapshot payload", "snapshot metadata"] {
+                let dir = tempdir().unwrap();
+                let storage = Storage::open(dir.path()).unwrap();
+                storage
+                    .write_snapshot(b"old", b"old-pending", false)
+                    .unwrap();
+                storage
+                    .write_snapshot(b"new", b"new-pending", true)
+                    .unwrap();
+                // Keep the length unchanged so full-payload integrity matters.
+                fs::write(dir.path().join(SEGMENT_B), b"bad").unwrap();
+                FAILURE.with(|failure| failure.set(Some(stage)));
+                let result = if combined {
+                    storage
+                        .write_snapshot_and_retire(b"replacement", b"next", true)
+                        .map(|_| ())
+                } else {
+                    storage.write_snapshot(b"replacement", b"next", true)
+                };
+                assert!(result.is_err());
+                let reopened = Storage::open(dir.path()).unwrap();
+                assert_eq!(
+                    reopened.read_snapshot().unwrap(),
+                    (b"old".to_vec(), b"old-pending".to_vec(), false)
+                );
+                assert!(reopened.has_snapshot().unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn failed_metadata_rename_after_payload_corruption_keeps_fallback_readable() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage.write_snapshot(b"old", b"", false).unwrap();
+        storage.write_snapshot(b"new", b"", false).unwrap();
+        fs::write(dir.path().join(SEGMENT_B), b"corrupt").unwrap();
+        fs::create_dir(dir.path().join(format!("{SUPERBLOCK_B}.tmp"))).unwrap();
+        assert!(storage.write_snapshot(b"replacement", b"", false).is_err());
+        assert_eq!(
+            Storage::open(dir.path())
+                .unwrap()
+                .read_snapshot()
+                .unwrap()
+                .0,
+            b"old"
+        );
+    }
+
+    #[test]
+    fn interrupted_retirement_keeps_snapshot_and_fallback_operations_recoverable() {
+        for stage in ["retirement publication", "after retirement"] {
+            let dir = tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage.write_snapshot(b"old", b"", false).unwrap();
+            storage.append_op_segment(b"first").unwrap();
+            storage.append_op_segment(b"second").unwrap();
+            storage.write_snapshot(b"covered", b"", false).unwrap();
+            FAILURE.with(|failure| failure.set(Some(stage)));
+            assert!(storage.clear_op_segments().is_err());
+            let reopened = Storage::open(dir.path()).unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"covered");
+            fs::write(dir.path().join(SEGMENT_B), b"corrupt").unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"old");
+            assert_eq!(
+                reopened.read_op_segments().unwrap(),
+                vec![b"first".to_vec(), b"second".to_vec()]
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_cleanup_does_not_hide_active_generation_gaps() {
+        for stage in [
+            "cleanup publication",
+            "cleanup deletion",
+            "cleanup completion",
+        ] {
+            let dir = tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage.append_op_segment(b"first").unwrap();
+            storage.append_op_segment(b"second").unwrap();
+            storage.write_snapshot(b"covered", b"", false).unwrap();
+            FAILURE.with(|failure| failure.set(Some(stage)));
+            assert!(storage.clear_op_segments().is_err());
+            let reopened = Storage::open(dir.path()).unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"covered");
+            assert!(reopened.read_op_segments().unwrap().is_empty());
+            // A retry completes even a partially deleted garbage generation.
+            reopened.clear_op_segments().unwrap();
+            let first = reopened.append_op_segment(b"active-first").unwrap();
+            reopened.append_op_segment(b"active-second").unwrap();
+            fs::remove_file(first).unwrap();
+            assert!(matches!(
+                reopened.read_op_segments(),
+                Err(StorageError::CorruptOperationSegment { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn retired_generation_is_retained_until_both_snapshot_slots_cover_it() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage.write_snapshot(b"old", b"", false).unwrap();
+        storage.append_op_segment(b"acknowledged").unwrap();
+        storage.write_snapshot(b"covered", b"", false).unwrap();
+        storage.clear_op_segments().unwrap();
+        assert!(storage.read_op_segments().unwrap().is_empty());
+        fs::write(dir.path().join(SEGMENT_B), b"corrupt").unwrap();
+        assert_eq!(storage.read_snapshot().unwrap().0, b"old");
+        assert_eq!(
+            storage.read_op_segments().unwrap(),
+            vec![b"acknowledged".to_vec()]
+        );
+        storage.write_snapshot(b"recovered", b"", false).unwrap();
+        storage
+            .write_snapshot(b"recovered-again", b"", false)
+            .unwrap();
+        storage.clear_op_segments().unwrap();
+        assert!(!dir.path().join(OPS_DIR).exists());
+        assert!(storage.read_op_segments().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fallback_replay_rejects_a_missing_retired_generation_segment() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage.write_snapshot(b"old", b"", false).unwrap();
+        let op = storage.append_op_segment(b"acknowledged").unwrap();
+        storage.write_snapshot(b"covered", b"", false).unwrap();
+        storage.clear_op_segments().unwrap();
+        fs::remove_file(op).unwrap();
+        fs::write(dir.path().join(SEGMENT_B), b"corrupt").unwrap();
+        assert!(matches!(
+            storage.read_op_segments(),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+    }
+
+    #[test]
+    fn retirement_refuses_operations_appended_after_snapshot() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage.append_op_segment(b"covered").unwrap();
+        storage.write_snapshot(b"snapshot", b"", false).unwrap();
+        storage.append_op_segment(b"not covered").unwrap();
+        assert!(storage.clear_op_segments().is_err());
+        assert_eq!(
+            storage.read_op_segments().unwrap(),
+            vec![b"covered".to_vec(), b"not covered".to_vec()]
+        );
+    }
+
+    #[test]
+    fn separate_retirement_revalidates_payloads_after_cross_call_corruption() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage
+            .write_snapshot(b"old", b"old-pending", false)
+            .unwrap();
+        storage.append_op_segment(b"first").unwrap();
+        storage.append_op_segment(b"second").unwrap();
+        storage
+            .write_snapshot(b"covered", b"new-pending", true)
+            .unwrap();
+        let (_, segment) = newest_v2_slot(dir.path());
+        fs::write(dir.path().join(segment), b"damaged").unwrap();
+
+        assert!(matches!(
+            storage.clear_op_segments(),
+            Err(StorageError::Corrupt(_))
+        ));
+        let reopened = Storage::open(dir.path()).unwrap();
+        assert_eq!(
+            reopened.read_snapshot().unwrap(),
+            (b"old".to_vec(), b"old-pending".to_vec(), false)
+        );
+        assert_eq!(
+            reopened.read_op_segments().unwrap(),
+            vec![b"first".to_vec(), b"second".to_vec()]
+        );
+    }
+
+    #[test]
+    fn combined_snapshot_retires_exact_count_and_retains_fallback_replay() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage
+            .write_snapshot(b"old", b"old-pending", false)
+            .unwrap();
+        storage.append_op_segment(b"first").unwrap();
+        storage.append_op_segment(b"second").unwrap();
+        assert_eq!(
+            storage
+                .write_snapshot_and_retire(b"covered", b"new-pending", true)
+                .unwrap(),
+            2
+        );
+        let reopened = Storage::open(dir.path()).unwrap();
+        assert_eq!(
+            reopened.read_snapshot().unwrap(),
+            (b"covered".to_vec(), b"new-pending".to_vec(), true)
+        );
+        assert!(reopened.read_op_segments().unwrap().is_empty());
+
+        let (_, segment) = newest_v2_slot(dir.path());
+        fs::write(dir.path().join(segment), b"damaged").unwrap();
+        assert_eq!(
+            reopened.read_snapshot().unwrap(),
+            (b"old".to_vec(), b"old-pending".to_vec(), false)
+        );
+        assert_eq!(
+            reopened.read_op_segments().unwrap(),
+            vec![b"first".to_vec(), b"second".to_vec()]
+        );
+        assert_eq!(
+            reopened
+                .write_snapshot_and_retire(b"recovered", b"", false)
+                .unwrap(),
+            0
+        );
+        assert!(reopened.read_op_segments().unwrap().is_empty());
+    }
+
+    #[test]
+    fn combined_publication_faults_preserve_snapshot_and_acknowledged_operations() {
+        for stage in [
+            "snapshot payload",
+            "snapshot metadata",
+            "retirement publication",
+            "after retirement",
+        ] {
+            let dir = tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage
+                .write_snapshot(b"old", b"old-pending", false)
+                .unwrap();
+            storage.append_op_segment(b"first").unwrap();
+            storage.append_op_segment(b"second").unwrap();
+            FAILURE.with(|failure| failure.set(Some(stage)));
+            assert!(
+                storage
+                    .write_snapshot_and_retire(b"covered", b"new-pending", true)
+                    .is_err()
+            );
+            let reopened = Storage::open(dir.path()).unwrap();
+            assert_paired_matches_independent(&reopened);
+            if matches!(stage, "snapshot payload" | "snapshot metadata") {
+                assert_eq!(
+                    reopened.read_snapshot().unwrap(),
+                    (b"old".to_vec(), b"old-pending".to_vec(), false)
+                );
+            } else {
+                assert_eq!(
+                    reopened.read_snapshot().unwrap(),
+                    (b"covered".to_vec(), b"new-pending".to_vec(), true)
+                );
+                let (_, segment) = newest_v2_slot(dir.path());
+                fs::write(dir.path().join(segment), b"damaged").unwrap();
+                assert_eq!(
+                    reopened.read_snapshot().unwrap(),
+                    (b"old".to_vec(), b"old-pending".to_vec(), false)
+                );
+            }
+            assert_eq!(
+                reopened.read_op_segments().unwrap(),
+                vec![b"first".to_vec(), b"second".to_vec()]
+            );
+            assert_paired_matches_independent(&reopened);
+            reopened
+                .write_snapshot_and_retire(b"recovered", b"", false)
+                .unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"recovered");
+            assert!(reopened.read_op_segments().unwrap().is_empty());
+            assert_paired_matches_independent(&reopened);
+        }
+    }
+
+    #[test]
+    fn combined_cleanup_faults_preserve_both_covering_snapshots_and_allow_retry() {
+        for stage in [
+            "cleanup publication",
+            "cleanup deletion",
+            "cleanup completion",
+        ] {
+            let dir = tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage.write_snapshot(b"old", b"", false).unwrap();
+            storage.append_op_segment(b"first").unwrap();
+            storage.append_op_segment(b"second").unwrap();
+            storage
+                .write_snapshot_and_retire(b"covered", b"", false)
+                .unwrap();
+            FAILURE.with(|failure| failure.set(Some(stage)));
+            assert!(
+                storage
+                    .write_snapshot_and_retire(b"covered-again", b"", false)
+                    .is_err()
+            );
+            let reopened = Storage::open(dir.path()).unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"covered-again");
+            assert!(reopened.read_op_segments().unwrap().is_empty());
+            assert_paired_matches_independent(&reopened);
+            let (_, segment) = newest_v2_slot(dir.path());
+            fs::write(dir.path().join(segment), b"damaged-again").unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"covered");
+            assert!(reopened.read_op_segments().unwrap().is_empty());
+            assert_paired_matches_independent(&reopened);
+            assert_eq!(
+                reopened
+                    .write_snapshot_and_retire(b"retry", b"", false)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"retry");
+            assert!(reopened.read_op_segments().unwrap().is_empty());
+            assert_paired_matches_independent(&reopened);
+        }
+    }
+
+    #[test]
+    fn combined_retirement_manifest_io_failure_keeps_active_operations_readable() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage.write_snapshot(b"old", b"", false).unwrap();
+        storage.append_op_segment(b"acknowledged").unwrap();
+        let blocker = dir.path().join(format!("{OPERATIONS_MANIFEST}.tmp"));
+        fs::create_dir(&blocker).unwrap();
+        assert!(matches!(
+            storage.write_snapshot_and_retire(b"covered", b"pending", true),
+            Err(StorageError::Io(_))
+        ));
+        let reopened = Storage::open(dir.path()).unwrap();
+        assert_eq!(
+            reopened.read_snapshot().unwrap(),
+            (b"covered".to_vec(), b"pending".to_vec(), true)
+        );
+        assert_eq!(
+            reopened.read_op_segments().unwrap(),
+            vec![b"acknowledged".to_vec()]
+        );
+        fs::remove_dir(blocker).unwrap();
+        assert_eq!(
+            reopened
+                .write_snapshot_and_retire(b"covered", b"pending", true)
+                .unwrap(),
+            1
+        );
+        assert!(reopened.read_op_segments().unwrap().is_empty());
+    }
+
+    #[test]
+    fn combined_snapshot_refuses_active_gaps_before_publication() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage.write_snapshot(b"old", b"", false).unwrap();
+        let first = storage.append_op_segment(b"first").unwrap();
+        storage.append_op_segment(b"second").unwrap();
+        fs::remove_file(first).unwrap();
+        assert!(matches!(
+            storage.write_snapshot_and_retire(b"replacement", b"", false),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+        let reopened = Storage::open(dir.path()).unwrap();
+        assert_eq!(reopened.read_snapshot().unwrap().0, b"old");
+        assert!(matches!(
+            reopened.read_op_segments(),
+            Err(StorageError::CorruptOperationSegment { .. })
+        ));
+    }
+
+    #[test]
+    fn compaction_retirement_faults_leave_published_tombstones_and_fallback_replay() {
+        for stage in ["retirement publication", "after retirement"] {
+            let dir = tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage
+                .compact(b"old", b"", false, TombstoneRetention::KeepAll, &[1])
+                .unwrap();
+            storage.append_op_segment(b"acknowledged").unwrap();
+            FAILURE.with(|failure| failure.set(Some(stage)));
+            assert!(
+                storage
+                    .compact(b"new", b"pending", true, TombstoneRetention::KeepAll, &[2])
+                    .is_err()
+            );
+            let reopened = Storage::open(dir.path()).unwrap();
+            assert_eq!(
+                reopened.read_snapshot().unwrap(),
+                (b"new".to_vec(), b"pending".to_vec(), true)
+            );
+            assert_eq!(reopened.read_tombstones().unwrap(), vec![1, 2]);
+            let (_, segment) = newest_v2_slot(dir.path());
+            fs::write(dir.path().join(segment), b"bad").unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"old");
+            assert_eq!(
+                reopened.read_op_segments().unwrap(),
+                vec![b"acknowledged".to_vec()]
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_failure_before_replacement_preserves_acknowledged_operations() {
+        for stage in ["snapshot payload", "snapshot metadata"] {
+            let dir = tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage.write_snapshot(b"old", b"", false).unwrap();
+            storage.append_op_segment(b"acknowledged").unwrap();
+            FAILURE.with(|failure| failure.set(Some(stage)));
+            assert!(
+                storage
+                    .compact(b"new", b"", false, TombstoneRetention::KeepAll, &[1])
+                    .is_err()
+            );
+            let reopened = Storage::open(dir.path()).unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"old");
+            assert_eq!(
+                reopened.read_op_segments().unwrap(),
+                vec![b"acknowledged".to_vec()]
+            );
+            assert!(reopened.read_tombstones().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn compaction_revalidates_corrupt_payloads_before_failed_replacement() {
+        for stage in ["snapshot payload", "snapshot metadata"] {
+            let dir = tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage
+                .write_snapshot(b"old", b"old-pending", false)
+                .unwrap();
+            storage.append_op_segment(b"acknowledged").unwrap();
+            storage
+                .write_snapshot(b"new", b"new-pending", true)
+                .unwrap();
+            let (_, segment) = newest_v2_slot(dir.path());
+            // Equal-length corruption must be found by payload validation.
+            fs::write(dir.path().join(segment), b"bad").unwrap();
+            FAILURE.with(|failure| failure.set(Some(stage)));
+            assert!(
+                storage
+                    .compact(
+                        b"replacement",
+                        b"replacement-pending",
+                        true,
+                        TombstoneRetention::KeepAll,
+                        &[1],
+                    )
+                    .is_err()
+            );
+            let reopened = Storage::open(dir.path()).unwrap();
+            assert_eq!(
+                reopened.read_snapshot().unwrap(),
+                (b"old".to_vec(), b"old-pending".to_vec(), false)
+            );
+            assert_eq!(
+                reopened.read_op_segments().unwrap(),
+                vec![b"acknowledged".to_vec()]
+            );
+            assert!(reopened.read_tombstones().unwrap().is_empty());
+            reopened
+                .compact(b"recovered", b"", false, TombstoneRetention::KeepAll, &[1])
+                .unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"recovered");
+            assert!(reopened.read_op_segments().unwrap().is_empty());
+            assert_eq!(reopened.read_tombstones().unwrap(), vec![1]);
+        }
+    }
+
+    #[test]
+    fn compaction_cleanup_faults_preserve_covering_snapshots_and_allow_retry() {
+        for stage in [
+            "cleanup publication",
+            "cleanup deletion",
+            "cleanup completion",
+        ] {
+            let dir = tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage
+                .compact(b"old", b"", false, TombstoneRetention::KeepAll, &[1])
+                .unwrap();
+            storage.append_op_segment(b"first").unwrap();
+            storage.append_op_segment(b"second").unwrap();
+            storage
+                .compact(b"covered", b"", false, TombstoneRetention::KeepAll, &[2])
+                .unwrap();
+            FAILURE.with(|failure| failure.set(Some(stage)));
+            assert!(
+                storage
+                    .compact(
+                        b"covered-again",
+                        b"pending",
+                        true,
+                        TombstoneRetention::KeepAll,
+                        &[3],
+                    )
+                    .is_err()
+            );
+            let reopened = Storage::open(dir.path()).unwrap();
+            assert_eq!(
+                reopened.read_snapshot().unwrap(),
+                (b"covered-again".to_vec(), b"pending".to_vec(), true)
+            );
+            assert!(reopened.read_op_segments().unwrap().is_empty());
+            assert_eq!(reopened.read_tombstones().unwrap(), vec![1, 2, 3]);
+            let (_, segment) = newest_v2_slot(dir.path());
+            fs::write(dir.path().join(segment), b"damaged-again").unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"covered");
+            assert!(reopened.read_op_segments().unwrap().is_empty());
+            reopened
+                .compact(b"retry", b"", false, TombstoneRetention::KeepAll, &[])
+                .unwrap();
+            let reopened = Storage::open(dir.path()).unwrap();
+            assert_eq!(reopened.read_snapshot().unwrap().0, b"retry");
+            assert_eq!(reopened.read_tombstones().unwrap(), vec![1, 2, 3]);
+            reopened.append_op_segment(b"after-cleanup").unwrap();
+            assert_eq!(
+                reopened.read_op_segments().unwrap(),
+                vec![b"after-cleanup".to_vec()]
+            );
+        }
+    }
+
+    #[test]
+    fn failed_tombstone_publication_preserves_prior_tombstones_and_operations() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage
+            .compact(b"old", b"", false, TombstoneRetention::KeepAll, &[1])
+            .unwrap();
+        storage.append_op_segment(b"acknowledged").unwrap();
+        fs::create_dir(dir.path().join(format!("{TOMBSTONES_FILE}.tmp"))).unwrap();
+        assert!(
+            storage
+                .compact(b"new", b"", false, TombstoneRetention::KeepAll, &[2])
+                .is_err()
+        );
+        let reopened = Storage::open(dir.path()).unwrap();
+        assert_eq!(reopened.read_snapshot().unwrap().0, b"new");
+        assert_eq!(reopened.read_tombstones().unwrap(), vec![1]);
+        assert_eq!(
+            reopened.read_op_segments().unwrap(),
+            vec![b"acknowledged".to_vec()]
+        );
+    }
+
+    #[test]
+    fn failed_retirement_manifest_write_keeps_active_operations_readable() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        storage.append_op_segment(b"acknowledged").unwrap();
+        storage.write_snapshot(b"covered", b"", false).unwrap();
+        fs::create_dir(dir.path().join(format!("{OPERATIONS_MANIFEST}.tmp"))).unwrap();
+        assert!(storage.clear_op_segments().is_err());
+        let reopened = Storage::open(dir.path()).unwrap();
+        assert_eq!(reopened.read_snapshot().unwrap().0, b"covered");
+        assert_eq!(
+            reopened.read_op_segments().unwrap(),
+            vec![b"acknowledged".to_vec()]
+        );
     }
 
     #[test]
@@ -813,11 +1860,7 @@ mod tests {
         let (payload, _, _) = storage.read_snapshot().unwrap();
         assert_eq!(payload, b"new");
 
-        let ops_dir = dir.path().join(OPS_DIR);
-        if ops_dir.exists() {
-            let op_count = fs::read_dir(ops_dir).unwrap().count();
-            assert_eq!(op_count, 0);
-        }
+        assert!(storage.read_op_segments().unwrap().is_empty());
     }
 
     #[test]
@@ -827,6 +1870,9 @@ mod tests {
 
         storage.append_op_segment(b"first").unwrap();
         storage.append_op_segment(b"second").unwrap();
+        storage
+            .write_snapshot(b"covers first and second", b"", false)
+            .unwrap();
         assert_eq!(storage.clear_op_segments().unwrap(), 2);
         assert!(storage.read_op_segments().unwrap().is_empty());
         // Re-seed for the remainder of the original test body.

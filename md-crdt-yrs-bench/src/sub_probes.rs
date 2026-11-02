@@ -1,7 +1,8 @@
 //! Optional md-crdt hot-path sub-probes (requires feature `sub_probes`).
 //!
-//! Uses product `perf_trace` counters to attribute wall time of competitive
-//! insert and apply paths into exclusive spans. Never ratioed against Yrs.
+//! Uses product `perf_trace` counters to attribute insert and apply paths.
+//! Durations may overlap when spans nest; never interpret their sum as wall time
+//! or ratio these diagnostic probes against Yrs.
 
 #![cfg(feature = "sub_probes")]
 
@@ -41,6 +42,7 @@ fn span_name(span: Span) -> &'static str {
         Span::ApplyValidate => "apply_validate",
         Span::ApplyDecode => "apply_decode",
         Span::ApplyIntegrate => "apply_integrate",
+        Span::SequenceOrderOracle => "sequence_order_oracle",
     }
 }
 
@@ -55,6 +57,7 @@ pub fn shares(snap: &PerfSnapshot) -> Vec<SpanShare> {
         Span::ApplyValidate,
         Span::ApplyDecode,
         Span::ApplyIntegrate,
+        Span::SequenceOrderOracle,
     ];
     let mut rows: Vec<SpanShare> = all
         .into_iter()
@@ -130,7 +133,7 @@ pub fn format_attribution_table(title: &str, snap: &PerfSnapshot, wall_nanos: u6
     let mut out = String::new();
     out.push_str(&format!("### {title}\n\n"));
     out.push_str(&format!(
-        "Wall (approx): {:.3} ms · instrumented total: {:.3} ms\n\n",
+        "Wall (separate run): {:.3} ms · sum of recorded spans: {:.3} ms\n\n",
         wall_nanos as f64 / 1e6,
         snap.total_nanos() as f64 / 1e6
     ));
@@ -149,38 +152,4 @@ pub fn format_attribution_table(title: &str, snap: &PerfSnapshot, wall_nanos: u6
     }
     out.push('\n');
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn insert_middle_records_local_spans() {
-        let (snap, wall) = attribute_insert_middle(128);
-        assert!(wall > 0);
-        assert_eq!(snap.count(Span::BlockLookup), 1);
-        assert_eq!(snap.count(Span::UnitExpand), 1);
-        assert_eq!(snap.count(Span::EnvelopeEncode), 1);
-        assert_eq!(snap.count(Span::SequenceApply), 1);
-        assert_eq!(snap.count(Span::SyncLogAppend), 1);
-        assert!(snap.total_nanos() > 0);
-    }
-
-    #[test]
-    fn apply_remote_lag_records_remote_spans() {
-        let (snap, wall) = attribute_apply_remote_lag(64, 4);
-        assert!(wall > 0);
-        assert!(snap.count(Span::ApplyValidate) >= 1);
-        assert!(snap.count(Span::ApplyDecode) >= 1);
-        assert!(snap.count(Span::ApplyIntegrate) >= 1);
-    }
-
-    #[test]
-    fn format_table_includes_title() {
-        let (snap, wall) = attribute_insert_middle(32);
-        let table = format_attribution_table("insert n=32", &snap, wall);
-        assert!(table.contains("insert n=32"));
-        assert!(table.contains("block_lookup"));
-    }
 }

@@ -159,6 +159,8 @@ fn unknown_wire_version_rejected_without_mutation() {
                 counter: 1,
                 peer: 1,
             },
+            observed: md_crdt::StateVector::new(),
+            subtree: Vec::new(),
         }),
     };
     bad.version = 99;
@@ -452,6 +454,114 @@ fn unit_mode_paragraph_units_do_not_collide_with_block_ids() {
             for uid in paragraph_visible_ids(text) {
                 assert!(seen.insert(uid), "unit OpId {uid:?}");
             }
+        }
+    }
+}
+
+#[test]
+fn fence_marker_lines_with_content_survive_insert_setter_exchange_and_restore() {
+    for (marker, symbol) in [
+        (md_crdt::FenceMarker::Backtick, "`"),
+        (md_crdt::FenceMarker::Tilde, "~"),
+    ] {
+        let style = md_crdt::CodeFenceStyle { marker, length: 3 };
+        for body in [
+            format!("{} aaa", symbol.repeat(3)),
+            format!("{}\tcontent", symbol.repeat(4)),
+            format!("    {} suffix\n{}", symbol.repeat(3), symbol.repeat(2)),
+        ] {
+            let source = format!("{}\n{body}\n{}", symbol.repeat(3), symbol.repeat(3));
+            let parsed = md_crdt::doc::Parser::parse(&source);
+            let mut inserted = CollaborativeDocument::new(1);
+            let elem = inserted
+                .insert_block(
+                    None,
+                    BlockKind::CodeFence {
+                        style,
+                        info: None,
+                        text: body.clone(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                inserted.document().serialize(EquivalenceMode::Structural),
+                parsed.serialize(EquivalenceMode::Structural)
+            );
+            let block_id = block_id_from_op(elem);
+            let mut setter = CollaborativeDocument::new(2);
+            exchange(&inserted, &mut setter);
+            setter
+                .set_code_fence(block_id, style, Some("text".into()), body.clone())
+                .unwrap();
+            exchange(&setter, &mut inserted);
+            let expected = format!("{}text\n{body}\n{}", symbol.repeat(3), symbol.repeat(3));
+            assert_eq!(
+                inserted.document().serialize(EquivalenceMode::Structural),
+                expected
+            );
+            assert_eq!(
+                setter.document().serialize(EquivalenceMode::Structural),
+                expected
+            );
+            let bytes = setter.save_snapshot().unwrap().to_bytes().unwrap();
+            let restored = CollaborativeDocument::restore_from_snapshot(
+                md_crdt::SessionSnapshot::from_bytes(&bytes).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                restored.document().serialize(EquivalenceMode::Structural),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn actual_embedded_fence_closers_are_typed_atomic_insert_and_setter_errors() {
+    for (marker, symbol) in [
+        (md_crdt::FenceMarker::Backtick, "`"),
+        (md_crdt::FenceMarker::Tilde, "~"),
+    ] {
+        let style = md_crdt::CodeFenceStyle { marker, length: 3 };
+        let mut session = CollaborativeDocument::new(1);
+        let elem = session
+            .insert_block(
+                None,
+                BlockKind::CodeFence {
+                    style,
+                    info: None,
+                    text: "safe".into(),
+                },
+            )
+            .unwrap();
+        for body in [
+            symbol.repeat(3),
+            symbol.repeat(4),
+            format!(" \t{} \t", symbol.repeat(3)),
+            format!("{}\u{a0}", symbol.repeat(3)),
+        ] {
+            let before = session.save_snapshot().unwrap();
+            assert!(matches!(
+                session.insert_block(
+                    None,
+                    BlockKind::CodeFence {
+                        style,
+                        info: None,
+                        text: body.clone(),
+                    }
+                ),
+                Err(SessionError::StructuredEdit(
+                    md_crdt::StructuredEditError::CodeFence
+                ))
+            ));
+            assert_eq!(session.save_snapshot().unwrap(), before);
+            assert!(matches!(
+                session.set_code_fence(block_id_from_op(elem), style, None, body),
+                Err(SessionError::StructuredEdit(
+                    md_crdt::StructuredEditError::CodeFence
+                ))
+            ));
+            assert_eq!(session.save_snapshot().unwrap(), before);
         }
     }
 }

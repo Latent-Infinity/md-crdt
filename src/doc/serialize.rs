@@ -148,78 +148,49 @@ fn serialize_list(style: ListStyle, items: &Sequence<ListItem>, indent: usize) -
 }
 
 fn serialize_table(table: &Table) -> String {
-    let columns = table.columns_in_order();
-    let header = table.row_cells(table.header_row_id());
-    let mut rows: Vec<Vec<CellContent>> = table
-        .rows
-        .iter()
-        .filter(|row| !row.deleted.get())
-        .map(|row| table.row_cells(row.id))
-        .collect();
-
-    let mut col_count = header.len().max(columns.len());
-    for row in &rows {
-        col_count = col_count.max(row.len());
-    }
-    if col_count == 0 {
+    let columns: Vec<_> = table.columns.iter().collect();
+    if columns.is_empty() {
         return String::new();
     }
-
-    let mut header_cells = header;
-    header_cells.resize(col_count, String::new());
-    let header_line = format!(
-        "| {} |",
-        header_cells
-            .iter()
-            .map(|cell| escape_table_cell(cell))
-            .collect::<Vec<_>>()
-            .join(" | ")
+    let mut output = String::new();
+    append_table_row(
+        &mut output,
+        table.row_values(table.header_row_id(), &columns),
     );
-
-    let mut align_cells = Vec::with_capacity(col_count);
-    for idx in 0..col_count {
-        let alignment = columns
-            .get(idx)
-            .map(|col| col.alignment.get_ref())
-            .unwrap_or(&ColumnAlignment::Default);
-        let align = match alignment {
+    output.push_str("\n| ");
+    for (index, column) in columns.iter().enumerate() {
+        if index > 0 {
+            output.push_str(" | ");
+        }
+        output.push_str(match column.alignment.get_ref() {
             ColumnAlignment::Default => "---",
             ColumnAlignment::Left => ":---",
             ColumnAlignment::Center => ":---:",
             ColumnAlignment::Right => "---:",
-        };
-        align_cells.push(align);
+        });
     }
-    let align_line = format!("| {} |", align_cells.join(" | "));
-
-    let mut rendered_rows = Vec::with_capacity(rows.len());
-    for row in &mut rows {
-        row.resize(col_count, String::new());
-        rendered_rows.push(format!(
-            "| {} |",
-            row.iter()
-                .map(|cell| escape_table_cell(cell))
-                .collect::<Vec<_>>()
-                .join(" | ")
-        ));
+    output.push_str(" |");
+    for row in table.rows.iter().filter(|row| !row.deleted.get()) {
+        output.push('\n');
+        append_table_row(&mut output, table.row_values(row.id, &columns));
     }
-
-    let mut output = Vec::with_capacity(2 + rendered_rows.len());
-    output.push(header_line);
-    output.push(align_line);
-    output.extend(rendered_rows);
-    output.join("\n")
+    output
 }
 
-fn escape_table_cell(cell: &str) -> String {
-    let mut escaped = String::with_capacity(cell.len());
-    for character in cell.chars() {
-        if matches!(character, '\\' | '|') {
-            escaped.push('\\');
+fn append_table_row<'a>(output: &mut String, cells: impl Iterator<Item = &'a str>) {
+    output.push_str("| ");
+    for (index, cell) in cells.enumerate() {
+        if index > 0 {
+            output.push_str(" | ");
         }
-        escaped.push(character);
+        for character in cell.chars() {
+            if matches!(character, '\\' | '|') {
+                output.push('\\');
+            }
+            output.push(character);
+        }
     }
-    escaped
+    output.push_str(" |");
 }
 
 pub(super) fn grapheme_offset_to_byte(text: &str, grapheme_offset: usize) -> Option<usize> {
@@ -291,7 +262,9 @@ mod tests {
             task: None,
             task_op: id(1),
             task_observed: StateVector::new(),
+            task_conflicts: Vec::new(),
             placement_observed: StateVector::new(),
+            placement_conflicts: Vec::new(),
             children: Sequence::new(),
         };
         let empty_items = Sequence::from_ordered(vec![(id(1), empty_item)]);
@@ -317,7 +290,9 @@ mod tests {
             task: None,
             task_op: id(2),
             task_observed: StateVector::new(),
+            task_conflicts: Vec::new(),
             placement_observed: StateVector::new(),
+            placement_conflicts: Vec::new(),
             children: Sequence::from_ordered(vec![(id(3), code), (id(4), raw)]),
         };
         let items = Sequence::from_ordered(vec![(id(2), item)]);

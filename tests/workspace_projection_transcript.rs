@@ -5,7 +5,6 @@ use md_crdt::{
     BlockProjectionKind, BlockProjectionStructure, EditBatch, ProjectionFields, ProjectionRequest,
     TaskState, WorkspaceEdit, WorkspaceMutation,
 };
-use serde_json::{Value, json};
 use std::fs;
 use tempfile::tempdir;
 
@@ -24,7 +23,8 @@ fn projection_request(
     }
 }
 
-fn transcript() -> Value {
+#[test]
+fn paged_projection_tracks_structured_edits_and_rejects_stale_cursors() {
     let dir = tempdir().unwrap();
     let metadata = dir.path().join(".mdcrdt");
     fs::create_dir_all(metadata.join("document_ids")).unwrap();
@@ -68,11 +68,11 @@ fn transcript() -> Value {
         .find(|item| matches!(item.kind, Some(BlockProjectionKind::Paragraph)))
         .unwrap()
         .id;
-    let item_id = initial_read
+    let (list_id, item_id) = initial_read
         .items
         .iter()
         .find_map(|item| match &item.structure {
-            Some(BlockProjectionStructure::ListItems { item_ids }) => Some(item_ids[0]),
+            Some(BlockProjectionStructure::ListItems { item_ids }) => Some((item.id, item_ids[0])),
             _ => None,
         })
         .unwrap();
@@ -92,6 +92,16 @@ fn transcript() -> Value {
         .find(|item| matches!(item.kind, Some(BlockProjectionKind::BlockQuote)))
         .unwrap()
         .id;
+    let quote_child_id = match &initial_read
+        .items
+        .iter()
+        .find(|item| item.id == quote_id)
+        .unwrap()
+        .structure
+    {
+        Some(BlockProjectionStructure::Children { block_ids }) => block_ids[0],
+        _ => panic!("quote child projection retained"),
+    };
     let (code_id, code_style) = initial_read
         .items
         .iter()
@@ -135,10 +145,12 @@ fn transcript() -> Value {
             },
         )
         .unwrap();
-    let stale_cursor_error = vault
-        .descriptor_page("note.md", None, Some(&next_cursor), 3)
-        .unwrap_err()
-        .to_string();
+    assert!(matches!(
+        vault.descriptor_page("note.md", None, Some(&next_cursor), 3),
+        Err(md_crdt::filesync::VaultError::Descriptor(
+            md_crdt::DescriptorError::CursorRevisionMismatch { .. }
+        ))
+    ));
     let restarted_map = vault.descriptor_page("note.md", None, None, 8).unwrap();
     let current = vault.open_document("note.md").unwrap();
     let mut affected_ids = receipt.changes.updated.clone();
@@ -149,49 +161,48 @@ fn transcript() -> Value {
         .project_blocks("note.md", projection_request(&current, affected_ids))
         .unwrap();
 
-    let map_bytes = serde_json::to_vec(&map).unwrap().len();
-    let continuation_bytes = serde_json::to_vec(&map_continuation).unwrap().len();
-    let edit_bytes = serde_json::to_vec(&receipt).unwrap().len();
-    let restart_bytes = serde_json::to_vec(&restarted_map).unwrap().len();
-    let total_core_response_bytes = map_bytes
-        + continuation_bytes
-        + initial_read.bytes_used
-        + edit_bytes
-        + restart_bytes
-        + affected_read.bytes_used;
-    json!({
-        "fixture_version": 3,
-        "map": map,
-        "map_continuation": map_continuation,
-        "initial_read": initial_read,
-        "edit_receipt": receipt,
-        "stale_cursor_error": stale_cursor_error,
-        "restarted_map": restarted_map,
-        "affected_read": affected_read,
-        "response_bytes": {
-            "map": map_bytes,
-            "map_continuation": continuation_bytes,
-            "initial_read": initial_read.bytes_used,
-            "edit": edit_bytes,
-            "restarted_map": restart_bytes,
-            "affected_read": affected_read.bytes_used,
-            "total": total_core_response_bytes,
-        },
-    })
-}
-
-#[test]
-fn deterministic_map_read_edit_read_transcript_matches_fixture() {
-    let actual = transcript();
-    if std::env::var_os("MD_CRDT_UPDATE_FIXTURES").is_some() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/workspace-projection-transcript-v3.json");
-        fs::write(path, serde_json::to_string_pretty(&actual).unwrap() + "\n").unwrap();
-        return;
-    }
-    let frozen: Value = serde_json::from_str(include_str!(
-        "fixtures/workspace-projection-transcript-v3.json"
-    ))
-    .expect("valid frozen projection transcript");
-    assert_eq!(frozen, actual);
+    assert_eq!(
+        restarted_map
+            .items
+            .iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>(),
+        vec![paragraph_id, list_id, table_id, quote_child_id, code_id],
+        "unwrapping promotes the original child identity instead of duplicating it"
+    );
+    let projected = |id| {
+        affected_read
+            .items
+            .iter()
+            .find(|item| item.id == id)
+            .unwrap()
+    };
+    assert_eq!(projected(paragraph_id).text.as_deref(), Some("intro! bold"));
+    assert!(matches!(
+        projected(item_id).kind,
+        Some(BlockProjectionKind::ListItem {
+            task: Some(TaskState::Checked)
+        })
+    ));
+    let Some(BlockProjectionStructure::Table { columns, rows, .. }) =
+        &projected(table_id).structure
+    else {
+        panic!("edited table projection retained")
+    };
+    assert_eq!(columns[0].id, column_id);
+    assert_eq!(rows[0].id, row_id);
+    assert_eq!(rows[0].cells, ["updated", "1"]);
+    assert_eq!(projected(quote_child_id).text.as_deref(), Some("quoted"));
+    assert_eq!(
+        projected(quote_child_id).kind,
+        Some(BlockProjectionKind::Paragraph)
+    );
+    assert_eq!(projected(code_id).text.as_deref(), Some("let x = 2;"));
+    assert_eq!(
+        projected(code_id).kind,
+        Some(BlockProjectionKind::CodeFence {
+            style: code_style,
+            info: Some("rust,ignore".into()),
+        })
+    );
 }

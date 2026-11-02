@@ -9,6 +9,7 @@ fn fixed_block(id: Uuid, elem_id: OpId, text: &str) -> Block {
         elem_id,
         kind_op: elem_id,
         kind_observed: StateVector::new(),
+        kind_conflicts: Vec::new(),
         kind: BlockKind::paragraph(text, elem_id),
         marks: MarkSet::new(),
     }

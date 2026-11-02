@@ -7,7 +7,7 @@ setup:
 
 # Run all tests
 test:
-    cargo test --workspace
+    cargo test --workspace --locked
 
 # Check formatting
 fmt:
@@ -15,10 +15,18 @@ fmt:
 
 # Lint with clippy
 lint:
-    cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::perf -W clippy::needless_collect -W clippy::map_flatten -W clippy::or_fun_call -W clippy::inefficient_to_string -W clippy::unnecessary_wraps -W clippy::useless_conversion
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -W clippy::perf -W clippy::needless_collect -W clippy::map_flatten -W clippy::or_fun_call -W clippy::inefficient_to_string -W clippy::unnecessary_wraps -W clippy::useless_conversion
 
 # Run all quality checks
-check: fmt lint test
+check: fmt lint test feature-check
+
+# Explicit local gates; CI remains paused by project policy.
+feature-check:
+    cargo +1.95.0 test --workspace --locked
+    cargo test --locked --no-default-features
+    cargo test --locked --no-default-features --features storage
+    cargo test --locked --no-default-features --features filesync
+    cargo test --locked --features sequence_incremental
 
 # Differential testing against the naive oracle (both ordering strategies)
 differential-test:
@@ -27,8 +35,8 @@ differential-test:
 
 # Run benchmarks
 bench:
-    cargo bench
-    cargo bench --features sequence_incremental
+    cargo bench --locked
+    cargo bench --locked --features sequence_incremental
 
 # Competitive md-crdt vs Yrs harness tests (nested workspace; does not use --workspace)
 test-compare:
@@ -50,7 +58,7 @@ bench-compare-report:
 memory-compare:
     md-crdt-yrs-bench/scripts/memory_rss.sh
 
-# md-crdt exclusive-span sub-probes (requires sub_probes; not competitive ratios)
+# md-crdt recorded-span sub-probes (requires sub_probes; not competitive ratios)
 sub-probes:
     cargo run --manifest-path md-crdt-yrs-bench/Cargo.toml --example sub_probes --features sub_probes --release --locked
 
@@ -84,28 +92,31 @@ flamegraph-compare target="insert":
 
 # Quick fuzz run (5 minutes per target, single process, no worker spawning)
 fuzz-quick:
-    cargo +nightly fuzz run parser -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
-    cargo +nightly fuzz run apply_changes -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
-    cargo +nightly fuzz run decode_changes -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
-    cargo +nightly fuzz run decode_binary_wire -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
-    cargo +nightly fuzz run merge_convergence -- -max_total_time=300 -rss_limit_mb=2048 -max_len=4096
+    cargo +nightly-2026-10-01 fuzz run parser -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
+    cargo +nightly-2026-10-01 fuzz run apply_changes -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
+    cargo +nightly-2026-10-01 fuzz run decode_changes -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
+    cargo +nightly-2026-10-01 fuzz run decode_binary_wire -- -max_total_time=300 -rss_limit_mb=2048 -max_len=65536
+    cargo +nightly-2026-10-01 fuzz run merge_convergence -- -max_total_time=300 -rss_limit_mb=2048 -max_len=4096
+    cargo +nightly-2026-10-01 fuzz run snapshot_restore -- -max_total_time=300 -rss_limit_mb=2048 -max_len=4096
 
 # Moderate fuzz run (1 hour per target, 15 workers)
 fuzz-moderate:
-    cargo +nightly fuzz run parser -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
-    cargo +nightly fuzz run apply_changes -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
-    cargo +nightly fuzz run decode_changes -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
-    cargo +nightly fuzz run decode_binary_wire -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
-    cargo +nightly fuzz run merge_convergence -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=4096 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run parser -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run apply_changes -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run decode_changes -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run decode_binary_wire -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=65536 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run merge_convergence -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=4096 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run snapshot_restore -- -max_total_time=3600 -rss_limit_mb=2048 -max_len=4096 -jobs=15 -workers=15
 
 # Run long fuzzing campaign (manual, use with caution)
 # 15 workers with strict memory limits per worker
 fuzz-long-run:
-    cargo +nightly fuzz run parser -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
-    cargo +nightly fuzz run apply_changes -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
-    cargo +nightly fuzz run decode_changes -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
-    cargo +nightly fuzz run decode_binary_wire -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
-    cargo +nightly fuzz run merge_convergence -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=4096 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run parser -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run apply_changes -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run decode_changes -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run decode_binary_wire -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=65536 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run merge_convergence -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=4096 -jobs=15 -workers=15
+    cargo +nightly-2026-10-01 fuzz run snapshot_restore -- -max_total_time=86400 -rss_limit_mb=4096 -max_len=4096 -jobs=15 -workers=15
 
 # Generate code coverage report
 coverage:

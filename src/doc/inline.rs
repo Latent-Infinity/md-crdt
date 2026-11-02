@@ -1,4 +1,4 @@
-use super::{Block, BlockKind, TextUnit, grapheme_count, paragraph_visible_ids};
+use super::{Block, BlockKind, TextUnit, paragraph_visible_ids};
 use crate::core::mark::{Anchor, AnchorBias, MarkInterval, MarkKind, MarkValue};
 use crate::core::{OpId, Sequence};
 use std::collections::BTreeMap;
@@ -22,12 +22,32 @@ pub(super) fn parse_text_block(
     elem_id: OpId,
     counter: &mut u64,
 ) -> Block {
-    let (visible, parsed_marks) = parse_fragment(markdown);
+    let mut visible = String::with_capacity(markdown.len());
+    let mut parsed_marks = Vec::new();
+    parse_fragment(markdown, &mut visible, &mut parsed_marks);
     let text = super::units_from_str(&visible, counter, 0);
+    if parsed_marks.is_empty() {
+        return Block::new(kind(text), elem_id);
+    }
     let ids = paragraph_visible_ids(&text);
+    // Syntax removal can join clusters across fragment boundaries. Reuse the
+    // final text segmentation to resolve byte ranges, expanding a partial-
+    // cluster mark to the containing grapheme.
+    let mut boundaries = Vec::with_capacity(ids.len() + 1);
+    let mut byte = 0;
+    for unit in text.iter() {
+        boundaries.push(byte);
+        byte += unit.grapheme.len();
+    }
+    boundaries.push(byte);
     let mut block = Block::new(kind(text), elem_id);
-    for parsed in parsed_marks {
-        if parsed.start >= parsed.end || parsed.end > ids.len() {
+    for mut parsed in parsed_marks {
+        if parsed.start >= parsed.end {
+            continue;
+        }
+        parsed.start = boundaries.partition_point(|byte| *byte <= parsed.start) - 1;
+        parsed.end = boundaries.partition_point(|byte| *byte < parsed.end);
+        if parsed.end > ids.len() {
             continue;
         }
         let mark_id = super::parser::next_op_id(counter);
@@ -49,9 +69,7 @@ pub(super) fn parse_text_block(
     block
 }
 
-fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
-    let mut visible = String::new();
-    let mut marks = Vec::new();
+fn parse_fragment(markdown: &str, visible: &mut String, marks: &mut Vec<ParsedMark>) {
     let mut cursor = 0usize;
     while cursor < markdown.len() {
         let rest = &markdown[cursor..];
@@ -69,9 +87,9 @@ fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
             if let Some(relative_end) = find_backtick_closer(&rest[run..], run) {
                 let inner_start = cursor + run;
                 let inner_end = inner_start + relative_end;
-                let start = grapheme_count(&visible);
+                let start = visible.len();
                 visible.push_str(&markdown[inner_start..inner_end]);
-                let end = grapheme_count(&visible);
+                let end = visible.len();
                 let mut attrs = BTreeMap::new();
                 attrs.insert(
                     "delimiter".into(),
@@ -95,19 +113,13 @@ fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
         {
             let inner_start = cursor + open.len();
             let inner_end = inner_start + relative_end;
-            let start = grapheme_count(&visible);
+            let start = visible.len();
             if kind == MarkKind::Code {
                 visible.push_str(&markdown[inner_start..inner_end]);
             } else {
-                let (inner, nested) = parse_fragment(&markdown[inner_start..inner_end]);
-                visible.push_str(&inner);
-                marks.extend(nested.into_iter().map(|mut mark| {
-                    mark.start += start;
-                    mark.end += start;
-                    mark
-                }));
+                parse_fragment(&markdown[inner_start..inner_end], visible, marks);
             }
-            let end = grapheme_count(&visible);
+            let end = visible.len();
             let mut attrs = BTreeMap::new();
             attrs.insert("delimiter".into(), MarkValue::String(open.into()));
             marks.push(ParsedMark {
@@ -130,9 +142,9 @@ fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
                 Some((target, alias)) => (target, alias),
                 None => (inner, inner),
             };
-            let start = grapheme_count(&visible);
+            let start = visible.len();
             visible.push_str(label);
-            let end = grapheme_count(&visible);
+            let end = visible.len();
             let mut attrs = BTreeMap::new();
             attrs.insert("href".into(), MarkValue::String(target.into()));
             attrs.insert(
@@ -155,15 +167,9 @@ fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
         {
             let label = &rest[1..label_end];
             let target = &rest[label_end + 2..label_end + 2 + target_end];
-            let start = grapheme_count(&visible);
-            let (inner, mut nested) = parse_fragment(label);
-            visible.push_str(&inner);
-            let end = grapheme_count(&visible);
-            for mark in &mut nested {
-                mark.start += start;
-                mark.end += start;
-            }
-            marks.extend(nested);
+            let start = visible.len();
+            parse_fragment(label, visible, marks);
+            let end = visible.len();
             let mut attrs = BTreeMap::new();
             attrs.insert("href".into(), MarkValue::String(target.into()));
             attrs.insert("delimiter".into(), MarkValue::String("[]()".into()));
@@ -180,7 +186,6 @@ fn parse_fragment(markdown: &str) -> (String, Vec<ParsedMark>) {
         visible.push(ch);
         cursor += ch.len_utf8();
     }
-    (visible, marks)
 }
 
 fn delimiter_at(input: &str) -> Option<(&'static str, &'static str, MarkKind)> {

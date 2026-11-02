@@ -12,13 +12,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Current wire protocol version for [`Envelope`].
-pub const WIRE_VERSION: u16 = 5;
+pub const WIRE_VERSION: u16 = 7;
 
 /// Maximum nested BlockQuote / structure depth accepted on encode and decode.
 ///
-/// Kept modest so well-formed over-deep payloads can be deserialized far enough
-/// for this crate's depth check to run (serde's default recursion limit is 128;
-/// each quote level costs several enum layers in JSON).
+/// Binary decoding preflights recursive fields iteratively before constructing
+/// the DTO. JSON also retains serde's recursion limit; structure validation
+/// applies the same depth boundary to either codec and to encoding.
 pub const MAX_WIRE_NEST_DEPTH: u32 = 16;
 
 /// Versioned operation envelope carried as `sync::Operation` payload bytes.
@@ -102,14 +102,18 @@ pub enum DocOp {
         right_origin: Option<OpId>,
         block: BlockSkeleton,
     },
-    /// Block-level RGA delete.
+    /// Delete the logical incarnation addressed by a physical placement.
     DeleteBlock {
-        /// Container block elem_id the target lives in; `None` = top-level document.
+        /// Historical container elem_id; `None` addresses the document root.
         #[serde(default)]
         parent: Option<OpId>,
         target: OpId,
         /// Delete-op id; also `Operation.id` when this is the sole effect.
         id: OpId,
+        /// Materialized causal context at the author.
+        observed: StateVector,
+        /// Visible captured incarnations, root first. Empty for an unseen physical target.
+        subtree: Vec<crate::doc::LogicalTarget>,
     },
     /// Delete a logical block regardless of its winning concurrent placement.
     DeleteBlockById {
@@ -117,6 +121,9 @@ pub enum DocOp {
         target: OpId,
         block_id: BlockId,
         id: OpId,
+        observed: StateVector,
+        /// Visible captured incarnations, including the logical root first.
+        subtree: Vec<crate::doc::LogicalTarget>,
     },
     /// Nested RGA inserts into a paragraph body (one element per grapheme).
     InsertText {
@@ -158,13 +165,15 @@ pub enum DocOp {
         key: String,
         value: Option<String>,
     },
-    /// Establish the lossless frontmatter base on first ingest.
+    /// Propose a lossless base; concurrent initializers select the greatest OpId.
     InitializeFrontmatter { id: OpId, frontmatter: Frontmatter },
     /// Atomically move one block or a contiguous heading section.
     MoveBlocks {
         to_parent: Option<OpId>,
         id: OpId,
         blocks: Vec<MovedBlockWire>,
+        /// Materialized causal frontier observed when the atomic move was authored.
+        observed: StateVector,
     },
     /// Split one text-bearing block, transferring the visible suffix to a new sibling.
     SplitBlock {
@@ -287,6 +296,9 @@ pub enum DocOp {
         target: OpId,
         item_id: BlockId,
         id: OpId,
+        observed: StateVector,
+        /// Visible captured incarnations, including the item root first.
+        subtree: Vec<crate::doc::LogicalTarget>,
     },
     MoveListItem {
         from_list_elem: OpId,

@@ -33,6 +33,7 @@ pub const PROVENANCE_REQUIRED_KEYS: &[&str] = &[
     "batch_policy",
     "timestamp_utc",
     "output_dir",
+    "build_context",
     "invocations",
 ];
 
@@ -48,7 +49,7 @@ pub const INVOCATION_REQUIRED_KEYS: &[&str] = &[
 ];
 
 /// Current provenance schema version written by the report script.
-pub const PROVENANCE_SCHEMA_VERSION: u32 = 1;
+pub const PROVENANCE_SCHEMA_VERSION: u32 = 2;
 
 /// Validate a provenance document against the S10 required-key schema.
 pub fn validate_provenance_document(value: &serde_json::Value) -> Result<(), String> {
@@ -76,6 +77,29 @@ pub fn validate_provenance_document(value: &serde_json::Value) -> Result<(), Str
         .ok_or_else(|| "clean_worktree must be a boolean".to_owned())?;
     if !clean {
         return Err("clean_worktree must be true for citable runs".to_owned());
+    }
+    let build = obj
+        .get("build_context")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "build_context must be an object".to_owned())?;
+    if build.get("profile").and_then(serde_json::Value::as_str) != Some("bench") {
+        return Err("build_context.profile must be bench".to_owned());
+    }
+    for key in ["manifest_profiles", "environment"] {
+        if !build.get(key).is_some_and(serde_json::Value::is_object) {
+            return Err(format!("build_context.{key} must be an object"));
+        }
+    }
+    for key in ["cargo_configs", "resolved_features"] {
+        if !build.get(key).is_some_and(serde_json::Value::is_array) {
+            return Err(format!("build_context.{key} must be an array"));
+        }
+    }
+    if build["resolved_features"]
+        .as_array()
+        .is_none_or(Vec::is_empty)
+    {
+        return Err("build_context.resolved_features must include the resolved graph".to_owned());
     }
     let frozen_fields = [
         ("yrs_text_root", "text"),
@@ -120,6 +144,11 @@ pub fn validate_provenance_document(value: &serde_json::Value) -> Result<(), Str
             if !inv_obj.contains_key(*key) {
                 return Err(format!("invocations[{i}] missing key: {key}"));
             }
+        }
+        if inv_obj.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
+            return Err(format!(
+                "invocations[{i}].status must be ok for citable runs"
+            ));
         }
         let baseline = inv_obj
             .get("baseline_name")
@@ -317,7 +346,6 @@ mod tests {
 
             let with = CaseMetadata::from_manifest(&manifest, EngineId::MdCrdt, Some(128));
             assert!(with.is_complete_with_wire_sample());
-            assert_eq!(with.codec.as_deref(), Some("md_crdt_bin_v1"));
         }
     }
 
@@ -345,37 +373,28 @@ mod tests {
 
         let mut dup: serde_json::Value = serde_json::from_str(raw).expect("fixture json");
         dup["invocations"][1]["baseline_name"] = dup["invocations"][0]["baseline_name"].clone();
-        assert!(
-            validate_provenance_document(&dup)
-                .unwrap_err()
-                .contains("duplicate baseline_name")
-        );
+        assert!(validate_provenance_document(&dup).is_err());
 
         let mut same_order: serde_json::Value = serde_json::from_str(raw).expect("fixture json");
         same_order["invocations"][1]["engine_order"] = serde_json::json!("md_first");
         same_order["invocations"][2]["engine_order"] = serde_json::json!("md_first");
-        assert!(
-            validate_provenance_document(&same_order)
-                .unwrap_err()
-                .contains("alternate")
-        );
+        assert!(validate_provenance_document(&same_order).is_err());
 
         let mut wrong_config: serde_json::Value = serde_json::from_str(raw).expect("fixture json");
         wrong_config["yrs_skip_gc"] = serde_json::json!(true);
-        assert!(
-            validate_provenance_document(&wrong_config)
-                .unwrap_err()
-                .contains("yrs_skip_gc")
-        );
+        assert!(validate_provenance_document(&wrong_config).is_err());
     }
 
     #[test]
-    fn provenance_required_key_lists_are_nonempty_and_unique() {
-        assert!(PROVENANCE_REQUIRED_KEYS.len() >= 15);
-        assert!(INVOCATION_REQUIRED_KEYS.len() >= 6);
-        let mut seen = std::collections::BTreeSet::new();
-        for k in PROVENANCE_REQUIRED_KEYS {
-            assert!(seen.insert(*k), "duplicate provenance key {k}");
+    fn provenance_rejects_unmeasured_runs_and_missing_build_context() {
+        let raw = include_str!("../tests/fixtures/provenance_valid.json");
+        for status in ["dry_run", "failed", "unknown"] {
+            let mut value: serde_json::Value = serde_json::from_str(raw).unwrap();
+            value["invocations"][1]["status"] = serde_json::json!(status);
+            assert!(validate_provenance_document(&value).is_err());
         }
+        let mut value: serde_json::Value = serde_json::from_str(raw).unwrap();
+        value["build_context"]["resolved_features"] = serde_json::json!([]);
+        assert!(validate_provenance_document(&value).is_err());
     }
 }

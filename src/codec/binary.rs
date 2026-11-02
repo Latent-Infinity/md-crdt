@@ -13,8 +13,11 @@
 //! postcard / structure validation errors. Semantic wire version still lives
 //! inside [`Envelope::version`] and must equal [`WIRE_VERSION`].
 
-use super::wire::{Envelope, WIRE_VERSION, validate_envelope_structure};
+use super::wire::{Envelope, MAX_WIRE_NEST_DEPTH, WIRE_VERSION, validate_envelope_structure};
 use super::{CodecError, OpCodec};
+use crate::core::OpId;
+use crate::doc::{BlockId, CodeFenceStyle, ListStyle, TaskState};
+use serde::Deserialize;
 
 /// Magic bytes for a binary envelope frame.
 pub const BINARY_ENVELOPE_MAGIC: &[u8; 4] = b"MDE1";
@@ -59,12 +62,16 @@ impl OpCodec for BinaryOpCodec {
             return Err(CodecError::UnknownVersion(format));
         }
         let body_len = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]) as usize;
+        let frame_end = HEADER_LEN.checked_add(body_len).ok_or(CodecError::Invalid(
+            "binary envelope length overflows address space",
+        ))?;
         let body = bytes
-            .get(HEADER_LEN..HEADER_LEN + body_len)
+            .get(HEADER_LEN..frame_end)
             .ok_or(CodecError::Invalid("truncated binary envelope body"))?;
-        if bytes.len() != HEADER_LEN + body_len {
+        if bytes.len() != frame_end {
             return Err(CodecError::Invalid("trailing bytes after binary envelope"));
         }
+        preflight_structure(body)?;
         let (envelope, remainder): (Envelope, &[u8]) =
             postcard::take_from_bytes(body).map_err(|e| CodecError::Serde(e.to_string()))?;
         if !remainder.is_empty() {
@@ -72,12 +79,122 @@ impl OpCodec for BinaryOpCodec {
                 "trailing bytes in binary envelope body",
             ));
         }
-        if envelope.version != WIRE_VERSION {
-            return Err(CodecError::UnknownVersion(envelope.version));
-        }
         validate_envelope_structure(&envelope)?;
         Ok(envelope)
     }
+}
+
+/// Read the recursive InsertBlock portion without constructing or recursively
+/// dropping a tree. Postcard encodes struct fields/tuples identically, enum tags
+/// as u32, and Vec lengths as usize. All nonrecursive fields use their actual
+/// wire types (strings borrow the frame), not byte-offset or prefix heuristics.
+///
+/// The ordinary DTO decoder below still validates the entire envelope. Only
+/// InsertBlock contains recursive wire data; the other DocOp variants do not.
+fn preflight_structure(mut input: &[u8]) -> Result<(), CodecError> {
+    let version: u16 = take_field(&mut input)?;
+    if version != WIRE_VERSION {
+        return Err(CodecError::UnknownVersion(version));
+    }
+    let body_tag: u32 = take_field(&mut input)?;
+    if body_tag != 0 {
+        return Ok(()); // The DTO decoder rejects the unknown OpBody variant.
+    }
+    let op_tag: u32 = take_field(&mut input)?;
+    if op_tag != 0 {
+        return Ok(());
+    }
+    // InsertBlock: parent, after, id, right_origin, block.block_id.
+    let _: (Option<OpId>, Option<OpId>, OpId, Option<OpId>, BlockId) = take_field(&mut input)?;
+    let mut pending = Vec::new();
+    read_kind(&mut input, 0, &mut pending)?;
+    while let Some(frame) = pending.pop() {
+        match frame {
+            StructureFrame::Blocks { remaining, depth } if remaining != 0 => {
+                pending.push(StructureFrame::Blocks {
+                    remaining: remaining - 1,
+                    depth,
+                });
+                // BlockSkeletonInsert: after, id, right_origin, block.block_id.
+                let _: (Option<OpId>, OpId, Option<OpId>, BlockId) = take_field(&mut input)?;
+                read_kind(&mut input, depth, &mut pending)?;
+            }
+            StructureFrame::Items { remaining, depth } if remaining != 0 => {
+                pending.push(StructureFrame::Items {
+                    remaining: remaining - 1,
+                    depth,
+                });
+                // ListItemSkeleton, followed by its children vector length.
+                let _: (
+                    Option<OpId>,
+                    OpId,
+                    Option<OpId>,
+                    BlockId,
+                    Option<TaskState>,
+                    OpId,
+                ) = take_field(&mut input)?;
+                let remaining = take_field(&mut input)?;
+                pending.push(StructureFrame::Blocks { remaining, depth });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+enum StructureFrame {
+    Blocks { remaining: usize, depth: u32 },
+    Items { remaining: usize, depth: u32 },
+}
+
+fn take_field<'a, T: Deserialize<'a>>(input: &mut &'a [u8]) -> Result<T, CodecError> {
+    let (value, rest) =
+        postcard::take_from_bytes(input).map_err(|error| CodecError::Serde(error.to_string()))?;
+    *input = rest;
+    Ok(value)
+}
+
+fn read_kind(
+    input: &mut &[u8],
+    depth: u32,
+    pending: &mut Vec<StructureFrame>,
+) -> Result<(), CodecError> {
+    if depth > MAX_WIRE_NEST_DEPTH {
+        return Err(CodecError::NestDepthExceeded);
+    }
+    // BlockKindSkeleton's append-only Postcard variant ordinals. Keep this
+    // structural walk paired with the DTO; leaf fields retain their wire types.
+    match take_field::<u32>(input)? {
+        0 => {
+            let _: &str = take_field(input)?;
+        }
+        1 => {
+            let _: (u8, &str) = take_field(input)?;
+        }
+        2 => {
+            let (_, remaining): (ListStyle, usize) = take_field(input)?;
+            pending.push(StructureFrame::Items {
+                remaining,
+                depth: depth + 1,
+            });
+        }
+        3 => {
+            let _: (CodeFenceStyle, Option<&str>, &str) = take_field(input)?;
+        }
+        4 => {
+            let remaining = take_field(input)?;
+            pending.push(StructureFrame::Blocks {
+                remaining,
+                depth: depth + 1,
+            });
+        }
+        5 => {
+            let _: &str = take_field(input)?;
+        }
+        6 => {}
+        _ => return Err(CodecError::Invalid("unknown block kind")),
+    }
+    Ok(())
 }
 
 #[cfg(test)]

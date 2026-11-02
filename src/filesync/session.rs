@@ -14,7 +14,7 @@ use crate::doc::{
     block_id_from_op, paragraph_visible_string,
 };
 use crate::session::{CollaborativeDocument, SessionError, SnapshotError, SyncResponse};
-use crate::storage::{Storage, StorageError};
+use crate::storage::{SnapshotAndOperationsReadError, Storage, StorageError};
 use crate::sync::{ChangeMessage, ValidationLimits};
 use crate::workspace::{
     capture_outline, replace_moved_ids, stable_hash_64, summarize_outline_change,
@@ -56,6 +56,11 @@ pub struct VaultSession {
     flush_frontier: BTreeMap<PathBuf, StateVector>,
     /// Live op-segment count since the last full snapshot for each document.
     append_count: BTreeMap<PathBuf, u32>,
+    /// Readable snapshots established by this exclusively owned vault session.
+    /// The value records retained dependencies in that snapshot: resolving them
+    /// requires another full snapshot, not admission against different buffers.
+    /// External writers/disk mutation require closing and reopening the document.
+    validated_snapshots: HashMap<PathBuf, bool>,
 }
 
 impl VaultSession {
@@ -77,6 +82,7 @@ impl VaultSession {
             revision_cache: BTreeMap::new(),
             flush_frontier: BTreeMap::new(),
             append_count: BTreeMap::new(),
+            validated_snapshots: HashMap::new(),
         })
     }
 
@@ -448,11 +454,7 @@ impl VaultSession {
         let previous_revision = actual_revision;
         let before = capture_outline(live.document());
         let before_vector = live.state_vector();
-        let snapshot = live
-            .save_snapshot()
-            .map_err(|error| VaultError::Snapshot(error.to_string()))?;
-        let mut probe = CollaborativeDocument::restore_from_snapshot(snapshot)
-            .map_err(|error| VaultError::Snapshot(error.to_string()))?;
+        let mut probe = live.clone();
         for operation in &batch.operations {
             apply_workspace_edit(&mut probe, &operation.edit).map_err(session_err)?;
         }
@@ -476,6 +478,8 @@ impl VaultSession {
         prepared: PreparedBatch,
     ) -> Result<BatchReceipt, VaultError> {
         write_session_snapshot(&self.vault, &rel, &prepared.session)?;
+        self.validated_snapshots
+            .insert(rel.clone(), prepared.session.requires_full_snapshot());
         self.revision_cache
             .insert(rel.clone(), prepared.receipt.revision.clone());
         self.flush_frontier
@@ -609,10 +613,9 @@ impl VaultSession {
             atomic_write_markdown(&path, markdown.as_bytes(), PublishControl::default())?;
         }
 
-        let parsed = Parser::try_parse(&markdown)?;
         self.revision_cache.remove(&rel);
         let session = self.docs.get_mut(&rel).expect("session remains open");
-        session.document_mut().adopt_source_from(&parsed);
+        session.document_mut().refresh_source_metadata();
         let state = LastFlushedState {
             content_hash: hash_string(&markdown),
             blocks: fingerprint_document(session.document()),
@@ -703,6 +706,9 @@ impl VaultSession {
         if let Some(count) = self.append_count.remove(&from) {
             self.append_count.insert(to.clone(), count);
         }
+        if let Some(retained) = self.validated_snapshots.remove(&from) {
+            self.validated_snapshots.insert(to.clone(), retained);
+        }
         self.document_ids.remove(&from);
         self.document_ids.insert(to.clone(), document_id);
         self.document_handle(&to)
@@ -737,6 +743,7 @@ impl VaultSession {
         self.revision_cache.remove(&rel);
         self.flush_frontier.remove(&rel);
         self.append_count.remove(&rel);
+        self.validated_snapshots.remove(&rel);
         Ok(DeletedDocument {
             document_id,
             path: rel,
@@ -798,10 +805,13 @@ impl VaultSession {
         let mut entries = Vec::new();
         for export in prepared.iter().filter(|export| export.changed) {
             let entry = export_journal_entry(&export.rel, transaction_id)?;
-            if let Err(error) = write_synced_file(
-                &self.vault.path.join(&entry.pending),
-                export.markdown.as_bytes(),
-            ) {
+            let pending = self.vault.path.join(&entry.pending);
+            let prepared = write_synced_file(&pending, export.markdown.as_bytes()).and_then(|()| {
+                copy_existing_permissions(&self.vault.path.join(&entry.target), &pending)?;
+                fs::File::open(&pending)?.sync_all()?;
+                Ok(())
+            });
+            if let Err(error) = prepared {
                 let _ = fs::remove_file(self.vault.path.join(&entry.pending));
                 cleanup_pending_entries(&self.vault, &entries);
                 return Err(error);
@@ -860,13 +870,12 @@ impl VaultSession {
     ) -> Result<Vec<crate::ExportOutcome>, VaultError> {
         let mut outcomes = Vec::with_capacity(prepared.len());
         for export in prepared {
-            let parsed = Parser::try_parse(&export.markdown)?;
             self.revision_cache.remove(&export.rel);
             let session = self
                 .docs
                 .get_mut(&export.rel)
                 .expect("prepared export session remains open");
-            session.document_mut().adopt_source_from(&parsed);
+            session.document_mut().refresh_source_metadata();
             let state = LastFlushedState {
                 content_hash: hash_string(&export.markdown),
                 blocks: fingerprint_document(session.document()),
@@ -953,7 +962,7 @@ impl VaultSession {
     ) -> Result<SyncResponse, VaultError> {
         self.session(rel_path)?
             .sync_since(since)
-            .map_err(|error| VaultError::Snapshot(error.to_string()))
+            .map_err(VaultError::Snapshot)
     }
 
     /// Apply remote operations to one document and persist the updated session snapshot.
@@ -1003,6 +1012,7 @@ impl VaultSession {
         self.revision_cache.remove(&rel);
         self.flush_frontier.remove(&rel);
         self.append_count.remove(&rel);
+        self.validated_snapshots.remove(&rel);
         Ok(())
     }
 
@@ -1083,11 +1093,14 @@ impl VaultSession {
                     self.vault.clear_unexported(&abs)?;
                 }
             }
-            let changes = summarize_session_transition(
-                self.docs.get(&rel).expect("session remains open"),
-                &before,
-                &before_vector,
-            )?;
+            let session = self.docs.get(&rel).expect("session remains open");
+            let changes = if needs_source {
+                summarize_session_transition(session, &before, &before_vector)?
+            } else {
+                // No bytes, source metadata, or operations changed; reuse the
+                // captured outline instead of traversing it a second time.
+                summarize_outline_change(&before, &before, 0, revision_for(session))
+            };
             self.revision_cache
                 .insert(rel.clone(), changes.revision.clone());
             return Ok(IngestOutcome {
@@ -1100,16 +1113,8 @@ impl VaultSession {
         // Re-ingest is a state transition, not a stream of best-effort edits.
         // Build it against an isolated copy so a late validation failure cannot
         // leave the live session holding only the prefix applied before the
-        // refusal. Snapshot/restore is the existing exact clone boundary for a
-        // collaborative session, including buffered and deferred operations.
-        let snapshot = self
-            .docs
-            .get(&rel)
-            .expect("session opened above")
-            .save_snapshot()
-            .map_err(|error| VaultError::Snapshot(error.to_string()))?;
-        let mut candidate = CollaborativeDocument::restore_from_snapshot(snapshot)
-            .map_err(|error| VaultError::Snapshot(error.to_string()))?;
+        // refusal. Clone includes clocks and buffered/deferred operations.
+        let mut candidate = self.docs.get(&rel).expect("session opened above").clone();
         let _ops = {
             let session = &mut candidate;
             let mut ops = sync_frontmatter(session, &parsed)?;
@@ -1164,8 +1169,12 @@ impl VaultSession {
     fn load_or_create_session(&mut self, rel: &Path) -> Result<CollaborativeDocument, VaultError> {
         let storage_path = session_storage_path(&self.vault, rel);
         match Storage::open(&storage_path) {
-            Ok(storage) => match CollaborativeDocument::read_from_storage(&storage) {
-                Ok(mut doc) => {
+            Ok(storage) => match storage.read_snapshot_and_op_segments_staged() {
+                Ok((bytes, segments)) => {
+                    let mut doc = CollaborativeDocument::restore_from_snapshot_bytes(&bytes)
+                        .map_err(VaultError::Snapshot)?;
+                    drop(bytes);
+                    let snapshot_retained_dependencies = doc.requires_full_snapshot();
                     // Vault peer is authoritative for local edits across all files.
                     if doc.peer() != self.peer {
                         doc.rebind_peer(self.peer);
@@ -1174,20 +1183,30 @@ impl VaultSession {
                     if !doc.unit_mode() {
                         doc.set_unit_mode(true);
                     }
-                    let segment_count = replay_op_segments(&storage, &mut doc)?;
+                    let segment_count = replay_op_segments(&segments, &mut doc)?;
+                    // Remote replay integrates IDs without allocating local clocks.
+                    // Reconcile only after every durable segment has been applied.
+                    doc.rebind_peer(self.peer);
                     self.flush_frontier
                         .insert(rel.to_path_buf(), doc.state_vector());
                     self.append_count
                         .insert(rel.to_path_buf(), segment_count as u32);
+                    self.validated_snapshots
+                        .insert(rel.to_path_buf(), snapshot_retained_dependencies);
                     Ok(doc)
                 }
-                Err(SnapshotError::Storage(StorageError::Missing)) => {
+                Err(SnapshotAndOperationsReadError::Snapshot(StorageError::Missing)) => {
                     self.flush_frontier
                         .insert(rel.to_path_buf(), StateVector::default());
                     self.append_count.insert(rel.to_path_buf(), 0);
                     Ok(CollaborativeDocument::new(self.peer))
                 }
-                Err(err) => Err(VaultError::Snapshot(err.to_string())),
+                Err(SnapshotAndOperationsReadError::Snapshot(err)) => {
+                    Err(VaultError::Snapshot(SnapshotError::Storage(err)))
+                }
+                Err(SnapshotAndOperationsReadError::Operations(err)) => {
+                    Err(VaultError::Storage(err))
+                }
             },
             Err(StorageError::Missing) => {
                 self.flush_frontier
@@ -1213,11 +1232,11 @@ impl VaultSession {
         self.vault.mark_unexported(&self.vault.path.join(rel))?;
 
         let appends = self.append_count.get(rel).copied().unwrap_or(0);
-        let has_snapshot = storage.has_snapshot().map_err(VaultError::Storage)?;
+        let snapshot_retained_dependencies = self.validated_snapshots.get(rel).copied();
         let want_full = match mode {
             PersistMode::Full => true,
             PersistMode::Auto => {
-                !has_snapshot
+                snapshot_retained_dependencies.is_none_or(|retained| retained)
                     || appends >= MAX_APPENDS_BEFORE_FULL_SNAPSHOT
                     || doc.requires_full_snapshot()
             }
@@ -1225,6 +1244,8 @@ impl VaultSession {
 
         if want_full {
             write_full_snapshot(&storage, doc)?;
+            self.validated_snapshots
+                .insert(rel.to_path_buf(), doc.requires_full_snapshot());
             self.flush_frontier
                 .insert(rel.to_path_buf(), doc.state_vector());
             self.append_count.insert(rel.to_path_buf(), 0);
@@ -1238,6 +1259,8 @@ impl VaultSession {
                 // Behind a checkpoint floor — fall back to a full snapshot.
                 let _ = rebase;
                 write_full_snapshot(&storage, doc)?;
+                self.validated_snapshots
+                    .insert(rel.to_path_buf(), doc.requires_full_snapshot());
                 self.flush_frontier
                     .insert(rel.to_path_buf(), doc.state_vector());
                 self.append_count.insert(rel.to_path_buf(), 0);
@@ -1247,8 +1270,22 @@ impl VaultSession {
         if message.ops.is_empty() {
             return Ok(());
         }
-        let payload = serde_json::to_vec(&message)
-            .map_err(|error| VaultError::Snapshot(format!("encode op segment: {error}")))?;
+        // Publish a delta only when the reader's complete admission contract is
+        // provable from this baseline; uncertain source rewrites need a snapshot.
+        let limits = ValidationLimits::default();
+        if !doc
+            .delta_replay_admissible(&message, &limits)
+            .map_err(session_err)?
+        {
+            write_full_snapshot(&storage, doc)?;
+            self.validated_snapshots
+                .insert(rel.to_path_buf(), doc.requires_full_snapshot());
+            self.flush_frontier
+                .insert(rel.to_path_buf(), doc.state_vector());
+            self.append_count.insert(rel.to_path_buf(), 0);
+            return Ok(());
+        }
+        let payload = serde_json::to_vec(&message).map_err(VaultError::SegmentCodec)?;
         storage
             .append_op_segment(&payload)
             .map_err(VaultError::Storage)?;
@@ -1336,7 +1373,7 @@ fn remove_journal(path: &Path) -> Result<(), VaultError> {
 fn recoverable_error(journal: &Path, error: VaultError) -> VaultError {
     VaultError::RecoverableTransaction {
         journal: journal.to_path_buf(),
-        cause: error.to_string(),
+        cause: Box::new(error),
     }
 }
 
@@ -1511,6 +1548,70 @@ fn complete_delete(vault: &Vault, path: &Path) -> Result<(), VaultError> {
     Ok(())
 }
 
+fn validate_journal_document_path(path: &Path) -> Result<(), VaultError> {
+    normalize_rel(path)?;
+    let first = path.components().find_map(|component| match component {
+        std::path::Component::Normal(name) => Some(name),
+        _ => None,
+    });
+    if first.is_none_or(|name| name == ".mdcrdt") {
+        return Err(VaultError::InvalidJournal(path.to_path_buf()));
+    }
+    Ok(())
+}
+
+fn validate_journal(journal: &DurableJournal) -> Result<(), VaultError> {
+    match journal {
+        DurableJournal::Export { entries } => {
+            let mut paths = HashSet::new();
+            for entry in entries {
+                validate_journal_document_path(&entry.target)?;
+                validate_journal_document_path(&entry.pending)?;
+                validate_journal_document_path(&entry.backup)?;
+                let target_name = entry
+                    .target
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| VaultError::InvalidJournal(entry.target.clone()))?;
+                let prefix = format!(".{target_name}.");
+                let transaction = entry
+                    .pending
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_prefix(&prefix))
+                    .and_then(|name| name.strip_suffix(".pending"))
+                    .and_then(|id| Uuid::parse_str(id).ok())
+                    .ok_or_else(|| VaultError::InvalidJournal(entry.pending.clone()))?;
+                let expected = export_journal_entry(&entry.target, transaction)?;
+                if entry.pending != expected.pending || entry.backup != expected.backup {
+                    return Err(VaultError::InvalidJournal(entry.pending.clone()));
+                }
+                for path in [&entry.target, &entry.pending, &entry.backup] {
+                    let canonical: PathBuf = path
+                        .components()
+                        .filter_map(|component| match component {
+                            std::path::Component::Normal(name) => Some(name),
+                            _ => None,
+                        })
+                        .collect();
+                    if !paths.insert(canonical) {
+                        return Err(VaultError::InvalidJournal(path.clone()));
+                    }
+                }
+            }
+        }
+        DurableJournal::Rename { from, to, .. } => {
+            validate_journal_document_path(from)?;
+            validate_journal_document_path(to)?;
+            if from == to {
+                return Err(VaultError::InvalidJournal(to.clone()));
+            }
+        }
+        DurableJournal::Delete { path, .. } => validate_journal_document_path(path)?,
+    }
+    Ok(())
+}
+
 fn recover_pending_transactions(vault: &Vault) -> Result<RecoveryReport, VaultError> {
     let root = transaction_root(vault);
     if !root.exists() {
@@ -1525,11 +1626,20 @@ fn recover_pending_transactions(vault: &Vault) -> Result<RecoveryReport, VaultEr
         })
         .collect();
     journals.sort();
+    // Validate every intent before any recovery effect. Local disk remains
+    // trusted: this adds lexical confinement, not a new symlink policy.
+    let journals = journals
+        .into_iter()
+        .map(|path| {
+            let bytes = crate::limits::read_file_bounded(&path, 4 * 1024 * 1024)?;
+            let journal: DurableJournal =
+                serde_json::from_slice(&bytes).map_err(|_| VaultError::Serialization)?;
+            validate_journal(&journal)?;
+            Ok((path, journal))
+        })
+        .collect::<Result<Vec<_>, VaultError>>()?;
     let mut report = RecoveryReport::default();
-    for path in journals {
-        let bytes = crate::limits::read_file_bounded(&path, 4 * 1024 * 1024)?;
-        let journal: DurableJournal =
-            serde_json::from_slice(&bytes).map_err(|_| VaultError::Serialization)?;
+    for (path, journal) in journals {
         match journal {
             DurableJournal::Export { entries } => {
                 install_export_entries(vault, &entries)?;
@@ -2132,15 +2242,15 @@ fn revision_for(document: &CollaborativeDocument) -> RevisionToken {
         .document()
         .serialize(crate::doc::EquivalenceMode::Exact);
     let state_vector = document.state_vector();
-    let mut material = Vec::with_capacity(exact.len().saturating_add(64));
-    material.extend_from_slice(&document.peer().to_le_bytes());
-    material.push(u8::from(document.unit_mode()));
+    let mut hasher = rapidhash::v3::RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS);
+    hasher.write(&document.peer().to_le_bytes());
+    hasher.write(&[u8::from(document.unit_mode())]);
     for (peer, counter) in state_vector.iter() {
-        material.extend_from_slice(&peer.to_le_bytes());
-        material.extend_from_slice(&counter.to_le_bytes());
+        hasher.write(&peer.to_le_bytes());
+        hasher.write(&counter.to_le_bytes());
     }
-    material.extend_from_slice(exact.as_bytes());
-    RevisionToken::from_u64(stable_hash_64(&material))
+    hasher.write(exact.as_bytes());
+    RevisionToken::from_u64(hasher.finish())
 }
 
 fn summarize_session_transition(
@@ -2154,7 +2264,7 @@ fn summarize_session_transition(
     for operation in &message.ops {
         let envelope = JsonOpCodec
             .decode(&operation.payload)
-            .map_err(|error| VaultError::Session(error.to_string()))?;
+            .map_err(|error| VaultError::Session(SessionError::WireCodec(error)))?;
         let OpBody::Doc(doc_op) = envelope.body;
         if let DocOp::MoveBlocks { blocks, .. } = doc_op {
             explicit_moved.extend(blocks.into_iter().map(|block| block.block_id));
@@ -2193,6 +2303,15 @@ struct PublishControl {
     fail_before_rename: bool,
 }
 
+fn copy_existing_permissions(from: &Path, to: &Path) -> Result<(), VaultError> {
+    match fs::metadata(from) {
+        Ok(metadata) => fs::set_permissions(to, metadata.permissions())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn atomic_write_markdown(
     path: &Path,
     bytes: &[u8],
@@ -2213,6 +2332,7 @@ fn atomic_write_markdown(
         .write(true)
         .open(&temporary)?;
     file.write_all(bytes)?;
+    copy_existing_permissions(path, &temporary)?;
     file.sync_all()?;
     drop(file);
     #[cfg(test)]
@@ -2253,13 +2373,26 @@ fn load_or_create_peer_id(vault: &Vault) -> Result<PeerId, VaultError> {
         return Ok(peer);
     }
 
-    // First open: allocate a non-zero peer and persist it for this vault.
+    // Publish a fully synced identity without exposing a partially written file.
     let peer = generate_peer_id(vault);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| VaultError::InvalidRelativePath(path.clone()))?;
+    fs::create_dir_all(parent)?;
+    let temp = parent.join(format!(".peer_id.{}.tmp", Uuid::new_v4()));
+    write_synced_file(&temp, format!("{peer}\n").as_bytes())?;
+    let published = fs::hard_link(&temp, &path);
+    let _ = fs::remove_file(&temp);
+    match published {
+        Ok(()) => {
+            sync_directory(parent)?;
+            Ok(peer)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            load_or_create_peer_id(vault)
+        }
+        Err(error) => Err(error.into()),
     }
-    fs::write(&path, format!("{peer}\n"))?;
-    Ok(peer)
 }
 
 fn generate_peer_id(vault: &Vault) -> PeerId {
@@ -2318,29 +2451,30 @@ fn write_session_snapshot(
 }
 
 fn write_full_snapshot(storage: &Storage, doc: &CollaborativeDocument) -> Result<(), VaultError> {
-    doc.write_to_storage(storage)
-        .map_err(|e| VaultError::Snapshot(e.to_string()))?;
-    storage.clear_op_segments().map_err(VaultError::Storage)?;
+    let snapshot = doc.save_snapshot().map_err(VaultError::Snapshot)?;
+    let payload = snapshot.to_bytes().map_err(VaultError::Snapshot)?;
+    storage
+        .write_snapshot_and_retire(&payload, &[], false)
+        .map_err(VaultError::Storage)?;
     Ok(())
 }
 
 /// Apply durable op segments (ChangeMessage JSON) onto a restored snapshot.
 fn replay_op_segments(
-    storage: &Storage,
+    segments: &[Vec<u8>],
     doc: &mut CollaborativeDocument,
 ) -> Result<usize, VaultError> {
-    let segments = storage.read_op_segments().map_err(VaultError::Storage)?;
     let limits = ValidationLimits::default();
-    for payload in &segments {
-        let message: ChangeMessage = serde_json::from_slice(payload)
-            .map_err(|error| VaultError::Snapshot(format!("decode op segment: {error}")))?;
+    for payload in segments {
+        let message: ChangeMessage =
+            serde_json::from_slice(payload).map_err(VaultError::SegmentCodec)?;
         doc.apply_remote(message, &limits).map_err(session_err)?;
     }
     Ok(segments.len())
 }
 
 fn session_err(err: SessionError) -> VaultError {
-    VaultError::Session(err.to_string())
+    VaultError::Session(err)
 }
 
 /// Outcome of ingesting a single file.
@@ -2393,7 +2527,9 @@ fn sync_frontmatter(
     parsed: &Document,
 ) -> Result<usize, VaultError> {
     match (&session.document().frontmatter, &parsed.frontmatter) {
-        (None, Some(frontmatter)) => {
+        (current, Some(frontmatter))
+            if current.as_ref().is_none_or(|current| !current.has_base()) =>
+        {
             session
                 .initialize_frontmatter(frontmatter.clone())
                 .map_err(session_err)?;
@@ -2415,7 +2551,7 @@ fn sync_frontmatter(
                 let new = desired.get(&key).cloned().flatten();
                 if old != new {
                     session
-                        .set_frontmatter_field(key, new)
+                        .set_frontmatter_field_from_parsed(key, new, parsed)
                         .map_err(session_err)?;
                     ops += 1;
                 }
@@ -2427,7 +2563,7 @@ fn sync_frontmatter(
             let mut ops = 0;
             for key in keys {
                 session
-                    .set_frontmatter_field(key, None)
+                    .set_frontmatter_field_from_parsed(key, None, parsed)
                     .map_err(session_err)?;
                 ops += 1;
             }
@@ -2474,6 +2610,62 @@ fn level_new_parsed(blocks: &[&Block]) -> Vec<ParsedBlock> {
         .collect()
 }
 
+/// Sibling links for one reconciliation pass. Moves replace element IDs while
+/// preserving block/row identities.
+struct SiblingOrder {
+    first: Option<OpId>,
+    links: HashMap<OpId, (Option<OpId>, Option<OpId>)>,
+}
+
+impl SiblingOrder {
+    fn new(ids: impl Iterator<Item = OpId>) -> Self {
+        let mut order = Self {
+            first: None,
+            links: HashMap::new(),
+        };
+        let mut after = None;
+        for id in ids {
+            order.place(None, id, after);
+            after = Some(id);
+        }
+        order
+    }
+
+    fn predecessor(&self, id: OpId) -> Option<OpId> {
+        self.links.get(&id).and_then(|(previous, _)| *previous)
+    }
+
+    fn place(&mut self, previous: Option<OpId>, id: OpId, after: Option<OpId>) {
+        if let Some(previous) = previous
+            && let Some((left, right)) = self.links.remove(&previous)
+        {
+            if let Some(left) = left {
+                self.links.get_mut(&left).expect("live left sibling").1 = right;
+            } else {
+                self.first = right;
+            }
+            if let Some(right) = right {
+                self.links.get_mut(&right).expect("live right sibling").0 = left;
+            }
+        }
+        let right = if let Some(after) = after {
+            let link = self
+                .links
+                .get_mut(&after)
+                .expect("live insertion predecessor");
+            let right = link.1;
+            link.1 = Some(id);
+            right
+        } else {
+            self.first.replace(id)
+        };
+        if let Some(right) = right {
+            self.links.get_mut(&right).expect("live right sibling").0 = Some(id);
+        }
+        self.links.insert(id, (after, right));
+    }
+}
+
 fn sync_tree(
     session: &mut CollaborativeDocument,
     parent: Option<OpId>,
@@ -2485,7 +2677,7 @@ fn sync_tree(
         min_match_score: Score(5000),
         ..MatchConfig::default()
     };
-    let mapping = match_blocks(&level_old_state(old), &level_new_parsed(new), &config);
+    let mapping = match_blocks(&level_old_state(old), &level_new_parsed(new), &config)?;
 
     let old_by_id: HashMap<BlockId, &Block> = old.iter().map(|b| (b.id, b)).collect();
     let mut matched_by_new: HashMap<usize, BlockId> = mapping
@@ -2495,6 +2687,18 @@ fn sync_tree(
         .collect();
     let mut removed: HashSet<BlockId> = mapping.removed.iter().copied().collect();
     let mut added: HashSet<usize> = mapping.added.iter().map(|a| a.new_index).collect();
+    // Matching fingerprints do not imply compatible semantic kinds. Replace
+    // incompatible leaves rather than adopting bytes over stale semantics.
+    matched_by_new.retain(|index, id| {
+        let compatible = old_by_id.get(id).is_some_and(|old| {
+            std::mem::discriminant(&old.kind) == std::mem::discriminant(&new[*index].kind)
+        });
+        if !compatible {
+            removed.insert(*id);
+            added.insert(*index);
+        }
+        compatible
+    });
 
     // Position-pair remaining paragraphs so in-place text edits keep BlockId and use LCS.
     let rem_old_para: Vec<BlockId> = old
@@ -2552,6 +2756,14 @@ fn sync_tree(
         ops += 1;
     }
 
+    let mut order = SiblingOrder::new(
+        session
+            .document()
+            .container_children(parent)
+            .ok_or(VaultError::UnsupportedIngestBlock("missing parent"))?
+            .iter()
+            .map(|block| block.elem_id),
+    );
     let mut after: Option<OpId> = None;
     for (idx, nb) in new.iter().enumerate() {
         if let Some(old_id) = matched_by_new.get(&idx) {
@@ -2563,18 +2775,7 @@ fn sync_tree(
                 .find_block_by_id(*old_id)
                 .map(|block| block.elem_id)
                 .ok_or(VaultError::UnsupportedIngestBlock("missing matched block"))?;
-            let current_ids: Vec<OpId> = session
-                .document()
-                .container_children(parent)
-                .ok_or(VaultError::UnsupportedIngestBlock("missing parent"))?
-                .iter()
-                .map(|block| block.elem_id)
-                .collect();
-            let predecessor = current_ids
-                .iter()
-                .position(|id| *id == current_elem)
-                .and_then(|position| position.checked_sub(1))
-                .map(|position| current_ids[position]);
+            let predecessor = order.predecessor(current_elem);
             let current_elem = if predecessor != after {
                 session
                     .move_block(*old_id, parent, after)
@@ -2588,6 +2789,9 @@ fn sync_tree(
             } else {
                 current_elem
             };
+            if predecessor != after {
+                order.place(Some(ob.elem_id), current_elem, after);
+            }
             after = Some(current_elem);
             match (&ob.kind, &nb.kind) {
                 (
@@ -2618,13 +2822,52 @@ fn sync_tree(
                     BlockKind::Heading { text: old_t, .. },
                     BlockKind::Heading { text: new_t, .. },
                 ) => {
+                    if let (
+                        BlockKind::Heading {
+                            level: old_level, ..
+                        },
+                        BlockKind::Heading {
+                            level: new_level, ..
+                        },
+                    ) = (&ob.kind, &nb.kind)
+                        && old_level != new_level
+                    {
+                        session
+                            .convert_text_block(
+                                ob.id,
+                                crate::TextBlockKind::Heading { level: *new_level },
+                            )
+                            .map_err(session_err)?;
+                        ops += 1;
+                    }
                     let old_s = paragraph_visible_string(old_t);
                     let new_s = paragraph_visible_string(new_t);
                     ops += apply_paragraph_text_diff(session, ob.id, &old_s, &new_s, nb)?;
                 }
-                // Matched non-paragraph leaves with different content: leave as-is for now
-                // (code/raw full replace would be delete+insert; content match already paired equals).
-                _ => {}
+                (
+                    BlockKind::CodeFence {
+                        style: old_style,
+                        info: old_info,
+                        text: old_text,
+                    },
+                    BlockKind::CodeFence { style, info, text },
+                ) => {
+                    if old_style != style || old_info != info || old_text != text {
+                        session
+                            .set_code_fence(ob.id, *style, info.clone(), text.clone())
+                            .map_err(session_err)?;
+                        ops += 1;
+                    }
+                }
+                (BlockKind::RawBlock { raw: old_raw }, BlockKind::RawBlock { raw }) => {
+                    if old_raw != raw {
+                        session
+                            .replace_raw_block(ob.id, raw.clone())
+                            .map_err(session_err)?;
+                        ops += 1;
+                    }
+                }
+                _ => return Err(VaultError::UnsupportedIngestBlock("matched kind changed")),
             }
             continue;
         }
@@ -2633,6 +2876,7 @@ fn sync_tree(
         }
         let (elem, n) = insert_one(session, parent, after, nb)?;
         ops += n;
+        order.place(None, elem, after);
         after = Some(elem);
     }
 
@@ -2755,9 +2999,20 @@ fn apply_paragraph_text_diff(
     };
     let mut ops = 0usize;
 
-    // Deletes first (high index → low) so offsets stay valid.
-    for i in delete_indices_high_to_low(&steps) {
-        session.delete_text(block_id, i, 1).map_err(session_err)?;
+    // Delete contiguous runs high-to-low so offsets remain valid while one
+    // operation carries all targets in each run.
+    let mut deleted = delete_indices_high_to_low(&steps).into_iter().peekable();
+    while let Some(high) = deleted.next() {
+        let mut low = high;
+        while deleted
+            .peek()
+            .is_some_and(|next| next.checked_add(1) == Some(low))
+        {
+            low = deleted.next().expect("peeked delete index");
+        }
+        session
+            .delete_text(block_id, low, high - low + 1)
+            .map_err(session_err)?;
         ops += 1;
     }
 
@@ -2900,9 +3155,15 @@ fn sync_table(
         })
         .ok_or(VaultError::UnsupportedIngestBlock("matched table missing"))?;
     let mut ops = 0usize;
-    let current_columns = current.columns_in_order();
-    let parsed_columns = parsed.columns_in_order();
-    let parsed_header = parsed.row_cells(parsed.header_row_id());
+    let current_columns: Vec<_> = current.columns.iter().collect();
+    let parsed_columns: Vec<_> = parsed.columns.iter().collect();
+    let current_header: Vec<_> = current
+        .row_values(current.header_row_id(), &current_columns)
+        .collect();
+    let parsed_header: Vec<_> = parsed
+        .row_values(parsed.header_row_id(), &parsed_columns)
+        .map(str::to_owned)
+        .collect();
     for (index, (old, new)) in current_columns.iter().zip(&parsed_columns).enumerate() {
         if old.alignment.get_ref() != new.alignment.get_ref() {
             session
@@ -2910,11 +3171,7 @@ fn sync_table(
                 .map_err(session_err)?;
             ops += 1;
         }
-        if current
-            .cell_value(current.header_row_id(), old.id)
-            .unwrap_or_default()
-            != parsed_header[index]
-        {
+        if current_header[index] != parsed_header[index] {
             session
                 .set_table_cell(table_id, table_id, old.id, parsed_header[index].clone())
                 .map_err(session_err)?;
@@ -2955,15 +3212,45 @@ fn sync_table(
 
     let old_rows = current.rows_in_order();
     let new_rows = parsed.rows_in_order();
+    let old_columns: Vec<_> = current.columns.iter().collect();
+    let new_columns: Vec<_> = parsed.columns.iter().collect();
+    let old_values: HashMap<_, Vec<String>> = old_rows
+        .iter()
+        .map(|row| {
+            (
+                row.id,
+                current
+                    .row_values(row.id, &old_columns)
+                    .map(str::to_owned)
+                    .collect(),
+            )
+        })
+        .collect();
+    let new_values: Vec<Vec<String>> = new_rows
+        .iter()
+        .map(|row| {
+            parsed
+                .row_values(row.id, &new_columns)
+                .map(str::to_owned)
+                .collect()
+        })
+        .collect();
+    let mut exact_rows: HashMap<&[String], std::collections::VecDeque<RowId>> = HashMap::new();
+    for row in &old_rows {
+        exact_rows
+            .entry(&old_values[&row.id])
+            .or_default()
+            .push_back(row.id);
+    }
     let mut used_old = HashSet::new();
     let mut mapping: Vec<Option<RowId>> = vec![None; new_rows.len()];
-    for (new_index, new_row) in new_rows.iter().enumerate() {
-        if let Some(old_row) = old_rows.iter().find(|old_row| {
-            !used_old.contains(&old_row.id)
-                && current.row_cells(old_row.id) == parsed.row_cells(new_row.id)
-        }) {
-            used_old.insert(old_row.id);
-            mapping[new_index] = Some(old_row.id);
+    for (new_index, values) in new_values.iter().enumerate() {
+        if let Some(old_id) = exact_rows
+            .get_mut(values.as_slice())
+            .and_then(|rows| rows.pop_front())
+        {
+            used_old.insert(old_id);
+            mapping[new_index] = Some(old_id);
         }
     }
     let remaining_old: Vec<_> = old_rows
@@ -2978,13 +3265,9 @@ fn sync_table(
     for (old_row, new_index) in remaining_old.iter().zip(&remaining_new) {
         used_old.insert(old_row.id);
         mapping[*new_index] = Some(old_row.id);
-        if current.row_cells(old_row.id) != parsed.row_cells(new_rows[*new_index].id) {
+        if old_values[&old_row.id] != new_values[*new_index] {
             session
-                .set_table_row_cells(
-                    table_id,
-                    old_row.elem_id,
-                    parsed.row_cells(new_rows[*new_index].id),
-                )
+                .set_table_row_cells(table_id, old_row.elem_id, new_values[*new_index].clone())
                 .map_err(session_err)?;
             ops += 1;
         }
@@ -3012,42 +3295,44 @@ fn sync_table(
                     })
             });
         let elem = session
-            .insert_table_row(table_id, after, parsed.row_cells(new_rows[new_index].id))
+            .insert_table_row(table_id, after, new_values[new_index].clone())
             .map_err(session_err)?;
         mapping[new_index] = Some(block_id_from_op(elem));
         ops += 1;
     }
 
     let desired: Vec<RowId> = mapping.into_iter().flatten().collect();
+    let rows: Vec<_> = session
+        .document()
+        .find_block_by_id(table_id)
+        .and_then(|block| match &block.kind {
+            BlockKind::Table { table } => {
+                Some(table.rows.iter().map(|row| (row.id, row.elem_id)).collect())
+            }
+            _ => None,
+        })
+        .ok_or(VaultError::UnsupportedIngestBlock("table disappeared"))?;
+    let row_elements: HashMap<_, _> = rows.iter().copied().collect();
+    let mut order = SiblingOrder::new(rows.into_iter().map(|(_, elem)| elem));
     let mut after = None;
     for row_id in desired {
-        let (elem, predecessor) = session
-            .document()
-            .find_block_by_id(table_id)
-            .and_then(|block| match &block.kind {
-                BlockKind::Table { table } => {
-                    let rows: Vec<_> = table.rows.iter().collect();
-                    let position = rows.iter().position(|row| row.id == row_id)?;
-                    Some((
-                        rows[position].elem_id,
-                        position.checked_sub(1).map(|index| rows[index].elem_id),
-                    ))
-                }
-                _ => None,
-            })
-            .ok_or(VaultError::UnsupportedIngestBlock("row disappeared"))?;
+        let elem = row_elements[&row_id];
+        let predecessor = order.predecessor(elem);
         if predecessor != after {
             session
                 .move_table_row(table_id, row_id, after)
                 .map_err(session_err)?;
             ops += 1;
-            after = session
+            let moved = session
                 .document()
                 .find_block_by_id(table_id)
                 .and_then(|block| match &block.kind {
                     BlockKind::Table { table } => table.row_by_id(row_id).map(|row| row.elem_id),
                     _ => None,
-                });
+                })
+                .ok_or(VaultError::UnsupportedIngestBlock("row disappeared"))?;
+            order.place(Some(elem), moved, after);
+            after = Some(moved);
         } else {
             after = Some(elem);
         }
@@ -3117,7 +3402,9 @@ fn insert_one(
                         task: item.task,
                         task_op: elem,
                         task_observed: crate::core::StateVector::new(),
+                        task_conflicts: Vec::new(),
                         placement_observed: crate::core::StateVector::new(),
+                        placement_conflicts: Vec::new(),
                         children: Sequence::new(),
                     },
                 ));

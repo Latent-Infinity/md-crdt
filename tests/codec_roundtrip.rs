@@ -80,6 +80,8 @@ fn delete_block_round_trip() {
             parent: None,
             target: op(5, 1),
             id: op(6, 1),
+            observed: md_crdt::StateVector::new(),
+            subtree: Vec::new(),
         }),
     };
     let bytes = codec.encode(&env).expect("encode");
@@ -94,6 +96,21 @@ fn unknown_wire_version_rejected() {
     let bytes = codec.encode(&env).expect("encode still serializes");
     let err = codec.decode(&bytes).expect_err("unknown version");
     assert!(matches!(err, CodecError::UnknownVersion(v) if v == WIRE_VERSION + 99));
+}
+
+#[test]
+fn legacy_wire_shape_reports_version_before_new_required_fields() {
+    // Actual v6 shapes, independently decoded by the frozen v6 codecs.
+    let json = br#"{"version":6,"body":{"Doc":{"DeleteBlock":{"parent":null,"target":{"counter":1,"peer":7},"id":{"counter":2,"peer":9}}}}}"#;
+    let binary = b"MDE1\x01\x00\x08\x00\x00\x00\x06\x00\x01\x00\x01\x07\x02\x09";
+    assert!(matches!(
+        JsonOpCodec.decode(json),
+        Err(CodecError::UnknownVersion(6))
+    ));
+    assert!(matches!(
+        md_crdt::codec::BinaryOpCodec.decode(binary),
+        Err(CodecError::UnknownVersion(6))
+    ));
 }
 
 #[test]
@@ -223,6 +240,8 @@ fn insert_block_paragraph_is_empty_helper() {
             parent: None,
             target: op(1, 1),
             id: op(2, 1),
+            observed: md_crdt::StateVector::new(),
+            subtree: Vec::new(),
         }),
     };
     assert!(insert_block_paragraph_is_empty(&del));
@@ -389,6 +408,11 @@ fn structured_mutation_ops_round_trip() {
             target: op(2, 1),
             item_id: block_id(2),
             id: op(3, 1),
+            observed: StateVector::new(),
+            subtree: vec![md_crdt::doc::LogicalTarget {
+                container: md_crdt::doc::LogicalContainer::Item(block_id(2)),
+                origin: op(2, 1),
+            }],
         },
         DocOp::MoveListItem {
             from_list_elem: op(1, 1),

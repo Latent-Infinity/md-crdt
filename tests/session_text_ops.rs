@@ -266,7 +266,9 @@ fn nested_paragraph_in_list_item_converges() {
             task: None,
             task_op: item_elem,
             task_observed: md_crdt::core::StateVector::new(),
+            task_conflicts: Vec::new(),
             placement_observed: md_crdt::core::StateVector::new(),
+            placement_conflicts: Vec::new(),
             children: Sequence::new(),
         },
     )]);

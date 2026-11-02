@@ -4,8 +4,9 @@
 //! supporting operations like bold, italic, links, and custom marks.
 
 use super::{LwwRegister, OpId, Sequence, StateVector};
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MarkKind {
@@ -58,10 +59,26 @@ pub struct MarkSet {
     removes: BTreeMap<MarkIntervalId, RemoveMark>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 struct MarkSetSerde {
     intervals: Vec<MarkInterval>,
     removes: Vec<(MarkIntervalId, RemoveMark)>,
+}
+
+struct IntervalValues<'a>(&'a BTreeMap<MarkIntervalId, MarkInterval>);
+
+impl Serialize for IntervalValues<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.values())
+    }
+}
+
+struct RemoveEntries<'a>(&'a BTreeMap<MarkIntervalId, RemoveMark>);
+
+impl Serialize for RemoveEntries<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter())
+    }
 }
 
 impl Serialize for MarkSet {
@@ -69,15 +86,10 @@ impl Serialize for MarkSet {
     where
         S: Serializer,
     {
-        MarkSetSerde {
-            intervals: self.intervals.values().cloned().collect(),
-            removes: self
-                .removes
-                .iter()
-                .map(|(id, remove)| (*id, remove.clone()))
-                .collect(),
-        }
-        .serialize(serializer)
+        let mut state = serializer.serialize_struct("MarkSetSerde", 2)?;
+        state.serialize_field("intervals", &IntervalValues(&self.intervals))?;
+        state.serialize_field("removes", &RemoveEntries(&self.removes))?;
+        state.end()
     }
 }
 
@@ -156,6 +168,24 @@ impl MarkSet {
             _ => {
                 self.removes
                     .insert(interval_id, RemoveMark { observed, op_id });
+            }
+        }
+    }
+
+    /// Retarget active and removed interval endpoints after text units receive new IDs.
+    ///
+    /// Apply the same mapping to both sides before merging duplicated mark history;
+    /// equal-version intervals otherwise retain the destination's old endpoints.
+    pub(crate) fn remap_anchors(&mut self, mapping: &BTreeMap<OpId, OpId>) {
+        if mapping.is_empty() {
+            return;
+        }
+        for interval in self.intervals.values_mut() {
+            if let Some(id) = mapping.get(&interval.start.elem_id) {
+                interval.start.elem_id = *id;
+            }
+            if let Some(id) = mapping.get(&interval.end.elem_id) {
+                interval.end.elem_id = *id;
             }
         }
     }
@@ -247,41 +277,46 @@ impl MarkSet {
     }
 
     fn render_spans_with_offsets(&self, offsets: &AnchorOffsets, visible_len: usize) -> Vec<Span> {
-        let mut marks_at: Vec<Vec<MarkIntervalId>> = vec![Vec::new(); visible_len + 1];
+        let mut endpoints = Vec::new();
         for interval in self.iter_active_intervals() {
             let start = resolve_anchor(&interval.start, offsets, visible_len);
             let end = resolve_anchor(&interval.end, offsets, visible_len);
-            let (from, to) = if start <= end {
-                (start, end)
-            } else {
-                (end, start)
-            };
-            for marks in marks_at.iter_mut().take(to).skip(from) {
-                marks.push(interval.id);
+            let (from, to) = (start.min(end), start.max(end));
+            if from < to {
+                endpoints.push((from, true, interval.id));
+                endpoints.push((to, false, interval.id));
             }
         }
+        endpoints.sort_unstable();
 
-        for marks in &mut marks_at {
-            marks.sort();
-            marks.dedup();
-        }
-
-        let mut spans = Vec::with_capacity(visible_len.min(64));
-        let mut start = 0usize;
-        while start < visible_len {
-            let current = std::mem::take(&mut marks_at[start]);
-            let mut end = start + 1;
-            while end < visible_len && marks_at[end] == current {
-                end += 1;
+        let mut spans = Vec::new();
+        let mut active = BTreeSet::new();
+        let mut position = 0;
+        let mut events = endpoints.into_iter().peekable();
+        while let Some(&(next, _, _)) = events.peek() {
+            if position < next {
+                spans.push(Span {
+                    start: position,
+                    end: next,
+                    marks: active.iter().copied().collect(),
+                });
             }
+            while let Some((_, starting, id)) = events.next_if(|event| event.0 == next) {
+                if starting {
+                    active.insert(id);
+                } else {
+                    active.remove(&id);
+                }
+            }
+            position = next;
+        }
+        if position < visible_len {
             spans.push(Span {
-                start,
-                end,
-                marks: current,
+                start: position,
+                end: visible_len,
+                marks: active.into_iter().collect(),
             });
-            start = end;
         }
-
         spans
     }
 
@@ -399,6 +434,78 @@ mod tests {
             elem_id: op(counter),
             bias: AnchorBias::Before,
         }
+    }
+
+    #[test]
+    fn remap_anchors_preserves_versions_attributes_and_removed_history() {
+        let mut left = MarkSet::new();
+        left.set_mark(
+            op(1),
+            MarkKind::Link,
+            anchor(10),
+            Anchor {
+                elem_id: op(12),
+                bias: AnchorBias::After,
+            },
+            BTreeMap::from([
+                ("href".into(), MarkValue::String("target".into())),
+                ("title".into(), MarkValue::String("original".into())),
+                ("custom".into(), MarkValue::Bool(true)),
+            ]),
+            op(20),
+        );
+        left.set_mark(
+            op(1),
+            MarkKind::Link,
+            anchor(10),
+            Anchor {
+                elem_id: op(12),
+                bias: AnchorBias::After,
+            },
+            BTreeMap::from([("title".into(), MarkValue::String("updated".into()))]),
+            op(21),
+        );
+        let mut right = left.clone();
+        right.set_mark(
+            op(2),
+            MarkKind::Bold,
+            anchor(11),
+            anchor(12),
+            BTreeMap::new(),
+            op(22),
+        );
+        let mut observed = StateVector::new();
+        observed.set(1, 2);
+        right.remove_mark(op(2), observed, op(23));
+        let expected_remove = right.iter_removes().next().unwrap().1.clone();
+
+        let mut expected_link = left.interval(&op(1)).unwrap().clone();
+        expected_link.start.elem_id = op(30);
+        expected_link.end.elem_id = op(32);
+        let mut expected_removed = right.interval(&op(2)).unwrap().clone();
+        expected_removed.start.elem_id = op(31);
+        expected_removed.end.elem_id = op(32);
+        let mapping = BTreeMap::from([(op(10), op(30)), (op(11), op(31)), (op(12), op(32))]);
+        left.remap_anchors(&mapping);
+        right.remap_anchors(&mapping);
+        left.merge_from(&right);
+
+        assert_eq!(left.interval(&op(1)), Some(&expected_link));
+        assert_eq!(left.interval(&op(2)), Some(&expected_removed));
+        assert!(left.is_active(&op(1)));
+        assert!(!left.is_active(&op(2)));
+        assert_eq!(
+            left.iter_removes().collect::<Vec<_>>(),
+            vec![(&op(2), &expected_remove)]
+        );
+        let ranges = left.resolved_intervals(&[op(30), op(31), op(32)]);
+        assert_eq!(ranges, vec![(&expected_link, 0, 3)]);
+
+        let bytes = postcard::to_allocvec(&left).unwrap();
+        let mut restored: MarkSet = postcard::from_bytes(&bytes).unwrap();
+        restored.merge_from(&right);
+        assert_eq!(restored, left);
+        assert!(!restored.is_active(&op(2)));
     }
 
     #[test]

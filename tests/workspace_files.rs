@@ -156,23 +156,28 @@ fn multi_document_export_prevalidation_writes_nothing_on_one_stale_request() {
 #[test]
 fn open_recovers_a_half_applied_multi_file_export_intent() {
     let dir = tempdir().unwrap();
+    let transaction = uuid::Uuid::from_u128(1);
+    let pending_a = format!(".a.md.{transaction}.pending");
+    let backup_a = format!(".a.md.{transaction}.backup");
+    let pending_b = format!(".b.md.{transaction}.pending");
+    let backup_b = format!(".b.md.{transaction}.backup");
     fs::write(dir.path().join("a.md"), "new-a\n").unwrap();
     fs::write(dir.path().join("b.md"), "old-b\n").unwrap();
-    fs::write(dir.path().join(".a.md.tx.backup"), "old-a\n").unwrap();
-    fs::write(dir.path().join(".b.md.tx.pending"), "new-b\n").unwrap();
+    fs::write(dir.path().join(&backup_a), "old-a\n").unwrap();
+    fs::write(dir.path().join(&pending_b), "new-b\n").unwrap();
     fs::create_dir_all(dir.path().join(".mdcrdt/transactions")).unwrap();
     let journal = json!({
         "kind": "export",
         "entries": [
             {
                 "target": "a.md",
-                "pending": ".a.md.tx.pending",
-                "backup": ".a.md.tx.backup"
+                "pending": pending_a,
+                "backup": backup_a,
             },
             {
                 "target": "b.md",
-                "pending": ".b.md.tx.pending",
-                "backup": ".b.md.tx.backup"
+                "pending": pending_b,
+                "backup": backup_b,
             }
         ]
     });
@@ -191,8 +196,8 @@ fn open_recovers_a_half_applied_multi_file_export_intent() {
         fs::read_to_string(dir.path().join("b.md")).unwrap(),
         "new-b\n"
     );
-    assert!(!dir.path().join(".a.md.tx.backup").exists());
-    assert!(!dir.path().join(".b.md.tx.pending").exists());
+    assert!(!dir.path().join(&backup_a).exists());
+    assert!(!dir.path().join(&pending_b).exists());
     assert!(
         !dir.path()
             .join(".mdcrdt/transactions/interrupted.json")
